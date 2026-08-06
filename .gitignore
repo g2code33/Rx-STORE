@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Testing
+coverage/
+
+# Tauri build artifacts
+desktop/tauri/src-tauri/target/
+
+# Flutter build artifacts
+mobile/flutter/build/
+mobile/flutter/.dart_tool/
+mobile/flutter/.packages
+mobile/flutter/.flutter-plugins
+mobile/flutter/.flutter-plugins-dependencies
+
+# Misc
+*.tsbuildinfo

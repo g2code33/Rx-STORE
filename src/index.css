@@ -1,0 +1,113 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    border-color: rgba(255, 255, 255, 0.05);
+  }
+
+  body {
+    @apply bg-rx-dark text-white font-sans;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-rx-dark;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-rx-dark-tertiary rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-rx-gray-medium;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-rx-yellow text-rx-dark font-semibold px-6 py-3 rounded-xl 
+           hover:bg-rx-yellow-light hover:shadow-glow transition-all duration-300 
+           active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply bg-rx-dark-tertiary text-white font-medium px-6 py-3 rounded-xl 
+           border border-white/10 hover:border-rx-yellow/50 hover:bg-rx-dark-secondary
+           transition-all duration-300 active:scale-95;
+  }
+
+  .btn-outline {
+    @apply border-2 border-rx-yellow text-rx-yellow font-semibold px-6 py-3 rounded-xl 
+           hover:bg-rx-yellow hover:text-rx-dark transition-all duration-300 active:scale-95;
+  }
+
+  .card {
+    @apply bg-rx-dark-secondary rounded-2xl border border-white/5 
+           hover:border-rx-yellow/20 transition-all duration-300;
+  }
+
+  .card-hover {
+    @apply card hover:shadow-card-hover hover:-translate-y-1 cursor-pointer;
+  }
+
+  .input {
+    @apply bg-rx-dark-tertiary border border-white/10 rounded-xl px-4 py-3 
+           text-white placeholder-rx-gray-medium focus:outline-none focus:border-rx-yellow/50 
+           focus:ring-1 focus:ring-rx-yellow/25 transition-all duration-200;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-3 py-1 rounded-full text-xs font-medium;
+  }
+
+  .badge-free {
+    @apply badge bg-green-500/20 text-green-400;
+  }
+
+  .badge-paid {
+    @apply badge bg-rx-yellow/20 text-rx-yellow;
+  }
+
+  .badge-beta {
+    @apply badge bg-purple-500/20 text-purple-400;
+  }
+
+  .badge-new {
+    @apply badge bg-blue-500/20 text-blue-400;
+  }
+
+  .gradient-text {
+    @apply bg-gradient-to-r from-rx-yellow to-rx-yellow-light bg-clip-text text-transparent;
+  }
+
+  .glass {
+    @apply bg-white/5 backdrop-blur-xl border border-white/10;
+  }
+
+  .section-container {
+    @apply max-w-7xl mx-auto px-4 sm:px-6 lg:px-8;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .animate-gradient {
+    background-size: 200% 200%;
+    animation: gradient 8s ease infinite;
+  }
+
+  @keyframes gradient {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+}
