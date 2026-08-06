@@ -3,6 +3,7 @@ import { Routes, Route, useLocation } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import Header from './components/layout/Header';
 import Footer from './components/layout/Footer';
+import { AIFloatingButton } from './components/ai/AIChat';
 
 const Home = lazy(() => import('./pages/Home'));
 const Browse = lazy(() => import('./pages/Browse'));
@@ -67,6 +68,7 @@ export default function App() {
         </Suspense>
       </main>
       <Footer />
+      <AIFloatingButton />
     </div>
   );
 }

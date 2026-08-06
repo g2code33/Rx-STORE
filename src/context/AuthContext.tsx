@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { User, Notification } from '../types';
+import { api, isApiConfigured, clearToken } from '../services/api';
 
 interface AuthContextType {
   user: User | null;
@@ -78,25 +79,62 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [notifications, setNotifications] = useState<Notification[]>(mockNotifications);
 
   useEffect(() => {
-    const savedUser = localStorage.getItem('rx-store-user');
-    if (savedUser) {
-      setUser(JSON.parse(savedUser));
-    }
-    setIsLoading(false);
+    (async () => {
+      const savedUser = localStorage.getItem('rx-store-user');
+      if (savedUser) {
+        try { setUser(JSON.parse(savedUser)); } catch { /* ignore */ }
+      }
+      // If API configured and token exists, validate session
+      if (isApiConfigured() && localStorage.getItem('rx-store-token')) {
+        try {
+          const { user: me } = await api.auth.me();
+          if (me) {
+            setUser(me);
+            localStorage.setItem('rx-store-user', JSON.stringify(me));
+          }
+        } catch {
+          // token invalid — keep mock/local user
+        }
+      }
+      setIsLoading(false);
+    })();
   }, []);
 
-  const login = async (email: string, _password: string): Promise<boolean> => {
+  const login = async (email: string, password: string): Promise<boolean> => {
     setIsLoading(true);
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    setUser(mockUser);
-    localStorage.setItem('rx-store-user', JSON.stringify(mockUser));
+    try {
+      if (isApiConfigured()) {
+        const { user: apiUser } = await api.auth.login(email, password);
+        setUser(apiUser);
+        localStorage.setItem('rx-store-user', JSON.stringify(apiUser));
+        return true;
+      }
+    } catch {
+      // fall through to mock
+    }
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    // demo: accept any credentials when offline
+    const demoUser = { ...mockUser, email };
+    setUser(demoUser);
+    localStorage.setItem('rx-store-user', JSON.stringify(demoUser));
     setIsLoading(false);
     return true;
   };
 
-  const register = async (name: string, email: string, _password: string): Promise<boolean> => {
+  const register = async (name: string, email: string, password: string): Promise<boolean> => {
     setIsLoading(true);
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    try {
+      if (isApiConfigured()) {
+        const { user: apiUser } = await api.auth.register(name, email, password);
+        setUser(apiUser);
+        localStorage.setItem('rx-store-user', JSON.stringify(apiUser));
+        setIsLoading(false);
+        return true;
+      }
+    } catch {
+      // fall through
+    }
+    await new Promise((resolve) => setTimeout(resolve, 600));
     const newUser = { ...mockUser, name, email };
     setUser(newUser);
     localStorage.setItem('rx-store-user', JSON.stringify(newUser));
@@ -105,6 +143,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
+    if (isApiConfigured()) api.auth.logout().catch(() => {});
+    clearToken();
     setUser(null);
     localStorage.removeItem('rx-store-user');
   };

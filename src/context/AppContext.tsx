@@ -1,9 +1,12 @@
-import React, { createContext, useContext, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { App, AppCategory } from '../types';
 import { apps as initialApps } from '../data/apps';
+import { api, isApiConfigured } from '../services/api';
 
 interface AppContextType {
   apps: App[];
+  isLoading: boolean;
+  error: string | null;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
   selectedCategory: AppCategory | null;
@@ -17,12 +20,15 @@ interface AppContextType {
   installedApps: string[];
   installApp: (appId: string) => void;
   uninstallApp: (appId: string) => void;
+  refresh: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [apps] = useState<App[]>(initialApps);
+  const [apps, setApps] = useState<App[]>(initialApps);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<AppCategory | null>(null);
   const [selectedPlatform, setSelectedPlatform] = useState<string | null>(null);
@@ -30,6 +36,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const saved = localStorage.getItem('rx-store-installed');
     return saved ? JSON.parse(saved) : ['clinical-rx', 'curelink'];
   });
+
+  const refresh = async () => {
+    if (!isApiConfigured()) return;
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await api.apps.list({ limit: 100 });
+      if (data.apps && Array.isArray(data.apps) && data.apps.length > 0) {
+        setApps(data.apps as unknown as App[]);
+      }
+    } catch (e: any) {
+      setError(e.message || 'Failed to load apps');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isApiConfigured()) refresh();
+  }, []);
 
   const getFilteredApps = () => {
     let filtered = apps;
@@ -83,6 +109,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     <AppContext.Provider
       value={{
         apps,
+        isLoading,
+        error,
         searchQuery,
         setSearchQuery,
         selectedCategory,
@@ -96,6 +124,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         installedApps,
         installApp,
         uninstallApp,
+        refresh,
       }}
     >
       {children}
