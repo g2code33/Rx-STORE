@@ -8,9 +8,15 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 ENVIRONMENT = "production"
 API_VERSION = "v1"
-AI_PROVIDER = "openai"
-AI_MODEL = "gpt-4o-mini"
+# AI — multi-provider (C: admin choice). Default = nvidia, fallback chain configurable.
+AI_PROVIDER = "nvidia"
+AI_MODEL = "meta/llama-3.1-70b-instruct"
+AI_FALLBACK = "openrouter,openai,gemini"
 AI_RATE_LIMIT = "30"
+AI_BASE_URL_NVIDIA = "https://integrate.api.nvidia.com/v1"
+AI_BASE_URL_OPENROUTER = "https://openrouter.ai/api/v1"
+AI_BASE_URL_OPENAI = "https://api.openai.com/v1"
+AI_BASE_URL_GEMINI = "https://generativelanguage.googleapis.com/v1beta"
 
 # D1 — isolated marketplace DB (create with: wrangler d1 create rx-store-db)
 [[d1_databases]]
@@ -30,7 +36,10 @@ id = "bb99ae50606c4b6d92ee03c56781bea1"
 preview_id = "e056396b15db4fd490a2f3024ffda05e"
 
 # Secrets (set with: wrangler secret put <NAME>)
-# JWT_SECRET, OPENAI_API_KEY, PAYSTACK_SECRET_KEY, HUBTEL_API_KEY, MOBILE_MONEY_KEY
+# JWT_SECRET (required)
+# NVIDIA_API_KEY (nvapi-...), OPENAI_API_KEY (sk-...), OPENROUTER_API_KEY (sk-or-...), GEMINI_API_KEY (AIza...)
+# PAYSTACK_SECRET_KEY, HUBTEL_API_KEY, MOBILE_MONEY_KEY
+# Admin can also set keys via PUT /admin/ai/settings {provider, apiKey} (stored in D1 ai_settings)
 
 [placement]
 mode = "smart"

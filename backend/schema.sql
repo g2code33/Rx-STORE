@@ -186,6 +186,16 @@ CREATE TABLE IF NOT EXISTS licenses (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- ==================== AI SETTINGS (multi-provider, admin-controllable) ====================
+CREATE TABLE IF NOT EXISTS ai_settings (
+  id TEXT PRIMARY KEY,
+  provider TEXT,
+  model TEXT,
+  api_key TEXT,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+INSERT OR IGNORE INTO ai_settings (id, provider, model) VALUES ('default','nvidia','meta/llama-3.1-70b-instruct');
+
 -- ==================== SEED (idempotent) ====================
 INSERT OR IGNORE INTO applications (id, slug, name, description, category, developer, icon, status, current_version, rating, download_count, price_type, platforms, is_featured) VALUES
 ('clinical-rx','clinical-rx','Clinical Rx','Advanced clinical decision support','healthcare','Calcitonin Technologies','🏥','active','3.2.1',4.8,156000,'subscription','["web","windows","linux","android","ios"]',1),
