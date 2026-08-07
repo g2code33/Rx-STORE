@@ -48,6 +48,13 @@ export default {
       return new Response(null, { status: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,Authorization' } });
     }
 
+    // Update check — universal (GET /updates/check or /update/check)
+    if ((path === '/updates/check' || path === '/update/check' || path === '/api/updates/check' || path === '/api/update/check') && request.method === 'GET') {
+      const data = await updatesRoutes.checkUpdate(request, env);
+      if ((data as any)?.error) return json({ success: false, error: { code: 'NOT_FOUND', message: (data as any).error } }, 404);
+      return json({ success: true, data });
+    }
+
     // AI routes — multi-provider (handle directly for correct dispatch)
     if (path.startsWith('/ai/') || path === '/ai') {
       // Public list of providers (no auth needed for status)
