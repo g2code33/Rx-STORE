@@ -1,14 +1,18 @@
 import React, { useState } from 'react';
 import {
   LayoutDashboard, Package, Users, BarChart3, DollarSign, Upload,
-  Download, Star, Settings, Shield, Plus, Edit, Trash2, Activity, Database, Cloud
+  Download, Star, Settings, Shield, Plus, Edit, Trash2, Activity, Database, Cloud, Bot, Key, Globe, FileText, Bell
 } from 'lucide-react';
 import { useApps } from '../context/AppContext';
 import { formatDownloadCount } from '../utils/helpers';
+import AIProviderPanel from '../components/admin/AIProviderPanel';
+import { useAuth } from '../context/AuthContext';
 
 export default function Admin() {
   const { apps } = useApps();
+  const { user } = useAuth();
   const [activeSection, setActiveSection] = useState('dashboard');
+  const isAdmin = user?.role === 'admin';
 
   const stats = [
     { label: 'Total Downloads', value: '734K', change: '+12.5%', icon: Download, color: '#FFD600' },
@@ -21,6 +25,7 @@ export default function Admin() {
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'applications', label: 'Applications', icon: Package },
     { id: 'users', label: 'Users', icon: Users },
+    { id: 'ai', label: 'AI Providers', icon: Bot },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
     { id: 'revenue', label: 'Revenue', icon: DollarSign },
     { id: 'uploads', label: 'Uploads', icon: Upload },
@@ -50,6 +55,12 @@ export default function Admin() {
         </aside>
 
         <div className="flex-1 min-w-0">
+          {!isAdmin && (
+            <div className="mb-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center gap-3 text-sm text-amber-200">
+              <Shield className="w-5 h-5 flex-shrink-0"/> You’re viewing as <b>{user?.role || 'guest'}</b>. Log in as <code className="px-1 py-0.5 bg-white/10 rounded">admin</code> to save changes. AI Providers still visible in read-only.
+            </div>
+          )}
+          {activeSection === 'ai' && (<div className="animate-fade-in"><AIProviderPanel /></div>)}
           {activeSection === 'dashboard' && (
             <div className="space-y-8 animate-fade-in">
               <div><h1 className="text-2xl font-bold text-white">Dashboard Overview</h1><p className="text-rx-gray-medium mt-1">Welcome back! Here's what's happening with RX Store.</p></div>

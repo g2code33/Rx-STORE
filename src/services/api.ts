@@ -130,10 +130,10 @@ export const api = {
   },
 
   ai: {
-    async chat(message: string, context?: any, signal?: AbortSignal) {
-      return request<{ response: string; suggestions?: string[] }>('/ai/chat', {
+    async chat(message: string, context?: any, signal?: AbortSignal, provider?: string) {
+      return request<{ response: string; suggestions?: string[]; provider?: string }>('/ai/chat', {
         method: 'POST',
-        body: JSON.stringify({ message, context }),
+        body: JSON.stringify({ message, context, provider }),
         signal,
       });
     },
@@ -142,6 +142,12 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(payload),
       });
+    },
+    async providers() {
+      return request<{ active: string; providers: any[] }>('/ai/providers', { method: 'GET', auth: false });
+    },
+    async updateAISettings(provider: string, model?: string, apiKey?: string) {
+      return request<any>('/admin/ai/settings', { method: 'PUT', body: JSON.stringify({ provider, model, apiKey }) });
     },
   },
 
