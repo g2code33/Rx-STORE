@@ -38,6 +38,7 @@ router.use('/auth', authRoutes);
 router.use('/apps', appsRoutes);
 router.use('/categories', appsRoutes);
 router.use('/updates', updatesRoutes);
+router.use('/update', updatesRoutes); // alias per spec: GET /api/update/check
 
 // Protected routes
 router.use('/users', authMiddleware, usersRoutes);

@@ -1,0 +1,36 @@
+# Rx Store — Cloudflare Worker Config
+# SAFE: only creates rx-store-* resources. Never touches pharmagame/code-rx.
+name = "rx-store-api"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "production"
+API_VERSION = "v1"
+AI_PROVIDER = "openai"
+AI_MODEL = "gpt-4o-mini"
+AI_RATE_LIMIT = "30"
+
+# D1 — isolated marketplace DB (create with: wrangler d1 create rx-store-db)
+[[d1_databases]]
+binding = "DB"
+database_name = "rx-store-db"
+database_id = "REPLACE_WITH_D1_ID"
+
+# R2 — marketplace storage (create with: wrangler r2 bucket create rx-store-storage)
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "rx-store-storage"
+
+# KV — sessions / cache (create with: wrangler kv:namespace create rx-store-cache)
+[[kv_namespaces]]
+binding = "CACHE"
+id = "REPLACE_WITH_KV_ID"
+preview_id = "REPLACE_WITH_KV_PREVIEW_ID"
+
+# Secrets (set with: wrangler secret put <NAME>)
+# JWT_SECRET, OPENAI_API_KEY, PAYSTACK_SECRET_KEY, HUBTEL_API_KEY, MOBILE_MONEY_KEY
+
+[placement]
+mode = "smart"
