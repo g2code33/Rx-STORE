@@ -16,7 +16,7 @@ AI_RATE_LIMIT = "30"
 [[d1_databases]]
 binding = "DB"
 database_name = "rx-store-db"
-database_id = "REPLACE_WITH_D1_ID"
+database_id = "dc6f6d5c-9d7e-412f-8e35-b4d2ef7cfeec"
 
 # R2 — marketplace storage (create with: wrangler r2 bucket create rx-store-storage)
 [[r2_buckets]]
@@ -26,8 +26,8 @@ bucket_name = "rx-store-storage"
 # KV — sessions / cache (create with: wrangler kv:namespace create rx-store-cache)
 [[kv_namespaces]]
 binding = "CACHE"
-id = "REPLACE_WITH_KV_ID"
-preview_id = "REPLACE_WITH_KV_PREVIEW_ID"
+id = "bb99ae50606c4b6d92ee03c56781bea1"
+preview_id = "e056396b15db4fd490a2f3024ffda05e"
 
 # Secrets (set with: wrangler secret put <NAME>)
 # JWT_SECRET, OPENAI_API_KEY, PAYSTACK_SECRET_KEY, HUBTEL_API_KEY, MOBILE_MONEY_KEY
