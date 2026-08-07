@@ -67,16 +67,33 @@ export default {
       }
       // Admin: update provider/model (and optionally apiKey via admin UI)
       if (path === '/admin/ai/settings' && (request.method === 'PUT' || request.method === 'POST')) {
-        // simple admin check — require Authorization header; real check via adminRoutes middleware in future
         const auth = request.headers.get('Authorization') || '';
         if (!auth.startsWith('Bearer ')) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401);
         const data = await aiRoutes.updateSettings(request, env);
         if ((data as any)?.error) return json({ success: false, error: data }, 400);
         return json({ success: true, data });
       }
+      if (path === '/admin/users' && request.method === 'GET') {
+        const data = await adminRoutes.listUsers(request, env);
+        return json({ success: true, data });
+      }
+      if (path.match(/^\/admin\/users\/[^\/]+\/role$/) && request.method === 'PATCH') {
+        const data = await adminRoutes.updateUserRole(request, env);
+        if ((data as any)?.error) return json({ success: false, error: data }, 400);
+        return json({ success: true, data });
+      }
+      if (path === '/admin/revenue' && request.method === 'GET') {
+        const data = await adminRoutes.revenue(request, env);
+        return json({ success: true, data });
+      }
+      if (path.match(/^\/admin\/apps\/[^\/]+\/releases$/) && request.method === 'POST') {
+        const data = await adminRoutes.createRelease(request, env);
+        if ((data as any)?.error) return json({ success: false, error: data }, 400);
+        return json({ success: true, data });
+      }
       if (path === '/ai/providers') return json({ success: false, error: { code: 'NOT_FOUND' } }, 404);
     }
-    // Allow /admin/ai/settings via same path without /ai prefix already handled above
+    // Admin AI also accessible via /admin/ai/settings already handled inside /ai block for convenience
 
     return router.handle(request, env);
   },

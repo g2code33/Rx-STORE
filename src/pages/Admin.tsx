@@ -6,6 +6,9 @@ import {
 import { useApps } from '../context/AppContext';
 import { formatDownloadCount } from '../utils/helpers';
 import AIProviderPanel from '../components/admin/AIProviderPanel';
+import AppReleaseManager from '../components/admin/AppReleaseManager';
+import UserRoleEditor from '../components/admin/UserRoleEditor';
+import RevenuePanel from '../components/admin/RevenuePanel';
 import { useAuth } from '../context/AuthContext';
 
 export default function Admin() {
@@ -155,34 +158,7 @@ export default function Admin() {
             </div>
           )}
 
-          {activeSection === 'users' && (
-            <div className="space-y-6 animate-fade-in">
-              <div><h1 className="text-2xl font-bold text-white">User Management</h1><p className="text-rx-gray-medium mt-1">Manage user accounts and permissions</p></div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                {[{ label: 'Total Users', value: '28,431' }, { label: 'Active Today', value: '4,821' }, { label: 'Subscribers', value: '12,847' }].map((s) => (
-                  <div key={s.label} className="card p-5"><p className="text-2xl font-bold text-white">{s.value}</p><p className="text-xs text-rx-gray-medium mt-1">{s.label}</p></div>
-                ))}
-              </div>
-              <div className="card p-6">
-                <h3 className="font-bold text-white mb-4">Recent Users</h3>
-                <div className="space-y-3">
-                  {[
-                    { name: 'Dr. Sarah Chen', email: 'sarah.chen@hospital.org', role: 'user' },
-                    { name: 'James Wilson', email: 'j.wilson@pharmacy.com', role: 'developer' },
-                    { name: 'Amy Rodriguez', email: 'amy.r@clinic.net', role: 'user' },
-                    { name: 'Michael Park', email: 'm.park@research.edu', role: 'user' },
-                    { name: 'Lisa Thompson', email: 'lisa.t@healthcare.org', role: 'admin' },
-                  ].map((u) => (
-                    <div key={u.email} className="flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition-colors">
-                      <div className="w-9 h-9 rounded-lg bg-rx-dark-tertiary flex items-center justify-center text-sm font-bold text-rx-yellow">{u.name.charAt(0)}</div>
-                      <div className="flex-1 min-w-0"><p className="text-sm font-medium text-white truncate">{u.name}</p><p className="text-xs text-rx-gray-medium truncate">{u.email}</p></div>
-                      <span className={`px-2 py-0.5 text-xs rounded-full ${u.role === 'admin' ? 'bg-rx-yellow/20 text-rx-yellow' : u.role === 'developer' ? 'bg-purple-400/20 text-purple-400' : 'bg-white/10 text-rx-gray-medium'}`}>{u.role}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
+          {activeSection === 'users' && (<div className="animate-fade-in"><UserRoleEditor /></div>)}
 
           {activeSection === 'analytics' && (
             <div className="space-y-6 animate-fade-in">
@@ -227,63 +203,9 @@ export default function Admin() {
             </div>
           )}
 
-          {activeSection === 'revenue' && (
-            <div className="space-y-6 animate-fade-in">
-              <div><h1 className="text-2xl font-bold text-white">Revenue</h1><p className="text-rx-gray-medium mt-1">Financial overview and subscription tracking</p></div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                {[{ label: 'Monthly Revenue', value: '$47,832' }, { label: 'Subscriptions', value: '1,247' }, { label: 'One-time Sales', value: '$8,421' }, { label: 'Enterprise', value: '$12,500' }].map((s) => (
-                  <div key={s.label} className="card p-5"><p className="text-2xl font-bold text-rx-yellow">{s.value}</p><p className="text-xs text-rx-gray-medium mt-1">{s.label}</p></div>
-                ))}
-              </div>
-              <div className="card p-6">
-                <h3 className="font-bold text-white mb-4">Revenue by Application</h3>
-                <div className="space-y-3">
-                  {[
-                    { name: 'Clinical Rx', revenue: '$15,420', growth: '+18%' }, { name: 'CureLink', revenue: '$12,800', growth: '+22%' },
-                    { name: 'TAWOMO', revenue: '$8,950', growth: '+15%' }, { name: 'MediLearn Academy', revenue: '$6,200', growth: '+28%' },
-                    { name: 'Rx Assistant AI', revenue: '$4,462', growth: '+45%' },
-                  ].map((item) => (
-                    <div key={item.name} className="flex items-center justify-between p-3 rounded-xl hover:bg-white/5 transition-colors">
-                      <span className="text-sm text-white">{item.name}</span>
-                      <div className="flex items-center gap-3"><span className="text-sm font-semibold text-rx-yellow">{item.revenue}</span><span className="text-xs text-green-400">{item.growth}</span></div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
+          {activeSection === 'revenue' && (<div className="animate-fade-in"><RevenuePanel /></div>)}
 
-          {activeSection === 'uploads' && (
-            <div className="space-y-6 animate-fade-in">
-              <div><h1 className="text-2xl font-bold text-white">Upload Center</h1><p className="text-rx-gray-medium mt-1">Upload application binaries and manage releases</p></div>
-              <div className="card p-8 border-2 border-dashed border-white/10 hover:border-rx-yellow/30 transition-colors text-center">
-                <Upload className="w-12 h-12 text-rx-gray-medium mx-auto mb-4" />
-                <h3 className="text-lg font-semibold text-white mb-2">Upload Application Files</h3>
-                <p className="text-sm text-rx-gray-medium mb-6">Drag and drop files here or click to browse</p>
-                <button className="btn-primary">Select Files</button>
-                <div className="mt-6 flex items-center justify-center gap-4 text-xs text-rx-gray-medium">
-                  <span>.apk</span><span>.exe</span><span>.deb</span><span>.AppImage</span><span>.dmg</span><span>.ipa</span>
-                </div>
-              </div>
-              <div className="card p-6">
-                <h3 className="font-bold text-white mb-4">Recent Uploads</h3>
-                <div className="space-y-3">
-                  {[
-                    { name: 'clinical-rx-v3.2.1-windows.exe', size: '148 MB', date: '2 hours ago', status: 'Processing' },
-                    { name: 'clinical-rx-v3.2.1-android.apk', size: '89 MB', date: '2 hours ago', status: 'Complete' },
-                    { name: 'pharma-game-v2.5.0-web.zip', size: '234 MB', date: '1 day ago', status: 'Complete' },
-                    { name: 'curelink-v2.9.7-ios.ipa', size: '156 MB', date: '2 days ago', status: 'Complete' },
-                  ].map((file, i) => (
-                    <div key={i} className="flex items-center gap-3 p-3 rounded-xl bg-rx-dark-tertiary/50">
-                      <Package className="w-5 h-5 text-rx-gray-medium" />
-                      <div className="flex-1 min-w-0"><p className="text-sm text-white truncate">{file.name}</p><p className="text-xs text-rx-gray-medium">{file.size} · {file.date}</p></div>
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${file.status === 'Complete' ? 'bg-green-400/20 text-green-400' : 'bg-rx-yellow/20 text-rx-yellow'}`}>{file.status}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
+          {activeSection === 'uploads' && (<div className="animate-fade-in"><AppReleaseManager /></div>)}
 
           {activeSection === 'settings' && (
             <div className="space-y-6 animate-fade-in">
