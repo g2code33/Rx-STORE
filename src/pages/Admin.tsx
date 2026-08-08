@@ -8,6 +8,7 @@ import { formatDownloadCount } from '../utils/helpers';
 import AIProviderPanel from '../components/admin/AIProviderPanel';
 import AppEditor from '../components/admin/AppEditor';
 import AppReleaseManager from '../components/admin/AppReleaseManager';
+import ReleasesManager from '../components/admin/ReleasesManager';
 import UserRoleEditor from '../components/admin/UserRoleEditor';
 import RevenuePanel from '../components/admin/RevenuePanel';
 import AdminSettings from '../components/admin/AdminSettings';
@@ -62,7 +63,9 @@ export default function Admin() {
   const sidebarItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'applications', label: 'Applications', icon: Package },
+    { id: 'releases', label: 'Releases', icon: Upload },
     { id: 'users', label: 'Users', icon: Users },
+    { id: 'developers', label: 'Developers', icon: Shield },
     { id: 'ai', label: 'AI Providers', icon: Bot },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
     { id: 'revenue', label: 'Revenue', icon: DollarSign },
@@ -199,8 +202,20 @@ export default function Admin() {
             </div>
           )}
 
+          {activeSection === 'releases' && (<div className="animate-fade-in"><ReleasesManager /></div>)}
           {activeSection === 'users' && (<div className="animate-fade-in"><UserRoleEditor /></div>)}
 
+          {activeSection === 'developers' && (
+            <div className="space-y-6 animate-fade-in">
+              <div><h2 className="text-xl font-bold text-white">Developers</h2><p className="text-sm text-rx-gray-medium mt-1">Future developer portal — submissions will appear here for review.</p></div>
+              <div className="card p-8 text-center">
+                <div className="w-12 h-12 rounded-xl bg-rx-yellow/10 flex items-center justify-center mx-auto mb-3"><span className="text-2xl">👩‍💻</span></div>
+                <h3 className="font-semibold text-white">Developer Submissions</h3>
+                <p className="text-sm text-rx-gray-medium mt-1 max-w-md mx-auto">When you open to third-party developers, they will submit apps here: <b className="text-white">Submit → Validate → Review → Approve → Publish</b>. Your current <b>Releases</b> flow will be reused for approvals.</p>
+                <p className="text-xs text-rx-gray-medium mt-3">Current: managed via <b className="text-white">Applications → Edit</b> and <b className="text-white">Releases → Create</b> (admin-only).</p>
+              </div>
+            </div>
+          )}
           {activeSection === 'analytics' && (
             <div className="space-y-6 animate-fade-in">
               <div><h1 className="text-2xl font-bold text-white">Analytics</h1><p className="text-rx-gray-medium mt-1">Platform performance and usage metrics</p></div>
