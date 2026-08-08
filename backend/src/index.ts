@@ -88,6 +88,12 @@ export default {
       const data = await adminRoutes.revenue(normalizedRequest as any, env);
       return json({ success: true, data }, 200, origin);
     }
+    if (path === '/admin/reset-stats' && request.method === 'POST') {
+      const auth = request.headers.get('Authorization') || '';
+      if (!auth.startsWith('Bearer ')) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+      const data = await adminRoutes.resetStats(normalizedRequest as any, env);
+      return json({ success: true, data }, 200, origin);
+    }
     if (path.match(/^\/admin\/apps\/[^\/]+\/releases$/) && request.method === 'POST') {
       const data = await adminRoutes.createRelease(normalizedRequest as any, env);
       if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);

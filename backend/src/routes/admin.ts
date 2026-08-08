@@ -56,6 +56,12 @@ export const adminRoutes = {
     };
   },
 
+  async resetStats(request: Request, env: any) {
+    await env.DB.prepare(`UPDATE applications SET download_count=0, review_count=0, rating=0`).run().catch(()=>{});
+    await env.DB.prepare(`DELETE FROM downloads`).run().catch(()=>{});
+    return { success: true, message: 'All download counts, ratings, and downloads reset to 0' };
+  },
+
   async createRelease(request: Request, env: any) {
     const url = new URL(request.url);
     const parts = url.pathname.split('/');

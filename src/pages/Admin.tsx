@@ -10,6 +10,7 @@ import AppEditor from '../components/admin/AppEditor';
 import AppReleaseManager from '../components/admin/AppReleaseManager';
 import UserRoleEditor from '../components/admin/UserRoleEditor';
 import RevenuePanel from '../components/admin/RevenuePanel';
+import AdminSettings from '../components/admin/AdminSettings';
 import { useAuth } from '../context/AuthContext';
 
 export default function Admin() {
@@ -215,51 +216,7 @@ export default function Admin() {
 
           {activeSection === 'uploads' && (<div className="animate-fade-in"><AppReleaseManager /></div>)}
 
-          {activeSection === 'settings' && (
-            <div className="space-y-6 animate-fade-in">
-              <div><h1 className="text-2xl font-bold text-white">Platform Settings</h1><p className="text-rx-gray-medium mt-1">Configure RX Store platform settings</p></div>
-              <div className="space-y-4">
-                <div className="card p-6">
-                  <h3 className="font-bold text-white mb-4">General Settings</h3>
-                  <div className="space-y-4">
-                    {[{ label: 'Platform Name', value: 'RX Store' }, { label: 'Organization', value: 'Calcitonin Technologies' }, { label: 'Support Email', value: 'support@rxstore.com' }, { label: 'API Version', value: 'v1.0.0' }].map((item) => (
-                      <div key={item.label}>
-                        <label className="block text-sm text-rx-gray-medium mb-1.5">{item.label}</label>
-                        <input type="text" defaultValue={item.value} className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-rx-yellow/50 transition-all" />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div className="card p-6">
-                  <h3 className="font-bold text-white mb-4">Security Settings</h3>
-                  <div className="space-y-3">
-                    {[
-                      { label: 'Two-factor authentication', enabled: true }, { label: 'API rate limiting', enabled: true },
-                      { label: 'Malware scanning', enabled: true }, { label: 'Audit logging', enabled: true }, { label: 'IP allowlisting', enabled: false },
-                    ].map((setting) => (
-                      <div key={setting.label} className="flex items-center justify-between py-2">
-                        <span className="text-sm text-rx-gray-medium">{setting.label}</span>
-                        <div className={`w-10 h-6 rounded-full relative cursor-pointer transition-colors ${setting.enabled ? 'bg-rx-yellow' : 'bg-rx-dark-tertiary'}`}>
-                          <div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-all ${setting.enabled ? 'right-1' : 'left-1'}`} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div className="card p-6">
-                  <h3 className="font-bold text-white mb-4">Payment Configuration</h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    {['Paystack', 'Mobile Money', 'Hubtel'].map((provider) => (
-                      <div key={provider} className="p-4 rounded-xl bg-rx-dark-tertiary/50 border border-white/5 text-center">
-                        <div className="w-10 h-10 rounded-lg bg-rx-yellow/20 flex items-center justify-center mx-auto mb-2"><DollarSign className="w-5 h-5 text-rx-yellow" /></div>
-                        <p className="text-sm font-medium text-white">{provider}</p><p className="text-xs text-green-400 mt-1">Connected</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
+          {activeSection === 'settings' && (<div className="animate-fade-in"><AdminSettings /></div>)}
         </div>
       </div>
     </div>
