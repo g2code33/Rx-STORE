@@ -231,6 +231,8 @@ CREATE TABLE IF NOT EXISTS packages (
   mime_type TEXT,
   sha256 TEXT NOT NULL,
   version TEXT NOT NULL,
+  deployment_url TEXT,
+  package_type TEXT DEFAULT 'installer' CHECK (package_type IN ('installer','pwa','zip','other')),
   status TEXT DEFAULT 'stored' CHECK (status IN ('uploading','validating','stored','ready_for_review','published','failed')),
   created_at TEXT DEFAULT (datetime('now'))
 );
