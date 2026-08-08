@@ -228,8 +228,22 @@ export const adminRoutes = {
 
   async deleteApp(request: Request, env: any) {
     const slug = new URL(request.url).pathname.split('/')[3];
-    await env.DB.prepare(`DELETE FROM applications WHERE slug=?`).bind(slug).run();
-    return { success: true, slug };
+    // Soft delete — move to recycle bin
+    await env.DB.prepare(`UPDATE applications SET status='archived', deleted_at=datetime('now'), updated_at=datetime('now') WHERE slug=?`).bind(slug).run();
+    await env.DB.prepare(`INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?, ?, ?)`).bind(`log_${Date.now()}`, 'soft_delete_app', 'application', slug, JSON.stringify({ slug })).run().catch(()=>{});
+    return { success: true, slug, deleted: true };
+  },
+
+  async listDeleted(request: Request, env: any) {
+    const apps: any = await env.DB.prepare(`SELECT * FROM applications WHERE deleted_at IS NOT NULL OR status='archived' ORDER BY deleted_at DESC LIMIT 50`).all().catch(()=>({results:[]}));
+    const rels: any = await env.DB.prepare(`SELECT r.*, a.slug as app_slug FROM releases WHERE r.deleted_at IS NOT NULL OR r.status='archived' ORDER BY deleted_at DESC LIMIT 50`).all().catch(()=>({results:[]}));
+    return { apps: apps.results || [], releases: rels.results || [] };
+  },
+
+  async restoreApp(request: Request, env: any) {
+    const slug = new URL(request.url).pathname.split('/')[3];
+    await env.DB.prepare(`UPDATE applications SET status='active', deleted_at=NULL, updated_at=datetime('now') WHERE slug=?`).bind(slug).run();
+    return { success: true, slug, restored: true };
   },
 
   async createApp(request: Request, env: any) {

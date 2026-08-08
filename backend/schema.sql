@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS applications (
   gradient TEXT,
   screenshots TEXT DEFAULT '[]',
   status TEXT DEFAULT 'active' CHECK (status IN ('active','beta','coming-soon','archived')),
+  deleted_at TEXT,
   current_version TEXT,
   size_mb INTEGER,
   rating REAL DEFAULT 0,
@@ -210,6 +211,7 @@ CREATE TABLE IF NOT EXISTS releases (
   channel TEXT DEFAULT 'stable' CHECK (channel IN ('stable','beta','alpha')),
   minimum_supported_version TEXT,
   status TEXT DEFAULT 'draft' CHECK (status IN ('draft','processing','ready_for_review','published','disabled','rolled_back','archived')),
+  deleted_at TEXT,
   published_at TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
@@ -233,7 +235,8 @@ CREATE TABLE IF NOT EXISTS packages (
   version TEXT NOT NULL,
   deployment_url TEXT,
   package_type TEXT DEFAULT 'installer' CHECK (package_type IN ('installer','pwa','zip','other')),
-  status TEXT DEFAULT 'stored' CHECK (status IN ('uploading','validating','stored','ready_for_review','published','failed')),
+  status TEXT DEFAULT 'stored' CHECK (status IN ('uploading','validating','stored','ready_for_review','published','failed','archived')),
+  deleted_at TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_packages_release ON packages(release_id);

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { Upload, Package, Check, AlertCircle, Loader2, Monitor, Smartphone, Laptop, Globe } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { API_URL } from '../../services/api';
@@ -16,8 +16,19 @@ export default function AppReleaseManager() {
   const [version, setVersion] = useState('');
   const [notes, setNotes] = useState('');
   const [files, setFiles] = useState<Record<string, File | null>>({});
+  const [existingVersions, setExistingVersions] = useState<string[]>([]);
   const [uploading, setUploading] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+
+  React.useEffect(() => {
+    const API = (import.meta as any).env?.VITE_API_URL;
+    if (!API) return;
+    fetch(`${API.replace(/\/$/,'')}/admin/releases?app=${appId}`, { headers: { 'Authorization': `Bearer ${localStorage.getItem('rx-store-token')||''}` } })
+      .then(r=>r.json()).then(j=>{
+        const arr = j?.data || [];
+        if (Array.isArray(arr)) setExistingVersions(arr.map((x:any)=>x.version));
+      }).catch(()=>{});
+  }, [appId]);
 
   const token = localStorage.getItem('rx-store-token') || '';
 
@@ -90,8 +101,15 @@ export default function AppReleaseManager() {
             </select>
           </div>
           <div>
-            <label className="text-xs text-rx-gray-medium">Version *</label>
-            <input value={version} onChange={e=>setVersion(e.target.value)} placeholder="3.3.0" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm placeholder:text-rx-gray-medium/60 focus:outline-none focus:border-rx-yellow/40"/>
+            <label className="text-xs text-rx-gray-medium">Version * (select existing to edit packages)</label>
+            <div className="flex gap-2">
+              <select value={existingVersions.includes(version) ? version : ''} onChange={e=>{ if(e.target.value) setVersion(e.target.value); }} className="flex-1 bg-rx-dark border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm">
+                <option value="">— New version —</option>
+                {existingVersions.map(v=> <option key={v} value={v}>{v}</option>)}
+              </select>
+              <input value={version} onChange={e=>setVersion(e.target.value)} placeholder="3.3.0" className="flex-1 bg-rx-dark border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm placeholder:text-rx-gray-medium/60 focus:outline-none focus:border-rx-yellow/40"/>
+            </div>
+            <p className="text-[11px] text-rx-gray-medium mt-1">Pick existing to add/remove packages for that version, or type new to create.</p>
           </div>
         </div>
 

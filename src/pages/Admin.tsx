@@ -12,6 +12,7 @@ import ReleasesManager from '../components/admin/ReleasesManager';
 import UserRoleEditor from '../components/admin/UserRoleEditor';
 import RevenuePanel from '../components/admin/RevenuePanel';
 import AdminSettings from '../components/admin/AdminSettings';
+import RecycleBin from '../components/admin/RecycleBin';
 import { useAuth } from '../context/AuthContext';
 
 export default function Admin() {
@@ -70,6 +71,7 @@ export default function Admin() {
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
     { id: 'revenue', label: 'Revenue', icon: DollarSign },
     { id: 'uploads', label: 'Uploads', icon: Upload },
+    { id: 'recycle', label: 'Recycle Bin', icon: Trash2 },
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 
@@ -262,6 +264,7 @@ export default function Admin() {
           {activeSection === 'revenue' && (<div className="animate-fade-in"><RevenuePanel /></div>)}
 
           {activeSection === 'uploads' && (<div className="animate-fade-in"><AppReleaseManager /></div>)}
+          {activeSection === 'recycle' && (<div className="animate-fade-in"><RecycleBin /></div>)}
 
           {activeSection === 'settings' && (<div className="animate-fade-in"><AdminSettings /></div>)}
         </div>

@@ -1,14 +1,14 @@
 import React, { useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
-import { Download, CreditCard, Bell, Settings, LogOut, X } from 'lucide-react';
+import { Download, CreditCard, Bell, Settings, LogOut, X, Trash2, RefreshCw } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useApps } from '../context/AppContext';
 import { formatDate } from '../utils/helpers';
 
 export default function Profile() {
   const { user, logout, notifications, markNotificationRead } = useAuth();
-  const { getAppById, installedApps, uninstallApp } = useApps();
-  const [activeTab, setActiveTab] = useState<'apps' | 'subscriptions' | 'notifications' | 'settings'>('apps');
+  const { getAppById, installedApps, installApp, uninstallApp } = useApps();
+  const [activeTab, setActiveTab] = useState<'apps' | 'subscriptions' | 'notifications' | 'trash' | 'settings'>('apps');
 
   if (!user) return <Navigate to="/login" replace />;
 
@@ -16,6 +16,7 @@ export default function Profile() {
     { id: 'apps' as const, label: 'My Applications', icon: Download, count: (installedApps || []).length },
     { id: 'subscriptions' as const, label: 'Subscriptions', icon: CreditCard, count: (user.subscriptions || []).length },
     { id: 'notifications' as const, label: 'Notifications', icon: Bell, count: (notifications || []).filter((n) => !n.read).length },
+    { id: 'trash' as const, label: 'Recycle Bin', icon: Trash2, count: (()=>{ try{ const u=JSON.parse(localStorage.getItem('rx-store-user')||'{}'); const k=u?.id?`rx-trash-${u.id}`:'rx-trash'; const a=JSON.parse(localStorage.getItem(k)||'[]'); return Array.isArray(a)?a.length:0; } catch{ return 0; }})() },
     { id: 'settings' as const, label: 'Settings', icon: Settings },
   ];
 
@@ -85,6 +86,47 @@ export default function Profile() {
         </div>
       )}
 
+      {activeTab === 'trash' && (
+        <div className="animate-fade-in">
+          <h2 className="text-xl font-bold text-white mb-6">Recycle Bin</h2>
+          {(() => {
+            let trash: string[] = [];
+            try {
+              const u = JSON.parse(localStorage.getItem('rx-store-user')||'{}');
+              const k = u?.id ? `rx-trash-${u.id}` : 'rx-trash';
+              trash = JSON.parse(localStorage.getItem(k) || '[]');
+            } catch {}
+            if (!trash.length) return <div className="card p-8 text-center text-rx-gray-medium">Recycle bin empty</div>;
+            return (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {trash.map((appId: string) => {
+                  const app = getAppById(appId);
+                  if (!app) return null;
+                  return (
+                    <div key={appId} className="card p-5 flex items-center gap-4">
+                      <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${app.gradient} flex items-center justify-center text-xl`}>{app.icon}</div>
+                      <div className="flex-1">
+                        <p className="font-semibold text-white">{app.name}</p>
+                        <p className="text-xs text-rx-gray-medium">Deleted</p>
+                      </div>
+                      <button onClick={()=>{
+                        const u = JSON.parse(localStorage.getItem('rx-store-user')||'{}');
+                        const k = u?.id ? `rx-trash-${u.id}` : 'rx-trash';
+                        const cur = JSON.parse(localStorage.getItem(k)||'[]');
+                        const upd = cur.filter((x:string)=>x!==appId);
+                        localStorage.setItem(k, JSON.stringify(upd));
+                        installApp(appId);
+                        window.dispatchEvent(new CustomEvent('rx-auth-change'));
+                        window.location.reload();
+                      }} className="px-3 py-1.5 rounded-lg bg-green-500/10 text-green-400 border border-green-500/20 text-xs flex items-center gap-1"><RefreshCw className="w-3 h-3"/> Restore</button>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+      )}
       {activeTab === 'subscriptions' && (
         <div className="animate-fade-in">
           <h2 className="text-xl font-bold text-white mb-6">Active Subscriptions</h2>
