@@ -3,6 +3,52 @@
  * Requires admin role authentication (checked in Worker fetch).
  */
 
+// Map package platform ids → the app.platforms ids the install modal checks
+function platformDisplayId(p: string): string {
+  if (p === 'linux_appimage' || p === 'flatpak') return 'linux';
+  return p === 'linux_deb' ? 'linux' : p;
+}
+
+// Merge the platforms a release's packages provide into applications.platforms
+// (the Install modal only enables platforms listed there)
+async function mergeAppPlatforms(env: any, appId: string) {
+  try {
+    const row: any = await env.DB.prepare(`SELECT platforms FROM applications WHERE id=?`).bind(appId).first();
+    let arr: string[] = [];
+    try { arr = JSON.parse(row?.platforms || '[]'); if (!Array.isArray(arr)) arr = []; } catch { arr = []; }
+    const pkgs: any = await env.DB.prepare(
+      `SELECT DISTINCT p.platform FROM packages p JOIN releases r ON r.id=p.release_id WHERE p.application_id=? AND r.status='published'`
+    ).bind(appId).all().catch(()=>({ results: [] }));
+    const next = new Set(arr.length ? arr : ['web']);
+    for (const p of pkgs.results || []) next.add(platformDisplayId(p.platform));
+    if (!next.has('web')) next.add('web');
+    await env.DB.prepare(`UPDATE applications SET platforms=? WHERE id=?`).bind(JSON.stringify([...next]), appId).run();
+  } catch {}
+}
+
+// Mirror a release's packages into the legacy app_versions row — keeps /updates/check
+// and old clients working with {url, size, checksum, fileName} per platform
+async function syncLegacyAppVersion(env: any, appId: string, rel: any, origin: string) {
+  try {
+    const pkgs: any = await env.DB.prepare(`SELECT * FROM packages WHERE release_id=? AND status='published'`).bind(rel.id).all();
+    const files: Record<string, any> = {};
+    for (const p of pkgs.results || []) {
+      const url = `${origin}/r2/${p.storage_key}`;
+      const entry = { url, fileUrl: url, fileName: p.filename, size: p.file_size, checksum: p.sha256, sha256: p.sha256 };
+      files[p.platform] = entry;
+      if (p.platform === 'linux_deb') files['linux'] = entry; // legacy alias old clients request
+    }
+    const notes = typeof rel.release_notes === 'string' ? rel.release_notes : JSON.stringify(rel.release_notes || []);
+    const existing: any = await env.DB.prepare(`SELECT id FROM app_versions WHERE app_id=? AND version=?`).bind(appId, rel.version).first().catch(()=>null);
+    if (existing) {
+      await env.DB.prepare(`UPDATE app_versions SET files=?, release_notes=?, created_at=datetime('now') WHERE id=?`).bind(JSON.stringify(files), notes, existing.id).run();
+    } else {
+      await env.DB.prepare(`INSERT INTO app_versions (id, app_id, version, release_notes, files) VALUES (?,?,?,?,?)`)
+        .bind(`ver_${Date.now()}`, appId, rel.version, notes, JSON.stringify(files)).run();
+    }
+  } catch {}
+}
+
 export const adminRoutes = {
   async dashboard(request: Request, env: any) {
     const [apps, users, payments, rating] = await Promise.all([
@@ -95,6 +141,73 @@ export const adminRoutes = {
     return { success: true, version, appId: appSlug };
   },
 
+  // ===== PACKAGE UPLOAD (ties Uploads → Releases → Install together) =====
+  // POST /admin/releases/:id/upload  (multipart: file, platform)
+  // Stores binary in R2, computes sha256 server-side, writes packages row.
+  async uploadPackage(request: Request, env: any) {
+    const parts = new URL(request.url).pathname.split('/'); // /admin/releases/:id/upload
+    const relId = parts[3] || '';
+    const rel: any = await env.DB.prepare(`SELECT r.*, a.slug as app_slug FROM releases r JOIN applications a ON a.id=r.application_id WHERE r.id=?`).bind(relId).first();
+    if (!rel) return { error: 'Release not found' };
+
+    const form = await request.formData().catch(()=>null);
+    if (!form) return { error: 'Expected multipart form-data (file, platform)' };
+    const file: any = form.get('file');
+    let platform = String(form.get('platform') || '').toLowerCase().trim();
+    if (platform === 'linux' || platform === 'deb') platform = 'linux_deb';
+    if (platform === 'appimage') platform = 'linux_appimage';
+    const allowed = ['android','windows','linux','linux_deb','linux_appimage','macos','flatpak','web','ios'];
+    if (!allowed.includes(platform)) return { error: `Invalid platform '${platform}'. Use: ${allowed.join(', ')}` };
+    if (!file || typeof file.arrayBuffer !== 'function') return { error: 'No file attached' };
+
+    const MAX = 95 * 1024 * 1024; // Worker memory budget
+    if (file.size > MAX) return { error: `${file.name} is ${(file.size/1024/1024).toFixed(1)} MB — over the 95 MB per-file limit (large installers need R2 direct upload; split or host externally)` };
+
+    const buf = await file.arrayBuffer();
+    // sha256 in the Worker — publish + install verify this
+    const digest: ArrayBuffer = await (crypto as any).subtle.digest('SHA-256', buf);
+    const sha256 = Array.from(new Uint8Array(digest)).map((b:number)=>b.toString(16).padStart(2,'0')).join('');
+
+    const safeName = String(file.name || 'package.bin').replace(/[^\w.\-]+/g, '_');
+    const storageKey = `apps/${rel.app_slug}/${rel.version}/${platform}/${safeName}`;
+    await env.STORAGE.put(storageKey, buf, { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
+
+    const origin = new URL(request.url).origin;
+    const url = `${origin}/r2/${storageKey}`;
+    const pkgType = platform === 'web' ? 'zip' : (platform === 'ios' ? 'pwa' : 'installer');
+    const pkgStatus = rel.status === 'published' ? 'published' : 'stored';
+    const id = `pkg_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+    try {
+      // UNIQUE(release_id, platform) in the new schema → upsert replaces that platform's binary
+      await env.DB.prepare(
+        `INSERT INTO packages (id, application_id, release_id, platform, architecture, filename, storage_key, file_size, mime_type, sha256, version, package_type, status)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(release_id, platform) DO UPDATE SET filename=excluded.filename, storage_key=excluded.storage_key, file_size=excluded.file_size, mime_type=excluded.mime_type, sha256=excluded.sha256, status=excluded.status, created_at=datetime('now')`
+      ).bind(id, rel.application_id, relId, platform, 'x64', safeName, storageKey, file.size, file.type || 'application/octet-stream', sha256, rel.version, pkgType, pkgStatus).run();
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      if (msg.includes('CHECK') || msg.includes('constraint')) {
+        return { error: `DB schema needs one-time migration for platform '${platform}' — run: npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0002_packages_platforms.sql` };
+      }
+      // Older schema without UNIQUE(release_id, platform) → manual upsert
+      if (msg.includes('ON CONFLICT')) {
+        const existing: any = await env.DB.prepare(`SELECT id FROM packages WHERE release_id=? AND platform=?`).bind(relId, platform).first().catch(()=>null);
+        if (existing) {
+          await env.DB.prepare(`UPDATE packages SET filename=?, storage_key=?, file_size=?, mime_type=?, sha256=?, status=?, created_at=datetime('now') WHERE id=?`).bind(safeName, storageKey, file.size, file.type || 'application/octet-stream', sha256, pkgStatus, existing.id).run();
+        } else {
+          await env.DB.prepare(`INSERT INTO packages (id, application_id, release_id, platform, architecture, filename, storage_key, file_size, mime_type, sha256, version, package_type, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(id, rel.application_id, relId, platform, 'x64', safeName, storageKey, file.size, file.type || 'application/octet-stream', sha256, rel.version, pkgType, pkgStatus).run();
+        }
+      } else return { error: msg.slice(0, 300) };
+    }
+
+    // Release already live → keep everything in sync immediately
+    if (rel.status === 'published') {
+      await mergeAppPlatforms(env, rel.application_id);
+      await syncLegacyAppVersion(env, rel.application_id, rel, origin);
+    }
+    return { success: true, package: { id, platform, filename: safeName, size: file.size, sha256, url, version: rel.version, status: pkgStatus } };
+  },
+
   // ===== NEW RELEASE MANAGEMENT (Production) =====
   async createNewRelease(request: Request, env: any) {
     const body: any = await request.json().catch(()=>({}));
@@ -120,13 +233,17 @@ export const adminRoutes = {
   async listReleases(request: Request, env: any) {
     const url = new URL(request.url);
     const appSlug = url.searchParams.get('app') || url.searchParams.get('application');
+    const SELECT_REL = `SELECT r.*, a.slug as app_slug, a.name as app_name,
+      (SELECT COUNT(*) FROM packages p WHERE p.release_id=r.id) as package_count,
+      (SELECT GROUP_CONCAT(p.platform) FROM packages p WHERE p.release_id=r.id) as package_platforms
+      FROM releases r JOIN applications a ON a.id=r.application_id`;
     if (appSlug) {
       const app: any = await env.DB.prepare(`SELECT id FROM applications WHERE slug=?`).bind(appSlug).first();
       if (!app) return [];
-      const rows: any = await env.DB.prepare(`SELECT r.*, a.slug as app_slug, a.name as app_name FROM releases r JOIN applications a ON a.id=r.application_id WHERE r.application_id=? ORDER BY r.created_at DESC`).bind(app.id).all();
+      const rows: any = await env.DB.prepare(`${SELECT_REL} WHERE r.application_id=? ORDER BY r.created_at DESC`).bind(app.id).all();
       return rows.results || [];
     }
-    const rows: any = await env.DB.prepare(`SELECT r.*, a.slug as app_slug, a.name as app_name FROM releases r JOIN applications a ON a.id=r.application_id ORDER BY r.created_at DESC LIMIT 50`).all();
+    const rows: any = await env.DB.prepare(`${SELECT_REL} ORDER BY r.created_at DESC LIMIT 50`).all();
     return rows.results || [];
   },
 
@@ -156,10 +273,15 @@ export const adminRoutes = {
       if (!obj) return { error: `R2 file missing for ${p.platform}: ${p.storage_key}` };
     }
     await env.DB.prepare(`UPDATE releases SET status='published', published_at=datetime('now'), updated_at=datetime('now') WHERE id=?`).bind(relId).run();
+    // Flip its packages live too — the install/download endpoint only serves published packages
+    await env.DB.prepare(`UPDATE packages SET status='published' WHERE release_id=?`).bind(relId).run();
     // Set as latest stable if channel stable
     if (rel.channel === 'stable') {
       await env.DB.prepare(`UPDATE applications SET current_version=?, last_updated=datetime('now') WHERE id=?`).bind(rel.version, rel.application_id).run();
     }
+    // Install modal reads applications.platforms; old clients read app_versions — keep both in sync
+    await mergeAppPlatforms(env, rel.application_id);
+    await syncLegacyAppVersion(env, rel.application_id, rel, new URL(request.url).origin);
     await env.DB.prepare(`INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?, ?, ?)`).bind(`log_${Date.now()}`, 'publish_release', 'release', relId, JSON.stringify({ version: rel.version })).run().catch(()=>{});
     return { success: true, id: relId, version: rel.version };
   },
@@ -175,8 +297,11 @@ export const adminRoutes = {
     const prev: any = await env.DB.prepare(`SELECT * FROM releases WHERE application_id=? AND status='published' AND id!=? ORDER BY published_at DESC LIMIT 1`).bind(rel.application_id, relId).first();
     if (!prev) return { error: 'No previous published release to rollback to' };
     await env.DB.prepare(`UPDATE releases SET status='rolled_back', updated_at=datetime('now') WHERE id=?`).bind(relId).run();
+    // Its packages stop being served; previous release's packages stay live
+    await env.DB.prepare(`UPDATE packages SET status='archived' WHERE release_id=?`).bind(relId).run().catch(()=>{});
     // Optionally set prev as latest
     await env.DB.prepare(`UPDATE applications SET current_version=? WHERE id=?`).bind(prev.version, rel.application_id).run();
+    await syncLegacyAppVersion(env, rel.application_id, prev, new URL(request.url).origin);
     await env.DB.prepare(`INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?, ?, ?)`).bind(`log_${Date.now()}`, 'rollback_release', 'release', relId, JSON.stringify({ from: rel.version, to: prev.version })).run().catch(()=>{});
     return { success: true, rolledBack: rel.version, now: prev.version };
   },

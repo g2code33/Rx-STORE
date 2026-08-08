@@ -225,7 +225,7 @@ CREATE TABLE IF NOT EXISTS packages (
   id TEXT PRIMARY KEY,
   application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
   release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
-  platform TEXT NOT NULL CHECK (platform IN ('android','windows','linux_deb','linux_appimage','flatpak','web')),
+  platform TEXT NOT NULL CHECK (platform IN ('android','windows','linux','linux_deb','linux_appimage','macos','flatpak','web','ios')),
   architecture TEXT DEFAULT 'x64',
   filename TEXT NOT NULL,
   storage_key TEXT NOT NULL,
@@ -237,7 +237,8 @@ CREATE TABLE IF NOT EXISTS packages (
   package_type TEXT DEFAULT 'installer' CHECK (package_type IN ('installer','pwa','zip','other')),
   status TEXT DEFAULT 'stored' CHECK (status IN ('uploading','validating','stored','ready_for_review','published','failed','archived')),
   deleted_at TEXT,
-  created_at TEXT DEFAULT (datetime('now'))
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(release_id, platform)
 );
 CREATE INDEX IF NOT EXISTS idx_packages_release ON packages(release_id);
 CREATE INDEX IF NOT EXISTS idx_packages_platform ON packages(platform);

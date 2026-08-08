@@ -16,6 +16,8 @@ type Release = {
   status: string;
   published_at?: string;
   created_at: string;
+  package_count?: number;
+  package_platforms?: string;
 };
 
 export default function ReleasesManager() {
@@ -147,7 +149,7 @@ export default function ReleasesManager() {
             {releases.map(r=>(
               <div key={r.id} className="p-4 flex items-center gap-4 hover:bg-white/5">
                 <div className="flex-1">
-                  <p className="font-semibold text-white flex items-center gap-2">{r.version} <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase ${r.status==='published'?'bg-green-500 text-white':r.status==='draft'?'bg-white/10 text-rx-gray-medium':r.status==='rolled_back'?'bg-red-500 text-white':'bg-amber-500 text-white'}`}>{r.status}</span> <span className="text-[10px] px-1 py-0.5 rounded bg-white/5 text-rx-gray-medium">{r.channel}</span> {r.release_type && <span className="text-[10px] px-1 py-0.5 rounded bg-white/5 text-rx-gray-medium">{r.release_type}</span>}</p>
+                  <p className="font-semibold text-white flex items-center gap-2 flex-wrap">{r.version} <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase ${r.status==='published'?'bg-green-500 text-white':r.status==='draft'?'bg-white/10 text-rx-gray-medium':r.status==='rolled_back'?'bg-red-500 text-white':'bg-amber-500 text-white'}`}>{r.status}</span> <span className="text-[10px] px-1 py-0.5 rounded bg-white/5 text-rx-gray-medium">{r.channel}</span> {r.release_type && <span className="text-[10px] px-1 py-0.5 rounded bg-white/5 text-rx-gray-medium">{r.release_type}</span>} {(r.package_count ?? 0) > 0 ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">📦 {r.package_count} pkg: {r.package_platforms}</span> : <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300">no packages — publish will fail, upload via Uploads</span>}</p>
                   <p className="text-xs text-rx-gray-medium mt-1">{r.release_notes ? (()=>{ try{ const a=JSON.parse(r.release_notes); return Array.isArray(a)?a.slice(0,2).join(' • '):r.release_notes; } catch{ return r.release_notes; } })() : ''}</p>
                   <p className="text-[11px] text-rx-gray-medium mt-1">{r.published_at ? `Published ${new Date(r.published_at).toLocaleString()}` : `Created ${new Date(r.created_at).toLocaleString()}`} {r.id && <span className="ml-2 font-mono text-[10px]">{r.id.slice(0,8)}</span>}</p>
                 </div>

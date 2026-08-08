@@ -137,6 +137,15 @@ export default {
       if ((data as any)?.error) return json({ success: false, error: { code: 'ERROR', message: (data as any).error } }, 400, origin);
       return json({ success: true, data }, 200, origin);
     }
+    // Package upload for a release: stores to R2 + sha256 + packages row, keeps releases in sync
+    if (path.match(/^\/admin\/releases\/[^\/]+\/upload$/) && request.method === 'POST') {
+      if (!isAdminRequest(request)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+      try {
+        const data = await (adminRoutes as any).uploadPackage(normalizedRequest as any, env);
+        if ((data as any)?.error) return json({ success: false, error: { code: 'ERROR', message: (data as any).error } }, 400, origin);
+        return json({ success: true, data }, 200, origin);
+      } catch (e: any) { return json({ success: false, error: { message: e.message } }, 500, origin); }
+    }
     if (path.match(/^\/admin\/releases\/[^\/]+\/rollback$/) && request.method === 'POST') {
       const data = await (adminRoutes as any).rollbackRelease(normalizedRequest as any, env);
       if ((data as any)?.error) return json({ success: false, error: { code: 'ERROR', message: (data as any).error } }, 400, origin);
@@ -209,54 +218,61 @@ export default {
       for (const [k,v] of Object.entries(corsHeaders(origin))) headers.set(k,v);
       return new Response(obj.body, { headers });
     }
-    // Download — record and return URL (real R2 signed URL when file exists)
+    // Download — record and return URL (packages of the latest PUBLISHED release win, legacy app_versions fallback)
     if (path.match(/^\/apps\/[^\/]+\/download$/) && request.method === 'GET') {
       try {
         const slug = path.split('/')[2];
-        const platform = new URL(request.url).searchParams.get('platform') || 'web';
+        let platform = (new URL(request.url).searchParams.get('platform') || 'web').toLowerCase();
+        if (platform === 'deb') platform = 'linux_deb';
+        if (platform === 'appimage') platform = 'linux_appimage';
         const app: any = await env.DB.prepare('SELECT id, current_version FROM applications WHERE slug=?').bind(slug).first();
         if (!app) return json({ success:false, error:{ message:'App not found' }},404,origin);
-        // Check if this is a PWA package — return deployment_url, not ZIP
+        const originUrl = new URL(request.url).origin;
+
+        // 1. PWA apps: web/pwa/ios open the deployment URL, not a file
         const pkgPwa: any = await env.DB.prepare(`SELECT deployment_url, package_type FROM packages WHERE application_id=? AND platform IN ('web','pwa') AND status='published' ORDER BY created_at DESC LIMIT 1`).bind(app.id).first().catch(()=>null);
         if ((platform === 'web' || platform === 'pwa' || platform === 'ios') && pkgPwa?.deployment_url) {
           return json({ success:true, data:{ url: pkgPwa.deployment_url, isPWA: true, deploymentUrl: pkgPwa.deployment_url, version: app.current_version, platform }},200,origin);
         }
-        // Try to get version file URL from app_versions
+
+        // 2. Package from the latest PUBLISHED release (uploads ↔ releases ↔ install pipeline)
+        //    'linux' requests match linux_deb packages (alias used by old upload UI)
+        const plats = platform === 'linux' ? ['linux','linux_deb','linux_appimage'] : [platform];
+        const pkg: any = await env.DB.prepare(
+          `SELECT p.storage_key, p.sha256, p.file_size, p.filename, p.deployment_url, p.package_type, p.version FROM packages p
+           JOIN releases r ON r.id = p.release_id AND r.status = 'published'
+           WHERE p.application_id=? AND p.status='published' AND p.platform IN (${plats.map(()=>'?').join(',')})
+           ORDER BY r.published_at DESC LIMIT 1`
+        ).bind(app.id, ...plats).first().catch(()=>null);
+        if (pkg?.storage_key && pkg?.package_type !== 'pwa') {
+          try { await env.DB.prepare('INSERT INTO downloads (id, app_id, platform, version, created_at) VALUES (?,?,?,?,datetime(\'now\'))').bind(`dl_${Date.now()}`, app.id, platform, pkg.version || app.current_version).run(); await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run(); } catch {}
+          return json({ success:true, data:{ url: `${originUrl}/r2/${pkg.storage_key}`, checksum: pkg.sha256, size: pkg.file_size, fileName: pkg.filename, version: pkg.version || app.current_version, platform }},200,origin);
+        }
+
+        // 3. Legacy app_versions.files (kept in sync on publish; supports old rows too)
         const ver: any = await env.DB.prepare('SELECT files FROM app_versions WHERE app_id=? ORDER BY created_at DESC LIMIT 1').bind(app.id).first().catch(()=>null);
-        let url = `${new URL(request.url).origin}/r2/apps/${slug}/${app.current_version}/${platform}/download`;
+        let url = `${originUrl}/r2/apps/${slug}/${app.current_version}/${platform}/download`;
         let checksum: any = null;
         if (ver?.files) {
           try {
             const files = JSON.parse(ver.files);
-            const f = files[platform] || files.generic || Object.values(files)[0] as any;
-            if (f?.fileUrl) {
-              let candidate = f.fileUrl;
+            const f = files[platform] || files[platform === 'linux' ? 'linux_deb' : platform] || files.generic || Object.values(files)[0] as any;
+            if (f?.fileUrl || f?.url) {
+              let candidate = f.fileUrl || f.url;
               if (candidate.includes('..r2.dev')) {
                 const key = candidate.split('/assets/').pop() || candidate.split('/apps/').pop();
-                if (key) candidate = `${new URL(request.url).origin}/r2/${key.includes('assets/') ? 'assets/' : 'apps/'}${key}`;
+                if (key) candidate = `${originUrl}/r2/${key.includes('assets/') ? 'assets/' : 'apps/'}${key}`;
               }
               if (candidate.startsWith('assets/') || candidate.startsWith('apps/') || candidate.startsWith('r2://')) {
                 const clean = candidate.replace(/^r2:\/\//,'');
-                candidate = `${new URL(request.url).origin}/r2/${clean}`;
+                candidate = `${originUrl}/r2/${clean}`;
               }
               url = candidate;
             }
             if (f?.checksum) checksum = f.checksum;
           } catch {}
         }
-        // Check packages table for this platform
-        const pkg: any = await env.DB.prepare(`SELECT storage_key, sha256, deployment_url, package_type FROM packages WHERE application_id=? AND platform=? AND status='published' ORDER BY created_at DESC LIMIT 1`).bind(app.id, platform).first().catch(()=>null);
-        if (pkg?.storage_key) {
-          if (pkg.package_type === 'pwa' && pkg.deployment_url) {
-            return json({ success:true, data:{ url: pkg.deployment_url, isPWA: true, deploymentUrl: pkg.deployment_url, version: app.current_version, platform }},200,origin);
-          }
-          url = `${new URL(request.url).origin}/r2/${pkg.storage_key}`;
-          checksum = pkg.sha256 || checksum;
-        }
-        // Record download only for non-PWA (PWA is not a download)
-        if (!pkg || pkg.package_type !== 'pwa') {
-          try { await env.DB.prepare('INSERT INTO downloads (id, app_id, platform, version, created_at) VALUES (?,?,?, ?, datetime(\'now\'))').bind(`dl_${Date.now()}`, app.id, platform, app.current_version).run(); await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run(); } catch {}
-        }
+        try { await env.DB.prepare('INSERT INTO downloads (id, app_id, platform, version, created_at) VALUES (?,?,?, ?, datetime(\'now\'))').bind(`dl_${Date.now()}`, app.id, platform, app.current_version).run(); await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run(); } catch {}
         return json({ success:true, data:{ url, checksum, version: app.current_version, platform }},200,origin);
       } catch (e:any) { return json({ success:false, error:{ message:e.message }},500,origin); }
     }
