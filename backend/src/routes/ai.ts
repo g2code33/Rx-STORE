@@ -124,7 +124,7 @@ export const aiRoutes = {
     for (const p of order) {
       const { baseUrl, key } = await getProviderCreds(env, p);
       const m = p === provider ? model : PROVIDER_CONFIG[p].defaultModel;
-      if (!key) { lastError = `No key for ${p}`; continue; }
+      if (!key) { lastError = `No key for ${p} (checked env.${PROVIDER_CONFIG[p].keyEnv} and D1 key_${p})`; continue; }
       try {
         const text = p === 'gemini' ? await callGemini(baseUrl, key, m, message) : await callOpenAICompatible(baseUrl, key, m, message);
         if (text) return { response: text, provider: p, model: m, suggestions: ['Show me healthcare apps','Compare Clinical Rx vs CureLink','What apps work offline?'] };
