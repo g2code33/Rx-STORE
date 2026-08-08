@@ -142,9 +142,71 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
           <div><label className="text-xs text-rx-gray-medium">Short Description</label><textarea value={form.description} onChange={e=>setForm({...form, description:e.target.value})} rows={2} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
           <div><label className="text-xs text-rx-gray-medium">Long Description</label><textarea value={form.longDescription} onChange={e=>setForm({...form, longDescription:e.target.value})} rows={4} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
           <div><label className="text-xs text-rx-gray-medium">Developer</label><input value={form.developer} onChange={e=>setForm({...form, developer:e.target.value})} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div><label className="text-xs text-rx-gray-medium">Platforms (comma)</label><input value={form.platforms} onChange={e=>setForm({...form, platforms:e.target.value})} placeholder="web, android, windows" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
-            <div><label className="text-xs text-rx-gray-medium">Tags (comma)</label><input value={form.tags} onChange={e=>setForm({...form, tags:e.target.value})} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
+          <div>
+            <label className="text-xs text-rx-gray-medium">Platforms *</label>
+            <div className="mt-1 p-3 rounded-xl bg-rx-dark border border-white/10">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-rx-gray-medium">Select platforms</span>
+                <button type="button" onClick={()=>{
+                  const all = ['web','windows','linux','android','ios'];
+                  const cur = form.platforms.split(',').map((s:string)=>s.trim()).filter(Boolean);
+                  if (cur.length === all.length) setForm({...form, platforms: ''});
+                  else setForm({...form, platforms: all.join(', ')});
+                }} className="text-xs px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white">
+                  {(form.platforms.split(',').map((s:string)=>s.trim()).filter(Boolean).length === 5) ? 'Deselect All' : 'Select All'}
+                </button>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {[
+                  { id: 'web', label: 'Web', icon: '🌐' },
+                  { id: 'windows', label: 'Windows', icon: '🪟' },
+                  { id: 'linux', label: 'Linux', icon: '🐧' },
+                  { id: 'android', label: 'Android', icon: '🤖' },
+                  { id: 'ios', label: 'iOS', icon: '🍎' },
+                ].map(opt => {
+                  const selected = form.platforms.split(',').map((s:string)=>s.trim()).includes(opt.id);
+                  return (
+                    <label key={opt.id} className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all ${selected ? 'bg-rx-yellow/10 border-rx-yellow/30 text-white' : 'bg-rx-dark-tertiary border-white/10 text-rx-gray-medium hover:border-white/20'}`}>
+                      <input type="checkbox" checked={selected} onChange={e=>{
+                        const cur = form.platforms.split(',').map((s:string)=>s.trim()).filter(Boolean);
+                        if (e.target.checked) {
+                          if (!cur.includes(opt.id)) cur.push(opt.id);
+                        } else {
+                          const idx = cur.indexOf(opt.id);
+                          if (idx>=0) cur.splice(idx,1);
+                        }
+                        setForm({...form, platforms: cur.join(', ')});
+                      }} className="rounded" />
+                      <span className="text-sm">{opt.icon} {opt.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-rx-gray-medium mt-2">Selected: <span className="text-white">{form.platforms || 'none'}</span> — choose one, some, or all.</p>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-rx-gray-medium">Tags</label>
+            <div className="mt-1 p-3 rounded-xl bg-rx-dark border border-white/10">
+              <div className="flex flex-wrap gap-2">
+                {['clinical','education','healthcare','productivity','technology','gaming','social','AI','mobile','desktop'].map(tag => {
+                  const selected = form.tags.split(',').map((s:string)=>s.trim()).includes(tag);
+                  return (
+                    <button key={tag} type="button" onClick={()=>{
+                      const cur = form.tags.split(',').map((s:string)=>s.trim()).filter(Boolean);
+                      if (selected) {
+                        setForm({...form, tags: cur.filter((c:string)=>c!==tag).join(', ')});
+                      } else {
+                        cur.push(tag);
+                        setForm({...form, tags: cur.join(', ')});
+                      }
+                    }} className={`px-2.5 py-1 rounded-full text-xs border transition-all ${selected ? 'bg-rx-yellow text-rx-dark border-rx-yellow' : 'bg-white/5 text-rx-gray-medium border-white/10 hover:border-white/20'}`}>#{tag}</button>
+                  );
+                })}
+              </div>
+              <input value={form.tags} onChange={e=>setForm({...form, tags:e.target.value})} placeholder="Or type custom tags, comma separated" className="mt-2 w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-rx-gray-medium/60" />
+              <p className="text-[11px] text-rx-gray-medium mt-1">Tap to select, or type custom.</p>
+            </div>
           </div>
           <div><label className="text-xs text-rx-gray-medium">Screenshots (URLs, comma separated)</label><textarea value={form.screenshots} onChange={e=>setForm({...form, screenshots:e.target.value})} placeholder="https://.../1.png, https://.../2.png" rows={2} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
           <div><label className="text-xs text-rx-gray-medium">Features (one per line)</label><textarea value={form.features} onChange={e=>setForm({...form, features:e.target.value})} rows={3} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
