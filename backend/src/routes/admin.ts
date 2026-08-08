@@ -18,6 +18,74 @@ async function tableColumns(env: any, table: string): Promise<Set<string>> {
   return (env as any)._tcols[table];
 }
 
+// --- Upload helpers (single + chunked paths share these) ---
+const ALLOWED_PLATFORMS = ['android','windows','linux','linux_deb','linux_appimage','macos','flatpak','web','ios'];
+
+function relIdFrom(request: Request): string {
+  return new URL(request.url).pathname.split('/')[3] || '';
+}
+
+async function loadRelease(env: any, relId: string): Promise<any> {
+  const rel: any = await env.DB.prepare(`SELECT r.*, a.slug as app_slug FROM releases r JOIN applications a ON a.id=r.application_id WHERE r.id=?`).bind(relId).first().catch(()=>null);
+  if (!rel) return { error: 'Release not found' };
+  return rel;
+}
+
+function normPlatform(raw: any): string | { error: string } {
+  let platform = String(raw || '').toLowerCase().trim();
+  if (platform === 'linux' || platform === 'deb') platform = 'linux_deb';
+  if (platform === 'appimage') platform = 'linux_appimage';
+  if (platform === 'dmg' || platform === 'pkg') platform = 'macos';
+  if (!ALLOWED_PLATFORMS.includes(platform)) return { error: `Invalid platform '${platform}'. Use: ${ALLOWED_PLATFORMS.join(', ')}` };
+  return platform;
+}
+
+function sanitizeName(name: any): string {
+  return String(name || 'package.bin').replace(/[^\w.\-]+/g, '_');
+}
+
+// Insert/replace the packages row for (release, platform).
+// Order matters: a prod table missing UNIQUE(release_id, platform) makes D1 say
+// 'ON CONFLICT clause does not match any ... constraint' — that message ALSO
+// contains 'constraint', so ON CONFLICT must be handled BEFORE generic CHECK errors.
+async function writePackageRow(env: any, rel: any, platform: string, f: { filename: string; storageKey: string; size: number; mime: string; sha256: string }): Promise<any> {
+  const pkgType = platform === 'web' ? 'zip' : (platform === 'ios' ? 'pwa' : 'installer');
+  const pkgStatus = rel.status === 'published' ? 'published' : 'stored';
+  const id = `pkg_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+  const COLS = `(id, application_id, release_id, platform, architecture, filename, storage_key, file_size, mime_type, sha256, version, package_type, status)`;
+  const VALS = [id, rel.application_id, rel.id, platform, 'x64', f.filename, f.storageKey, f.size, f.mime, f.sha256, rel.version, pkgType, pkgStatus];
+  try {
+    await env.DB.prepare(
+      `INSERT INTO packages ${COLS} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(release_id, platform) DO UPDATE SET filename=excluded.filename, storage_key=excluded.storage_key, file_size=excluded.file_size, mime_type=excluded.mime_type, sha256=excluded.sha256, status=excluded.status, created_at=datetime('now')`
+    ).bind(...VALS).run();
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    if (msg.includes('ON CONFLICT')) {
+      // Older prod schema without UNIQUE(release_id, platform) → manual upsert
+      try {
+        const existing: any = await env.DB.prepare(`SELECT id FROM packages WHERE release_id=? AND platform=?`).bind(rel.id, platform).first().catch(()=>null);
+        if (existing) {
+          await env.DB.prepare(`UPDATE packages SET filename=?, storage_key=?, file_size=?, mime_type=?, sha256=?, status=?, created_at=datetime('now') WHERE id=?`).bind(f.filename, f.storageKey, f.size, f.mime, f.sha256, pkgStatus, existing.id).run();
+        } else {
+          await env.DB.prepare(`INSERT INTO packages ${COLS} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(...VALS).run();
+        }
+      } catch (e2: any) {
+        const m2 = String(e2?.message || e2);
+        if (m2.includes('CHECK') || m2.includes('constraint')) {
+          return { error: `DB schema needs one-time migration for platform '${platform}' — run: npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0002_packages_platforms.sql` };
+        }
+        return { error: m2.slice(0, 300) };
+      }
+    } else if (msg.includes('CHECK') || msg.includes('constraint')) {
+      return { error: `DB schema needs one-time migration for platform '${platform}' — run: npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0002_packages_platforms.sql` };
+    } else {
+      return { error: msg.slice(0, 300) };
+    }
+  }
+  return { id, platform, filename: f.filename, size: f.size, sha256: f.sha256, status: pkgStatus };
+}
+
 // Map package platform ids → the app.platforms ids the install modal checks
 function platformDisplayId(p: string): string {
   if (p === 'linux_appimage' || p === 'flatpak') return 'linux';
@@ -157,70 +225,100 @@ export const adminRoutes = {
   },
 
   // ===== PACKAGE UPLOAD (ties Uploads → Releases → Install together) =====
-  // POST /admin/releases/:id/upload  (multipart: file, platform)
-  // Stores binary in R2, computes sha256 server-side, writes packages row.
+  // Small files: POST /admin/releases/:id/upload (multipart: file, platform) — one shot, sha256 in-Worker.
+  // Big installers: chunked R2 multipart upload (start → part×N → complete), sha256 from the admin's browser.
   async uploadPackage(request: Request, env: any) {
-    const parts = new URL(request.url).pathname.split('/'); // /admin/releases/:id/upload
-    const relId = parts[3] || '';
-    const rel: any = await env.DB.prepare(`SELECT r.*, a.slug as app_slug FROM releases r JOIN applications a ON a.id=r.application_id WHERE r.id=?`).bind(relId).first();
-    if (!rel) return { error: 'Release not found' };
-
+    const rel = await loadRelease(env, relIdFrom(request));
+    if ((rel as any)?.error) return rel;
     const form = await request.formData().catch(()=>null);
     if (!form) return { error: 'Expected multipart form-data (file, platform)' };
     const file: any = form.get('file');
-    let platform = String(form.get('platform') || '').toLowerCase().trim();
-    if (platform === 'linux' || platform === 'deb') platform = 'linux_deb';
-    if (platform === 'appimage') platform = 'linux_appimage';
-    const allowed = ['android','windows','linux','linux_deb','linux_appimage','macos','flatpak','web','ios'];
-    if (!allowed.includes(platform)) return { error: `Invalid platform '${platform}'. Use: ${allowed.join(', ')}` };
+    const platform = normPlatform(form.get('platform'));
+    if ((platform as any)?.error) return platform;
     if (!file || typeof file.arrayBuffer !== 'function') return { error: 'No file attached' };
 
-    const MAX = 95 * 1024 * 1024; // Worker memory budget
-    if (file.size > MAX) return { error: `${file.name} is ${(file.size/1024/1024).toFixed(1)} MB — over the 95 MB per-file limit (large installers need R2 direct upload; split or host externally)` };
+    const MAX_SINGLE = 50 * 1024 * 1024; // one-shot memory budget; bigger → chunked MPU
+    if (file.size > MAX_SINGLE) return { error: `${file.name} is ${(file.size/1024/1024).toFixed(1)} MB — use the chunked upload (automatic for files over 50 MB)` };
 
     const buf = await file.arrayBuffer();
-    // sha256 in the Worker — publish + install verify this
     const digest: ArrayBuffer = await (crypto as any).subtle.digest('SHA-256', buf);
     const sha256 = Array.from(new Uint8Array(digest)).map((b:number)=>b.toString(16).padStart(2,'0')).join('');
-
-    const safeName = String(file.name || 'package.bin').replace(/[^\w.\-]+/g, '_');
+    const safeName = sanitizeName(file.name);
     const storageKey = `apps/${rel.app_slug}/${rel.version}/${platform}/${safeName}`;
     await env.STORAGE.put(storageKey, buf, { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
 
     const origin = new URL(request.url).origin;
-    const url = `${origin}/r2/${storageKey}`;
-    const pkgType = platform === 'web' ? 'zip' : (platform === 'ios' ? 'pwa' : 'installer');
-    const pkgStatus = rel.status === 'published' ? 'published' : 'stored';
-    const id = `pkg_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
-    try {
-      // UNIQUE(release_id, platform) in the new schema → upsert replaces that platform's binary
-      await env.DB.prepare(
-        `INSERT INTO packages (id, application_id, release_id, platform, architecture, filename, storage_key, file_size, mime_type, sha256, version, package_type, status)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(release_id, platform) DO UPDATE SET filename=excluded.filename, storage_key=excluded.storage_key, file_size=excluded.file_size, mime_type=excluded.mime_type, sha256=excluded.sha256, status=excluded.status, created_at=datetime('now')`
-      ).bind(id, rel.application_id, relId, platform, 'x64', safeName, storageKey, file.size, file.type || 'application/octet-stream', sha256, rel.version, pkgType, pkgStatus).run();
-    } catch (e: any) {
-      const msg = String(e?.message || e);
-      if (msg.includes('CHECK') || msg.includes('constraint')) {
-        return { error: `DB schema needs one-time migration for platform '${platform}' — run: npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0002_packages_platforms.sql` };
-      }
-      // Older schema without UNIQUE(release_id, platform) → manual upsert
-      if (msg.includes('ON CONFLICT')) {
-        const existing: any = await env.DB.prepare(`SELECT id FROM packages WHERE release_id=? AND platform=?`).bind(relId, platform).first().catch(()=>null);
-        if (existing) {
-          await env.DB.prepare(`UPDATE packages SET filename=?, storage_key=?, file_size=?, mime_type=?, sha256=?, status=?, created_at=datetime('now') WHERE id=?`).bind(safeName, storageKey, file.size, file.type || 'application/octet-stream', sha256, pkgStatus, existing.id).run();
-        } else {
-          await env.DB.prepare(`INSERT INTO packages (id, application_id, release_id, platform, architecture, filename, storage_key, file_size, mime_type, sha256, version, package_type, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(id, rel.application_id, relId, platform, 'x64', safeName, storageKey, file.size, file.type || 'application/octet-stream', sha256, rel.version, pkgType, pkgStatus).run();
-        }
-      } else return { error: msg.slice(0, 300) };
-    }
-
-    // Release already live → keep everything in sync immediately
+    const saved = await writePackageRow(env, rel, platform, { filename: safeName, storageKey, size: file.size, mime: file.type || 'application/octet-stream', sha256 });
+    if ((saved as any)?.error) return saved;
     if (rel.status === 'published') {
       await mergeAppPlatforms(env, rel.application_id);
       await syncLegacyAppVersion(env, rel.application_id, rel, origin);
     }
-    return { success: true, package: { id, platform, filename: safeName, size: file.size, sha256, url, version: rel.version, status: pkgStatus } };
+    return { success: true, package: { ...saved, url: `${origin}/r2/${storageKey}`, version: rel.version } };
+  },
+
+  // --- Chunked multipart upload for big installers (up to 500 MB) ---
+  // POST /admin/releases/:id/upload/start {platform, filename, size, mimeType}
+  async uploadPackageStart(request: Request, env: any) {
+    const rel = await loadRelease(env, relIdFrom(request));
+    if ((rel as any)?.error) return rel;
+    const body: any = await request.json().catch(()=>({}));
+    const platform = normPlatform(body.platform);
+    if ((platform as any)?.error) return platform;
+    const MAX = 500 * 1024 * 1024;
+    if (!body.size || body.size > MAX) return { error: `Provide size (${(MAX/1024/1024)} MB max)` };
+    const safeName = sanitizeName(body.filename);
+    const storageKey = `apps/${rel.app_slug}/${rel.version}/${platform}/${safeName}`;
+    const mpu = await env.STORAGE.createMultipartUpload(storageKey, { httpMetadata: { contentType: body.mimeType || 'application/octet-stream' } });
+    return { success: true, uploadId: mpu.uploadId, key: storageKey, platform, filename: safeName };
+  },
+
+  // POST /admin/releases/:id/upload/part (multipart: file, uploadId, key, partNumber)
+  async uploadPackagePart(request: Request, env: any) {
+    const form = await request.formData().catch(()=>null);
+    if (!form) return { error: 'Expected multipart form-data' };
+    const file: any = form.get('file');
+    const key = String(form.get('key') || '');
+    const uploadId = String(form.get('uploadId') || '');
+    const partNumber = parseInt(String(form.get('partNumber') || '0'));
+    if (!file || typeof file.arrayBuffer !== 'function' || !key || !uploadId || !partNumber) return { error: 'file, uploadId, key, partNumber required' };
+    if (file.size > 24 * 1024 * 1024) return { error: 'Part over 24 MB — split smaller' };
+    try {
+      const mpu = env.STORAGE.resumeMultipartUpload(key, uploadId);
+      const part = await mpu.uploadPart(partNumber, await file.arrayBuffer());
+      return { success: true, partNumber: part.partNumber, etag: part.etag };
+    } catch (e: any) { return { error: `Part ${partNumber} failed: ${String(e?.message || e).slice(0,200)}` }; }
+  },
+
+  // POST /admin/releases/:id/upload/complete {uploadId, key, platform, filename, size, mimeType, sha256, parts:[{partNumber, etag}]}
+  async uploadPackageComplete(request: Request, env: any) {
+    const rel = await loadRelease(env, relIdFrom(request));
+    if ((rel as any)?.error) return rel;
+    const body: any = await request.json().catch(()=>({}));
+    const platform = normPlatform(body.platform);
+    if ((platform as any)?.error) return platform;
+    const { uploadId, key, filename, size, mimeType, sha256, parts } = body || {};
+    if (!uploadId || !key || !Array.isArray(parts) || !parts.length) return { error: 'uploadId, key, parts required' };
+    if (!/^[a-f0-9]{64}$/i.test(String(sha256 || ''))) return { error: 'sha256 (64 hex chars) required — computed in the browser before upload' };
+    try {
+      const mpu = env.STORAGE.resumeMultipartUpload(key, uploadId);
+      await mpu.complete(parts);
+    } catch (e: any) { return { error: `Complete failed: ${String(e?.message || e).slice(0,200)}` }; }
+    const saved = await writePackageRow(env, rel, platform, { filename: sanitizeName(filename || key.split('/').pop() || 'package.bin'), storageKey: key, size: size || 0, mime: mimeType || 'application/octet-stream', sha256: String(sha256).toLowerCase() });
+    if ((saved as any)?.error) return saved;
+    const origin = new URL(request.url).origin;
+    if (rel.status === 'published') {
+      await mergeAppPlatforms(env, rel.application_id);
+      await syncLegacyAppVersion(env, rel.application_id, rel, origin);
+    }
+    return { success: true, package: { ...saved, url: `${origin}/r2/${key}`, version: rel.version } };
+  },
+
+  // POST /admin/releases/:id/upload/abort {uploadId, key}
+  async uploadPackageAbort(request: Request, env: any) {
+    const body: any = await request.json().catch(()=>({}));
+    try { if (body.uploadId && body.key) await env.STORAGE.resumeMultipartUpload(body.key, body.uploadId).abort(); } catch {}
+    return { success: true };
   },
 
   // ===== NEW RELEASE MANAGEMENT (Production) =====

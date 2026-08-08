@@ -67,6 +67,66 @@ export default function AppReleaseManager() {
     finally { setCreating(false); }
   };
 
+  // Files ≤50 MB go in one shot (Server hashes them). Bigger installers use a
+  // chunked R2 multipart upload (8 MB parts) with the checksum computed here.
+  const CHUNK_THRESHOLD = 50 * 1024 * 1024;
+  const PART_SIZE = 8 * 1024 * 1024;
+
+  const sha256Hex = async (file: File): Promise<string> => {
+    const buf = await file.arrayBuffer();
+    const hash = await crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+  };
+
+  const uploadOne = async (id: string, platformId: string, f: File): Promise<any> => {
+    if (f.size <= CHUNK_THRESHOLD) {
+      const fd = new FormData();
+      fd.append('file', f);
+      fd.append('platform', platformId);
+      const up = await fetch(`${API_URL}/admin/releases/${id}/upload`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: fd });
+      const uj = await up.json();
+      if (!up.ok) throw new Error(uj.error?.message || uj.error || 'Upload failed');
+      return uj.data?.package;
+    }
+    // --- chunked multipart for big installers (up to 500 MB) ---
+    const sha = await sha256Hex(f);
+    const st = await fetch(`${API_URL}/admin/releases/${id}/upload/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ platform: platformId, filename: f.name, size: f.size, mimeType: f.type || 'application/octet-stream' }),
+    });
+    const sj = await st.json();
+    if (!st.ok) throw new Error(sj.error?.message || sj.error || 'Start failed');
+    const { uploadId, key } = sj.data;
+    const totalParts = Math.ceil(f.size / PART_SIZE);
+    const partsArr: { partNumber: number; etag: string }[] = [];
+    try {
+      for (let pn = 1; pn <= totalParts; pn++) {
+        setUploading(prev => ({ ...prev, [platformId]: `Part ${pn}/${totalParts}…` }));
+        const fd = new FormData();
+        fd.append('file', f.slice((pn - 1) * PART_SIZE, pn * PART_SIZE));
+        fd.append('uploadId', uploadId);
+        fd.append('key', key);
+        fd.append('partNumber', String(pn));
+        const pr = await fetch(`${API_URL}/admin/releases/${id}/upload/part`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: fd });
+        const pj = await pr.json();
+        if (!pr.ok) throw new Error(pj.error?.message || pj.error || `Part ${pn} failed`);
+        partsArr.push({ partNumber: pj.data.partNumber, etag: pj.data.etag });
+      }
+    } catch (e) {
+      try { await fetch(`${API_URL}/admin/releases/${id}/upload/abort`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify({ uploadId, key }) }); } catch {}
+      throw e;
+    }
+    const cr = await fetch(`${API_URL}/admin/releases/${id}/upload/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ uploadId, key, platform: platformId, filename: f.name, size: f.size, mimeType: f.type || 'application/octet-stream', sha256: sha, parts: partsArr }),
+    });
+    const cj = await cr.json();
+    if (!cr.ok) throw new Error(cj.error?.message || cj.error || 'Complete failed');
+    return cj.data?.package;
+  };
+
   const uploadAll = async (withReleaseId?: string): Promise<string | null> => {
     if (!API_URL) { toast('Set VITE_API_URL to publish live', { icon: '⚠️' }); return null; }
     if (!token) { toast.error('Login as admin'); return null; }
@@ -77,15 +137,9 @@ export default function AppReleaseManager() {
     let ok = 0;
     for (const p of picked) {
       const f = files[p.id]!;
-      setUploading(prev => ({ ...prev, [p.id]: 'Uploading…' }));
+      setUploading(prev => ({ ...prev, [p.id]: f.size > CHUNK_THRESHOLD ? 'Hashing…' : 'Uploading…' }));
       try {
-        const fd = new FormData();
-        fd.append('file', f);
-        fd.append('platform', p.id);
-        const up = await fetch(`${API_URL}/admin/releases/${id}/upload`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: fd });
-        const uj = await up.json();
-        if (!up.ok) throw new Error(uj.error?.message || uj.error || 'Upload failed');
-        const pkg = uj.data?.package;
+        const pkg = await uploadOne(id, p.id, f);
         setUploading(prev => ({ ...prev, [p.id]: `Stored ✓ ${(pkg.size/1024/1024).toFixed(1)} MB • sha ${String(pkg.sha256).slice(0,8)}…` }));
         setFiles(prev => { const n = { ...prev }; delete n[p.id]; return n; });
         ok++;
@@ -175,12 +229,12 @@ export default function AppReleaseManager() {
               const f = files[p.id];
               const status = uploading[p.id];
               return (
-                <div key={p.id} className={`flex items-center gap-3 p-3 rounded-xl border-2 ${f ? 'border-green-500/30 bg-green-500/5' : status?.startsWith('Stored') ? 'border-green-500/30 bg-green-500/5' : 'border-dashed border-white/10 hover:border-rx-yellow/30 bg-rx-dark/50'}`}>
+                <div key={p.id} className={`flex items-center gap-3 p-3 rounded-xl border-2 ${status?.startsWith('Failed') ? 'border-red-500/40 bg-red-500/5' : f ? 'border-green-500/30 bg-green-500/5' : status?.startsWith('Stored') ? 'border-green-500/30 bg-green-500/5' : 'border-dashed border-white/10 hover:border-rx-yellow/30 bg-rx-dark/50'}`}>
                   <div className="w-10 h-10 rounded-lg bg-rx-dark-tertiary flex items-center justify-center"><Icon className="w-5 h-5 text-rx-gray-medium"/></div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-white flex items-center gap-2">{p.label} <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-rx-gray-medium">{p.ext}</span> {status && <span className={`text-[10px] px-1.5 py-0.5 rounded ${status.startsWith('Failed') ? 'bg-red-500/20 text-red-300' : 'bg-rx-yellow/20 text-rx-yellow'}`}>{status}</span>}</p>
                     <p className="text-xs text-rx-gray-medium truncate">{f ? `${f.name} (${(f.size/1024/1024).toFixed(1)} MB)` : `Select ${p.ext}`}</p>
-                    {status === 'Uploading…' && <div className="mt-1 h-1 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-rx-yellow animate-pulse" style={{width:'70%'}}/></div>}
+                    {status && !status.startsWith('Stored') && !status.startsWith('Failed') && <div className="mt-1 h-1 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-rx-yellow animate-pulse" style={{width:'70%'}}/></div>}
                   </div>
                   {f ? (
                     <>
@@ -194,7 +248,7 @@ export default function AppReleaseManager() {
               );
             })}
           </div>
-          <p className="text-[11px] text-rx-gray-medium mt-2">Max ~95 MB per file (Worker memory). iOS uploads need the one-time packages migration — the API tells you the exact wrangler command if so.</p>
+          <p className="text-[11px] text-rx-gray-medium mt-2">Files ≤50 MB upload in one shot; bigger installers (up to 500 MB) go in 8 MB chunks with the checksum computed in your browser — just select and go. iOS/macOS need the one-time packages migration; the API prints the exact wrangler command if it's not done yet.</p>
         </div>
 
         {/* 4. Actions */}

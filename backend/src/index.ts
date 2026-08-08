@@ -152,6 +152,17 @@ export default {
         return json({ success: true, data }, 200, origin);
       } catch (e: any) { return json({ success: false, error: { message: e.message } }, 500, origin); }
     }
+    // Chunked upload for big installers: start → part×N → complete (R2 multipart)
+    if (path.match(/^\/admin\/releases\/[^\/]+\/upload\/(start|part|complete|abort)$/) && request.method === 'POST') {
+      if (!isAdminRequest(request)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+      const step = path.split('/').pop() as string;
+      const fn = { start: 'uploadPackageStart', part: 'uploadPackagePart', complete: 'uploadPackageComplete', abort: 'uploadPackageAbort' }[step] as string;
+      try {
+        const data = await (adminRoutes as any)[fn](normalizedRequest as any, env);
+        if ((data as any)?.error) return json({ success: false, error: { code: 'ERROR', message: (data as any).error } }, 400, origin);
+        return json({ success: true, data }, 200, origin);
+      } catch (e: any) { return json({ success: false, error: { message: e.message } }, 500, origin); }
+    }
     if (path.match(/^\/admin\/releases\/[^\/]+\/rollback$/) && request.method === 'POST') {
       const data = await (adminRoutes as any).rollbackRelease(normalizedRequest as any, env);
       if ((data as any)?.error) return json({ success: false, error: { code: 'ERROR', message: (data as any).error } }, 400, origin);
@@ -261,7 +272,7 @@ export default {
            ORDER BY r.published_at DESC LIMIT 1`
         ).bind(app.id, ...plats).first().catch(()=>null);
         if (pkg?.storage_key && pkg?.package_type !== 'pwa') {
-          try { await env.DB.prepare('INSERT INTO downloads (id, app_id, platform, version, created_at) VALUES (?,?,?,?,datetime(\'now\'))').bind(`dl_${Date.now()}`, app.id, platform, pkg.version || app.current_version).run(); await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run(); } catch {}
+          try { await env.DB.prepare('INSERT INTO downloads (id, app_id, platform, version, created_at) VALUES (?,?,?,?,datetime(\'now\'))').bind(`dl_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, app.id, platform, pkg.version || app.current_version).run(); await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run(); } catch {}
           return json({ success:true, data:{ url: `${originUrl}/r2/${pkg.storage_key}`, checksum: pkg.sha256, size: pkg.file_size, fileName: pkg.filename, version: pkg.version || app.current_version, platform }},200,origin);
         }
 
@@ -288,7 +299,7 @@ export default {
             if (f?.checksum) checksum = f.checksum;
           } catch {}
         }
-        try { await env.DB.prepare('INSERT INTO downloads (id, app_id, platform, version, created_at) VALUES (?,?,?, ?, datetime(\'now\'))').bind(`dl_${Date.now()}`, app.id, platform, app.current_version).run(); await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run(); } catch {}
+        try { await env.DB.prepare('INSERT INTO downloads (id, app_id, platform, version, created_at) VALUES (?,?,?, ?, datetime(\'now\'))').bind(`dl_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, app.id, platform, app.current_version).run(); await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run(); } catch {}
         return json({ success:true, data:{ url, checksum, version: app.current_version, platform }},200,origin);
       } catch (e:any) { return json({ success:false, error:{ message:e.message }},500,origin); }
     }
