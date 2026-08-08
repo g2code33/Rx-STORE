@@ -214,7 +214,7 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
               <div className="flex flex-wrap gap-2 mb-2">
                 {form.screenshots.split(',').map((s:string)=>s.trim()).filter(Boolean).map((url:string, i:number)=>(
                   <div key={i} className="relative group">
-                    <img src={url} alt="screenshot" className="w-20 h-12 rounded-lg object-cover border border-white/10"/>
+                    <img src={url} alt="screenshot" className="w-20 h-12 rounded-lg object-cover border border-white/10" onError={(e)=>{ (e.target as HTMLImageElement).style.display='none'; }} />
                     <button type="button" onClick={()=>{
                       const arr=form.screenshots.split(',').map((x:string)=>x.trim()).filter(Boolean);
                       arr.splice(i,1);
@@ -222,6 +222,7 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
                     }} className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-white text-xs opacity-0 group-hover:opacity-100">✕</button>
                   </div>
                 ))}
+                {form.screenshots.split(',').filter(Boolean).length===0 && <p className="text-xs text-rx-gray-medium">No screenshots yet — upload or paste URLs above.</p>}
               </div>
               <label className="flex items-center justify-center gap-2 p-3 rounded-xl border-2 border-dashed border-white/10 hover:border-rx-yellow/30 bg-rx-dark/50 cursor-pointer">
                 <span className="text-sm text-rx-gray-medium">Upload screenshots (PNG/JPG)</span>
