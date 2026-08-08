@@ -80,8 +80,15 @@ export const adminRoutes = {
     const app = await env.DB.prepare(`SELECT id FROM applications WHERE slug=?`).bind(appSlug).first() as any;
     if (!app) return { error: 'Application not found' };
     const id = `ver_${Date.now()}`;
-    await env.DB.prepare(`INSERT INTO app_versions (id, app_id, version, release_notes, mandatory, files) VALUES (?,?,?,?,?,?)`)
-      .bind(id, app.id, version, JSON.stringify(releaseNotes||[]), mandatory?1:0, JSON.stringify(platforms||{})).run();
+    // Handle duplicate version gracefully — update instead of failing
+    const existing: any = await env.DB.prepare(`SELECT id FROM app_versions WHERE app_id=? AND version=?`).bind(app.id, version).first().catch(()=>null);
+    if (existing) {
+      await env.DB.prepare(`UPDATE app_versions SET release_notes=?, mandatory=?, files=?, created_at=datetime('now') WHERE app_id=? AND version=?`)
+        .bind(JSON.stringify(releaseNotes||[]), mandatory?1:0, JSON.stringify(platforms||{}), app.id, version).run();
+    } else {
+      await env.DB.prepare(`INSERT INTO app_versions (id, app_id, version, release_notes, mandatory, files) VALUES (?,?,?,?,?,?)`)
+        .bind(id, app.id, version, JSON.stringify(releaseNotes||[]), mandatory?1:0, JSON.stringify(platforms||{})).run();
+    }
     // also update current_version
     await env.DB.prepare(`UPDATE applications SET current_version=?, last_updated=datetime('now') WHERE id=?`).bind(version, app.id).run();
     return { success: true, version, appId: appSlug };
