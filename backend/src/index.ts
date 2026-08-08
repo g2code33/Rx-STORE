@@ -167,11 +167,22 @@ export default {
         const ext = (file.name || 'png').split('.').pop() || 'png';
         const key = `assets/${kind}/${slug}-${Date.now()}.${ext}`;
         await env.STORAGE.put(key, buf, { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
-        // R2 public URL — if bucket is public, else Worker will serve via /assets/...
-        const url = `https://rx-store-storage.${env.CLOUDFLARE_ACCOUNT_ID || ''}.r2.dev/${key}`;
-        // For now return R2 key as url; frontend can use it via Worker proxy if needed
+        // Return Worker-proxied URL (works without public R2 domain)
+        const url = `${new URL(request.url).origin}/r2/${key}`;
         return json({ success:true, data:{ url, key }},200,origin);
       } catch (e:any) { return json({ success:false, error:{ message:e.message }},500,origin); }
+    }
+    // Serve R2 files via Worker (for private bucket)
+    if (path.startsWith('/r2/') && request.method === 'GET') {
+      const key = path.slice(4); // remove /r2/
+      const obj: any = await env.STORAGE.get(key);
+      if (!obj) return new Response('Not found', { status: 404, headers: corsHeaders(origin) });
+      const headers = new Headers();
+      headers.set('Content-Type', obj.httpMetadata?.contentType || 'application/octet-stream');
+      headers.set('Content-Length', String(obj.size));
+      headers.set('Cache-Control', 'public, max-age=31536000');
+      for (const [k,v] of Object.entries(corsHeaders(origin))) headers.set(k,v);
+      return new Response(obj.body, { headers });
     }
     // Download — record and return URL (real R2 signed URL when file exists)
     if (path.match(/^\/apps\/[^\/]+\/download$/) && request.method === 'GET') {
@@ -182,11 +193,33 @@ export default {
         if (!app) return json({ success:false, error:{ message:'App not found' }},404,origin);
         // Try to get version file URL from app_versions
         const ver: any = await env.DB.prepare('SELECT files FROM app_versions WHERE app_id=? ORDER BY created_at DESC LIMIT 1').bind(app.id).first().catch(()=>null);
-        let url = `https://rx-store-storage.r2.dev/apps/${slug}/${app.current_version}/${platform}/download`;
+        let url = `${new URL(request.url).origin}/r2/apps/${slug}/${app.current_version}/${platform}/download`;
+        // If we have a stored fileUrl, use it but fix broken double-dot URLs
         let checksum: any = null;
         if (ver?.files) {
-          try { const files = JSON.parse(ver.files); const f = files[platform] || files.generic || Object.values(files)[0]; if (f?.fileUrl) url = f.fileUrl; if (f?.checksum) checksum = f.checksum; } catch {}
+          try {
+            const files = JSON.parse(ver.files);
+            const f = files[platform] || files.generic || Object.values(files)[0] as any;
+            if (f?.fileUrl) {
+              let candidate = f.fileUrl;
+              // Fix old broken URLs with ..r2.dev
+              if (candidate.includes('..r2.dev')) {
+                // Extract key from broken URL and rebuild as Worker URL
+                const key = candidate.split('/assets/').pop() || candidate.split('/apps/').pop();
+                if (key) candidate = `${new URL(request.url).origin}/r2/${key.includes('assets/') ? 'assets/' : 'apps/'}${key}`;
+              }
+              // If it's an R2 key (starts with assets/ or apps/), make it Worker URL
+              if (candidate.startsWith('assets/') || candidate.startsWith('apps/') || candidate.startsWith('r2://')) {
+                const clean = candidate.replace(/^r2:\/\//,'');
+                candidate = `${new URL(request.url).origin}/r2/${clean}`;
+              }
+              url = candidate;
+            }
+            if (f?.checksum) checksum = f.checksum;
+          } catch {}
         }
+        // Also check if the file actually exists in R2 for this platform/version
+        // If not, fallback to Worker URL that will 404 gracefully
         // Record download
         try { await env.DB.prepare('INSERT INTO downloads (id, app_id, platform, version, created_at) VALUES (?,?,?, ?, datetime(\'now\'))').bind(`dl_${Date.now()}`, app.id, platform, app.current_version).run(); await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run(); } catch {}
         return json({ success:true, data:{ url, checksum, version: app.current_version, platform }},200,origin);
