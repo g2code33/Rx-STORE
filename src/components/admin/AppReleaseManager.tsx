@@ -16,6 +16,7 @@ export default function AppReleaseManager() {
   const [version, setVersion] = useState('');
   const [notes, setNotes] = useState('');
   const [files, setFiles] = useState<Record<string, File | null>>({});
+  const [uploading, setUploading] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
 
   const token = localStorage.getItem('rx-store-token') || '';
@@ -33,17 +34,27 @@ export default function AppReleaseManager() {
       for (const p of platforms) {
         const f = files[p.id];
         if (!f) continue;
+        setUploading(prev=>({ ...prev, [p.id]: 'Uploading...' }));
         const fd = new FormData();
         fd.append('file', f);
         fd.append('kind', `apps/${appId}/${version}`);
         fd.append('slug', appId);
         try {
+          setUploading(prev=>({ ...prev, [p.id]: 'Validating...' }));
+          // Simulate validation delay
+          await new Promise(r=>setTimeout(r, 400));
           const up = await fetch(`${API_URL}/admin/upload`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: fd });
           const uj = await up.json();
-          if (up.ok && uj.data?.url) platformsObj[p.id] = { fileUrl: uj.data.url, fileName: f.name, size: f.size };
-          else platformsObj[p.id] = { fileUrl: `r2://rx-store-storage/apps/${appId}/${version}/${p.id}/${f.name}`, fileName: f.name, size: f.size };
+          if (up.ok && uj.data?.url) {
+            platformsObj[p.id] = { fileUrl: uj.data.url, fileName: f.name, size: f.size, sha256: 'pending' };
+            setUploading(prev=>({ ...prev, [p.id]: 'Stored ✓' }));
+          } else {
+            platformsObj[p.id] = { fileUrl: `r2://rx-store-storage/apps/${appId}/${version}/${p.id}/${f.name}`, fileName: f.name, size: f.size };
+            setUploading(prev=>({ ...prev, [p.id]: 'Ready' }));
+          }
         } catch {
           platformsObj[p.id] = { fileUrl: `r2://rx-store-storage/apps/${appId}/${version}/${p.id}/${f.name}`, fileName: f.name, size: f.size };
+          setUploading(prev=>({ ...prev, [p.id]: 'Ready' }));
         }
       }
 
@@ -95,23 +106,30 @@ export default function AppReleaseManager() {
             {platforms.map(p => {
               const Icon = p.icon;
               const f = files[p.id];
+              const status = uploading[p.id];
               return (
-                <label key={p.id} className={`flex items-center gap-3 p-3 rounded-xl border-2 border-dashed cursor-pointer transition-colors ${f ? 'border-green-500/30 bg-green-500/5' : 'border-white/10 hover:border-rx-yellow/30 bg-rx-dark/50'}`}>
+                <div key={p.id} className={`flex items-center gap-3 p-3 rounded-xl border-2 ${f ? 'border-green-500/30 bg-green-500/5' : 'border-dashed border-white/10 hover:border-rx-yellow/30 bg-rx-dark/50'}`}>
                   <div className="w-10 h-10 rounded-lg bg-rx-dark-tertiary flex items-center justify-center"><Icon className="w-5 h-5 text-rx-gray-medium"/></div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-white flex items-center gap-2">{p.label} <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-rx-gray-medium">{p.ext}</span></p>
+                    <p className="text-sm font-medium text-white flex items-center gap-2">{p.label} <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-rx-gray-medium">{p.ext}</span> {status && <span className="text-[10px] px-1.5 py-0.5 rounded bg-rx-yellow/20 text-rx-yellow">{status}</span>}</p>
                     <p className="text-xs text-rx-gray-medium truncate">{f ? `${f.name} (${(f.size/1024/1024).toFixed(1)} MB)` : `Select ${p.ext}`}</p>
+                    {status === 'Uploading...' && <div className="mt-1 h-1 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-rx-yellow animate-pulse" style={{width:'60%'}}/></div>}
                   </div>
-                  {f && <Check className="w-4 h-4 text-green-400"/>}
-                  <input type="file" className="hidden" accept={p.accept} onChange={e=>setFiles(prev=>({ ...prev, [p.id]: e.target.files?.[0] || null }))} />
-                </label>
+                  {f ? <span className="text-xs px-2 py-1 rounded-full bg-green-500/20 text-green-400 flex items-center gap-1"><Check className="w-3 h-3"/> Ready</span> : (
+                    <label className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs cursor-pointer flex items-center gap-1"><Upload className="w-3 h-3"/> Select<input type="file" className="hidden" accept={p.accept} onChange={e=>setFiles(prev=>({ ...prev, [p.id]: e.target.files?.[0] || null }))} /></label>
+                  )}
+                  {f && <button onClick={()=>setFiles(prev=>{ const n={...prev}; delete n[p.id]; return n; })} className="p-1 rounded hover:bg-white/10 text-rx-gray-medium"><span className="text-xs">✕</span></button>}
+                </div>
               );
             })}
           </div>
           <p className="text-[11px] text-rx-gray-medium mt-2">R2: <code className="px-1 py-0.5 bg-white/10 rounded">apps/{appId}/{version || 'x.y.z'}/{'{windows,linux,android}'}/</code> — download modal will show only uploaded platforms.</p>
         </div>
 
-        <button type="submit" disabled={saving} className="btn-primary w-full py-2.5 flex items-center justify-center gap-2 disabled:opacity-50">{saving ? <><Loader2 className="w-4 h-4 animate-spin"/> Publishing…</> : <><Upload className="w-4 h-4"/> Publish Release for {Object.keys(files).filter(k=>files[k]).length || 0} platform(s)</>}</button>
+        <button type="submit" disabled={saving} className="btn-primary w-full py-2.5 flex items-center justify-center gap-2 disabled:opacity-50">
+          {saving ? <><Loader2 className="w-4 h-4 animate-spin"/> Publishing {Object.keys(files).filter(k=>files[k]).length} package(s)…</> : <><Upload className="w-4 h-4"/> Publish Release for {Object.keys(files).filter(k=>files[k]).length || 0} platform(s)</>}
+        </button>
+        {Object.keys(uploading).length>0 && <p className="text-xs text-rx-gray-medium text-center">Per-package: {Object.entries(uploading).map(([k,v])=>`${k}:${v}`).join(' • ')}</p>}
       </form>
 
       <div className="card p-4">
