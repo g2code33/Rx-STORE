@@ -191,10 +191,14 @@ export default {
         const platform = new URL(request.url).searchParams.get('platform') || 'web';
         const app: any = await env.DB.prepare('SELECT id, current_version FROM applications WHERE slug=?').bind(slug).first();
         if (!app) return json({ success:false, error:{ message:'App not found' }},404,origin);
+        // Check if this is a PWA package — return deployment_url, not ZIP
+        const pkgPwa: any = await env.DB.prepare(`SELECT deployment_url, package_type FROM packages WHERE application_id=? AND platform IN ('web','pwa') AND status='published' ORDER BY created_at DESC LIMIT 1`).bind(app.id).first().catch(()=>null);
+        if ((platform === 'web' || platform === 'pwa' || platform === 'ios') && pkgPwa?.deployment_url) {
+          return json({ success:true, data:{ url: pkgPwa.deployment_url, isPWA: true, deploymentUrl: pkgPwa.deployment_url, version: app.current_version, platform }},200,origin);
+        }
         // Try to get version file URL from app_versions
         const ver: any = await env.DB.prepare('SELECT files FROM app_versions WHERE app_id=? ORDER BY created_at DESC LIMIT 1').bind(app.id).first().catch(()=>null);
         let url = `${new URL(request.url).origin}/r2/apps/${slug}/${app.current_version}/${platform}/download`;
-        // If we have a stored fileUrl, use it but fix broken double-dot URLs
         let checksum: any = null;
         if (ver?.files) {
           try {
@@ -202,13 +206,10 @@ export default {
             const f = files[platform] || files.generic || Object.values(files)[0] as any;
             if (f?.fileUrl) {
               let candidate = f.fileUrl;
-              // Fix old broken URLs with ..r2.dev
               if (candidate.includes('..r2.dev')) {
-                // Extract key from broken URL and rebuild as Worker URL
                 const key = candidate.split('/assets/').pop() || candidate.split('/apps/').pop();
                 if (key) candidate = `${new URL(request.url).origin}/r2/${key.includes('assets/') ? 'assets/' : 'apps/'}${key}`;
               }
-              // If it's an R2 key (starts with assets/ or apps/), make it Worker URL
               if (candidate.startsWith('assets/') || candidate.startsWith('apps/') || candidate.startsWith('r2://')) {
                 const clean = candidate.replace(/^r2:\/\//,'');
                 candidate = `${new URL(request.url).origin}/r2/${clean}`;
@@ -218,10 +219,19 @@ export default {
             if (f?.checksum) checksum = f.checksum;
           } catch {}
         }
-        // Also check if the file actually exists in R2 for this platform/version
-        // If not, fallback to Worker URL that will 404 gracefully
-        // Record download
-        try { await env.DB.prepare('INSERT INTO downloads (id, app_id, platform, version, created_at) VALUES (?,?,?, ?, datetime(\'now\'))').bind(`dl_${Date.now()}`, app.id, platform, app.current_version).run(); await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run(); } catch {}
+        // Check packages table for this platform
+        const pkg: any = await env.DB.prepare(`SELECT storage_key, sha256, deployment_url, package_type FROM packages WHERE application_id=? AND platform=? AND status='published' ORDER BY created_at DESC LIMIT 1`).bind(app.id, platform).first().catch(()=>null);
+        if (pkg?.storage_key) {
+          if (pkg.package_type === 'pwa' && pkg.deployment_url) {
+            return json({ success:true, data:{ url: pkg.deployment_url, isPWA: true, deploymentUrl: pkg.deployment_url, version: app.current_version, platform }},200,origin);
+          }
+          url = `${new URL(request.url).origin}/r2/${pkg.storage_key}`;
+          checksum = pkg.sha256 || checksum;
+        }
+        // Record download only for non-PWA (PWA is not a download)
+        if (!pkg || pkg.package_type !== 'pwa') {
+          try { await env.DB.prepare('INSERT INTO downloads (id, app_id, platform, version, created_at) VALUES (?,?,?, ?, datetime(\'now\'))').bind(`dl_${Date.now()}`, app.id, platform, app.current_version).run(); await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run(); } catch {}
+        }
         return json({ success:true, data:{ url, checksum, version: app.current_version, platform }},200,origin);
       } catch (e:any) { return json({ success:false, error:{ message:e.message }},500,origin); }
     }
