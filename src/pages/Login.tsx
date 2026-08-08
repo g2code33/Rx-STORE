@@ -65,7 +65,7 @@ export default function Login() {
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
           <Link to="/" className="inline-flex items-center gap-2.5 mb-6">
-            <div className="w-12 h-12 bg-rx-yellow rounded-xl flex items-center justify-center font-bold text-rx-dark text-lg">Rx</div>
+            <img src="/v1.png" alt="RX Store" className="w-16 h-16 rounded-xl object-cover" />
           </Link>
           <h1 className="text-2xl font-bold text-white">{mode === 'login' ? 'Welcome Back' : 'Create Account'}</h1>
           <p className="text-rx-gray-medium mt-2">

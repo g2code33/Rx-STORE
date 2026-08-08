@@ -19,7 +19,7 @@ function LoadingFallback() {
   return (
     <div className="min-h-screen bg-rx-dark flex items-center justify-center">
       <div className="text-center">
-        <img src="/v1.png" alt="RX Store" className="w-16 h-16 rounded-2xl object-cover mx-auto mb-4 animate-pulse" />
+        <img src="/v1.png" alt="RX Store" className="w-20 h-20 rounded-2xl object-cover mx-auto mb-4 animate-pulse" />
         <p className="text-rx-gray-medium text-sm">Loading RX Store...</p>
       </div>
     </div>

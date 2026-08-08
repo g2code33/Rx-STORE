@@ -54,7 +54,7 @@ export default function Header() {
         <div className="flex items-center justify-between h-16 lg:h-18">
           {/* Logo — v1.png */}
           <Link to="/" className="flex items-center gap-2.5 group">
-            <img src="/v1.png" alt="RX Store" className="w-9 h-9 rounded-lg object-cover group-hover:shadow-glow transition-shadow duration-300" />
+            <img src="/v1.png" alt="RX Store" className="w-11 h-11 rounded-xl object-cover group-hover:shadow-glow transition-shadow duration-300" />
             <div className="hidden sm:block">
               <span className="text-lg font-bold text-white">
                 RX <span className="text-rx-yellow">Store</span>
