@@ -90,13 +90,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // If API configured and token exists, validate session
       if (isApiConfigured() && localStorage.getItem('rx-store-token')) {
         try {
-          const { user: me } = await api.auth.me();
-          if (me) {
-            setUser(me);
-            localStorage.setItem('rx-store-user', JSON.stringify(me));
+          const res: any = await api.auth.me();
+          const me = res.user || res;
+          if (me && me.id) {
+            // Merge with existing to keep subscriptions etc. if backend returns minimal
+            const merged: any = {
+              id: me.id,
+              name: me.name,
+              email: me.email,
+              phone: me.phone,
+              avatar: me.avatar || me.avatar_url || '👤',
+              role: me.role || 'user',
+              joinDate: me.joinDate || (me.created_at || '').slice(0,10) || new Date().toISOString().slice(0,10),
+              downloadedApps: me.downloadedApps || [],
+              subscriptions: me.subscriptions || [],
+              notifications: me.notifications || mockNotifications,
+            };
+            setUser(merged);
+            localStorage.setItem('rx-store-user', JSON.stringify(merged));
           }
         } catch {
-          // token invalid — keep mock/local user
+          // token invalid — keep local user
         }
       }
       setIsLoading(false);

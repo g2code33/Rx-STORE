@@ -13,9 +13,9 @@ export default function Profile() {
   if (!user) return <Navigate to="/login" replace />;
 
   const tabs = [
-    { id: 'apps' as const, label: 'My Applications', icon: Download, count: installedApps.length },
-    { id: 'subscriptions' as const, label: 'Subscriptions', icon: CreditCard, count: user.subscriptions.length },
-    { id: 'notifications' as const, label: 'Notifications', icon: Bell, count: notifications.filter((n) => !n.read).length },
+    { id: 'apps' as const, label: 'My Applications', icon: Download, count: (installedApps || []).length },
+    { id: 'subscriptions' as const, label: 'Subscriptions', icon: CreditCard, count: (user.subscriptions || []).length },
+    { id: 'notifications' as const, label: 'Notifications', icon: Bell, count: (notifications || []).filter((n) => !n.read).length },
     { id: 'settings' as const, label: 'Settings', icon: Settings },
   ];
 
@@ -55,7 +55,7 @@ export default function Profile() {
       {activeTab === 'apps' && (
         <div className="animate-fade-in">
           <h2 className="text-xl font-bold text-white mb-6">Installed Applications</h2>
-          {installedApps.length > 0 ? (
+          {(installedApps || []).length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {installedApps.map((appId) => {
                 const app = getAppById(appId);
@@ -88,9 +88,9 @@ export default function Profile() {
       {activeTab === 'subscriptions' && (
         <div className="animate-fade-in">
           <h2 className="text-xl font-bold text-white mb-6">Active Subscriptions</h2>
-          {user.subscriptions.length > 0 ? (
+          {(user.subscriptions || []).length > 0 ? (
             <div className="space-y-4">
-              {user.subscriptions.map((sub) => {
+              {(user.subscriptions || []).map((sub) => {
                 const app = getAppById(sub.appId);
                 return (
                   <div key={sub.id} className="card p-5">
