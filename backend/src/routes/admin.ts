@@ -57,9 +57,14 @@ export const adminRoutes = {
   },
 
   async resetStats(request: Request, env: any) {
+    const body: any = await request.json().catch(()=>({}));
+    const pwd = body?.password || new URL(request.url).searchParams.get('password');
+    if (pwd !== 'iseedeAdpeople#233') return { error: 'Invalid reset password. Required: iseedeAdpeople#233' };
     await env.DB.prepare(`UPDATE applications SET download_count=0, review_count=0, rating=0`).run().catch(()=>{});
     await env.DB.prepare(`DELETE FROM downloads`).run().catch(()=>{});
-    return { success: true, message: 'All download counts, ratings, and downloads reset to 0' };
+    await env.DB.prepare(`DELETE FROM reviews`).run().catch(()=>{});
+    await env.DB.prepare(`UPDATE applications SET rating=0`).run().catch(()=>{});
+    return { success: true, message: 'All stats reset to 0 — brand new site ready' };
   },
 
   async createRelease(request: Request, env: any) {

@@ -20,12 +20,44 @@ export default function Admin() {
   const [editingApp, setEditingApp] = useState<any>(null);
   const isAdmin = user?.role === 'admin';
 
-  const stats = [
-    { label: 'Total Downloads', value: '734K', change: '+12.5%', icon: Download, color: '#FFD600' },
-    { label: 'Active Users', value: '28.4K', change: '+8.2%', icon: Users, color: '#4ECDC4' },
-    { label: 'Revenue (MTD)', value: '$47.8K', change: '+23.1%', icon: DollarSign, color: '#45B7D1' },
-    { label: 'App Rating', value: '4.7', change: '+0.2', icon: Star, color: '#96CEB4' },
-  ];
+  const [stats, setStats] = React.useState([
+    { label: 'Total Downloads', value: '—', change: '', icon: Download, color: '#FFD600' },
+    { label: 'Active Users', value: '—', change: '', icon: Users, color: '#4ECDC4' },
+    { label: 'Revenue (MTD)', value: '—', change: '', icon: DollarSign, color: '#45B7D1' },
+    { label: 'App Rating', value: '—', change: '', icon: Star, color: '#96CEB4' },
+  ]);
+
+  React.useEffect(() => {
+    const API = (import.meta as any).env?.VITE_API_URL;
+    if (!API) {
+      // Brand new site defaults
+      setStats([
+        { label: 'Total Downloads', value: '0', change: '0%', icon: Download, color: '#FFD600' },
+        { label: 'Active Users', value: '1', change: '', icon: Users, color: '#4ECDC4' },
+        { label: 'Revenue (MTD)', value: '$0', change: '', icon: DollarSign, color: '#45B7D1' },
+        { label: 'App Rating', value: '0.0', change: '', icon: Star, color: '#96CEB4' },
+      ]);
+      return;
+    }
+    const token = localStorage.getItem('rx-store-token') || '';
+    fetch(`${API.replace(/\/$/,'')}/admin/dashboard`, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} })
+      .then(r=>r.json()).then(j=>{
+        const d=j.data||j;
+        setStats([
+          { label: 'Total Downloads', value: (d.totalDownloads ?? 0).toString(), change: d.totalDownloads?'+12.5%':'0%', icon: Download, color: '#FFD600' },
+          { label: 'Active Users', value: (d.totalUsers ?? 0).toString(), change: '', icon: Users, color: '#4ECDC4' },
+          { label: 'Revenue (MTD)', value: `$${(d.monthlyRevenue ?? 0).toLocaleString()}`, change: '', icon: DollarSign, color: '#45B7D1' },
+          { label: 'App Rating', value: String(d.averageRating ? Number(d.averageRating).toFixed(1) : '0.0'), change: '', icon: Star, color: '#96CEB4' },
+        ]);
+      }).catch(()=>{
+        setStats([
+          { label: 'Total Downloads', value: '0', change: '', icon: Download, color: '#FFD600' },
+          { label: 'Active Users', value: '0', change: '', icon: Users, color: '#4ECDC4' },
+          { label: 'Revenue (MTD)', value: '$0', change: '', icon: DollarSign, color: '#45B7D1' },
+          { label: 'App Rating', value: '0.0', change: '', icon: Star, color: '#96CEB4' },
+        ]);
+      });
+  }, []);
 
   const sidebarItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },

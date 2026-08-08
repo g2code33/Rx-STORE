@@ -88,6 +88,10 @@ export default {
       const data = await adminRoutes.revenue(normalizedRequest as any, env);
       return json({ success: true, data }, 200, origin);
     }
+    if (path === '/admin/dashboard' && request.method === 'GET') {
+      const data = await adminRoutes.dashboard(normalizedRequest as any, env);
+      return json({ success: true, data }, 200, origin);
+    }
     if (path === '/admin/reset-stats' && request.method === 'POST') {
       const auth = request.headers.get('Authorization') || '';
       if (!auth.startsWith('Bearer ')) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
@@ -188,15 +192,18 @@ export default {
       ];
       return json({ success: true, data: cats }, 200, origin);
     }
-    if (path.startsWith('/apps/') && request.method === 'GET') {
+    if (path.startsWith('/apps/') && (request.method === 'GET' || request.method === 'POST')) {
       try {
         if (path.endsWith('/reviews')) {
           const data = await appsRoutes.reviews(normalizedRequest as any, env);
+          if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
           return json({ success: true, data }, 200, origin);
         }
-        const data = await appsRoutes.detail(normalizedRequest as any, env);
-        if ((data as any)?.error) return json({ success: false, error: data }, 404, origin);
-        return json({ success: true, data }, 200, origin);
+        if (request.method === 'GET') {
+          const data = await appsRoutes.detail(normalizedRequest as any, env);
+          if ((data as any)?.error) return json({ success: false, error: data }, 404, origin);
+          return json({ success: true, data }, 200, origin);
+        }
       } catch (e: any) { return json({ success: false, error: { message: e.message } }, 500, origin); }
     }
     if (path.startsWith('/auth/') && request.method === 'POST') {

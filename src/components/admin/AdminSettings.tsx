@@ -22,8 +22,10 @@ export default function AdminSettings() {
   };
 
   const resetDownloads = async () => {
-    if (!confirm('Reset ALL downloads, ratings, reviews to 0? This is for a brand-new site.')) return;
-    await call('/admin/reset-stats', 'POST');
+    const pwd = prompt('Enter reset password (iseedeAdpeople#233) to confirm brand-new reset:');
+    if (pwd !== 'iseedeAdpeople#233') { if(pwd!==null) alert('Wrong password'); return; }
+    if (!confirm('Reset ALL downloads, ratings, reviews to 0? This cannot be undone.')) return;
+    await call('/admin/reset-stats', 'POST', { password: pwd });
   };
 
   return (
