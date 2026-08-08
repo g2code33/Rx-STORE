@@ -140,18 +140,12 @@ export default function AIProviderPanel() {
                 </div>
                 <div className="flex gap-2">
                   <button onClick={()=>save(p.id)} disabled={!!saving} className="flex-1 btn-primary py-2 text-sm flex items-center justify-center gap-1.5 disabled:opacity-50">
-                    {saving===p.id ? <Loader2 className="w-4 h-4 animate-spin"/> : <Save className="w-4 h-4"/>} Save {p.hasKey?'Update':'+ Activate'}
+                    {saving===p.id ? <Loader2 className="w-4 h-4 animate-spin"/> : <Save className="w-4 h-4"/>} Save
                   </button>
-                  {!isActive && <button onClick={()=>activate(p.id)} disabled={!!saving} className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm flex items-center gap-1.5"><Sparkles className="w-4 h-4"/> Make Active</button>}
+                  {p.hasKey && <button onClick={()=>testProvider(p.id)} disabled={testing===p.id} className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs flex items-center justify-center gap-1 disabled:opacity-50">{testing===p.id ? <Loader2 className="w-3 h-3 animate-spin"/> : <>🧪 Test</>}</button>}
+                  {!isActive && <button onClick={()=>activate(p.id)} disabled={!!saving} className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm flex items-center gap-1.5"><Sparkles className="w-4 h-4"/> Active</button>}
                 </div>
-                {p.hasKey && (
-                  <div className="space-y-2">
-                    <button onClick={()=>testProvider(p.id)} disabled={testing===p.id} className="w-full py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs flex items-center justify-center gap-1">
-                      {testing===p.id ? <><Loader2 className="w-3 h-3 animate-spin"/> Testing...</> : <>🧪 Test {p.id} API</>}
-                    </button>
-                    {testResult[p.id] && <div className={`p-2 rounded-lg text-xs ${testResult[p.id].startsWith('Error') ? 'bg-red-500/10 border border-red-500/20 text-red-300' : 'bg-green-500/10 border border-green-500/20 text-green-300'}`}>{testResult[p.id].slice(0,300)}</div>}
-                  </div>
-                )}
+                {testResult[p.id] && <div className={`p-2 rounded-lg text-xs ${testResult[p.id].startsWith('Error') ? 'bg-red-500/10 border border-red-500/20 text-red-300' : 'bg-green-500/10 border border-green-500/20 text-green-300'}`}>{testResult[p.id].slice(0,300)}</div>}
               </div>
             </div>
           );
