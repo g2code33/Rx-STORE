@@ -132,9 +132,11 @@ export default {
       return json({ success: true, data }, 200, origin);
     }
     if (path.match(/^\/admin\/apps\/[^\/]+\/releases$/) && request.method === 'POST') {
-      const data = await adminRoutes.createRelease(normalizedRequest as any, env);
-      if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
-      return json({ success: true, data }, 200, origin);
+      try {
+        const data = await adminRoutes.createRelease(normalizedRequest as any, env);
+        if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
+        return json({ success: true, data }, 200, origin);
+      } catch (e:any) { return json({ success: false, error: { message: e.message, stack: e.stack } }, 500, origin); }
     }
     if (path.match(/^\/admin\/apps\/[^\/]+$/) && request.method === 'PUT') {
       const data = await adminRoutes.updateApp(normalizedRequest as any, env);
