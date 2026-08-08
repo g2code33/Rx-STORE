@@ -128,7 +128,7 @@ export default function AppDetail() {
             <div className="flex-1">
               <div className="flex items-center gap-3 flex-wrap">
                 <h1 className="text-3xl lg:text-4xl font-bold text-white">{app.name}</h1>
-                {app.isNew && <span className="px-2.5 py-1 bg-white/20 backdrop-blur-sm text-white text-xs font-bold rounded-lg">NEW</span>}
+                {!!app.isNew && <span className="px-2.5 py-1 bg-white/20 backdrop-blur-sm text-white text-xs font-bold rounded-lg">NEW</span>}
                 {app.status === 'beta' && <span className="px-2.5 py-1 bg-purple-500/30 backdrop-blur-sm text-white text-xs font-bold rounded-lg">BETA</span>}
               </div>
               <p className="text-white/70 mt-1">{app.developer}</p>
