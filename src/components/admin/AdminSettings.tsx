@@ -115,7 +115,7 @@ export default function AdminSettings() {
             <input type="password" value={pwd} onChange={e=>setPwd(e.target.value)} placeholder="••••••••" autoFocus className="mt-4 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-rx-yellow/50" />
             <div className="flex gap-2 justify-end mt-4">
               <button onClick={()=>{setShowResetModal(null); setPwd('');}} className="px-4 py-2 rounded-xl bg-white/5 text-white border border-white/10 text-sm">Cancel</button>
-              <button onClick={showResetModal==='stats' ? doResetStats : doResetApps} disabled={loading===''} className="px-4 py-2 rounded-xl bg-rx-yellow text-rx-dark font-bold text-sm flex items-center gap-1 disabled:opacity-50">
+              <button onClick={showResetModal==='stats' ? doResetStats : doResetApps} disabled={!!loading} className="px-4 py-2 rounded-xl bg-rx-yellow text-rx-dark font-bold text-sm flex items-center gap-1 disabled:opacity-50">
                 {loading ? <Loader2 className="w-4 h-4 animate-spin"/> : null} Confirm
               </button>
             </div>
