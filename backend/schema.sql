@@ -200,6 +200,73 @@ CREATE TABLE IF NOT EXISTS ai_settings (
 );
 INSERT OR IGNORE INTO ai_settings (id, provider, model) VALUES ('default','nvidia','meta/llama-3.1-70b-instruct');
 
+-- ==================== RELEASE MANAGEMENT (Production) ====================
+CREATE TABLE IF NOT EXISTS releases (
+  id TEXT PRIMARY KEY,
+  application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  version TEXT NOT NULL,
+  release_notes TEXT DEFAULT '[]',
+  release_type TEXT DEFAULT 'patch' CHECK (release_type IN ('major','minor','patch')),
+  channel TEXT DEFAULT 'stable' CHECK (channel IN ('stable','beta','alpha')),
+  minimum_supported_version TEXT,
+  status TEXT DEFAULT 'draft' CHECK (status IN ('draft','processing','ready_for_review','published','disabled','rolled_back','archived')),
+  published_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(application_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_releases_app ON releases(application_id);
+CREATE INDEX IF NOT EXISTS idx_releases_status ON releases(status);
+CREATE INDEX IF NOT EXISTS idx_releases_version ON releases(version);
+
+CREATE TABLE IF NOT EXISTS packages (
+  id TEXT PRIMARY KEY,
+  application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+  platform TEXT NOT NULL CHECK (platform IN ('android','windows','linux_deb','linux_appimage','flatpak','web')),
+  architecture TEXT DEFAULT 'x64',
+  filename TEXT NOT NULL,
+  storage_key TEXT NOT NULL,
+  file_size INTEGER NOT NULL,
+  mime_type TEXT,
+  sha256 TEXT NOT NULL,
+  version TEXT NOT NULL,
+  status TEXT DEFAULT 'stored' CHECK (status IN ('uploading','validating','stored','ready_for_review','published','failed')),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_packages_release ON packages(release_id);
+CREATE INDEX IF NOT EXISTS idx_packages_platform ON packages(platform);
+
+CREATE TABLE IF NOT EXISTS upload_jobs (
+  id TEXT PRIMARY KEY,
+  application_id TEXT NOT NULL REFERENCES applications(id),
+  release_id TEXT REFERENCES releases(id),
+  platform TEXT NOT NULL,
+  filename TEXT NOT NULL,
+  file_size INTEGER,
+  status TEXT DEFAULT 'uploading' CHECK (status IN ('uploading','validating','processing','stored','ready_for_review','published','failed')),
+  sha256 TEXT,
+  error_message TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS download_statistics (
+  id TEXT PRIMARY KEY,
+  application_id TEXT NOT NULL REFERENCES applications(id),
+  release_id TEXT REFERENCES releases(id),
+  package_id TEXT REFERENCES packages(id),
+  platform TEXT,
+  architecture TEXT,
+  channel TEXT,
+  user_id TEXT REFERENCES users(id),
+  anonymous_id TEXT,
+  status TEXT DEFAULT 'success',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_dlstats_app ON download_statistics(application_id);
+CREATE INDEX IF NOT EXISTS idx_dlstats_release ON download_statistics(release_id);
+
 -- ==================== SEED (idempotent) ====================
 INSERT OR IGNORE INTO applications (id, slug, name, description, category, developer, icon, status, current_version, rating, download_count, price_type, platforms, is_featured) VALUES
 ('clinical-rx','clinical-rx','Clinical Rx','Advanced clinical decision support','healthcare','Calcitonin Technologies','🏥','active','3.2.1',4.8,156000,'subscription','["web","windows","linux","android","ios"]',1),

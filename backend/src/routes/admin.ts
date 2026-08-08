@@ -87,6 +87,102 @@ export const adminRoutes = {
     return { success: true, version, appId: appSlug };
   },
 
+  // ===== NEW RELEASE MANAGEMENT (Production) =====
+  async createNewRelease(request: Request, env: any) {
+    const body: any = await request.json().catch(()=>({}));
+    const { application_id, slug, version, release_notes, releaseNotes, release_type, releaseType, channel, minimum_supported_version, minimumSupportedVersion } = body || {};
+    const appSlug = slug || application_id;
+    if (!appSlug || !version) return { error: 'application slug and version required' };
+    const app: any = await env.DB.prepare(`SELECT id FROM applications WHERE slug=?`).bind(appSlug).first();
+    if (!app) return { error: 'Application not found' };
+    const existing = await env.DB.prepare(`SELECT id FROM releases WHERE application_id=? AND version=?`).bind(app.id, version).first();
+    if (existing) return { error: 'Version already exists for this app' };
+    const id = `rel_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+    const notes = release_notes || releaseNotes || [];
+    const rType = release_type || releaseType || 'patch';
+    const ch = channel || 'stable';
+    const minVer = minimum_supported_version || minimumSupportedVersion || null;
+    await env.DB.prepare(`INSERT INTO releases (id, application_id, version, release_notes, release_type, channel, minimum_supported_version, status) VALUES (?,?,?,?,?,?,?, 'draft')`)
+      .bind(id, app.id, version, JSON.stringify(notes), rType, ch, minVer).run();
+    await env.DB.prepare(`INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?, ?, ?)`).bind(`log_${Date.now()}`, 'create_release', 'release', id, JSON.stringify({ app: appSlug, version })).run().catch(()=>{});
+    const rel: any = await env.DB.prepare(`SELECT * FROM releases WHERE id=?`).bind(id).first();
+    return rel;
+  },
+
+  async listReleases(request: Request, env: any) {
+    const url = new URL(request.url);
+    const appSlug = url.searchParams.get('app') || url.searchParams.get('application');
+    if (appSlug) {
+      const app: any = await env.DB.prepare(`SELECT id FROM applications WHERE slug=?`).bind(appSlug).first();
+      if (!app) return [];
+      const rows: any = await env.DB.prepare(`SELECT r.*, a.slug as app_slug, a.name as app_name FROM releases r JOIN applications a ON a.id=r.application_id WHERE r.application_id=? ORDER BY r.created_at DESC`).bind(app.id).all();
+      return rows.results || [];
+    }
+    const rows: any = await env.DB.prepare(`SELECT r.*, a.slug as app_slug, a.name as app_name FROM releases r JOIN applications a ON a.id=r.application_id ORDER BY r.created_at DESC LIMIT 50`).all();
+    return rows.results || [];
+  },
+
+  async getRelease(request: Request, env: any) {
+    const id = new URL(request.url).pathname.split('/').pop() || '';
+    const rel: any = await env.DB.prepare(`SELECT r.*, a.slug as app_slug, a.name as app_name FROM releases r JOIN applications a ON a.id=r.application_id WHERE r.id=?`).bind(id).first();
+    if (!rel) return { error: 'Release not found' };
+    const pkgs: any = await env.DB.prepare(`SELECT * FROM packages WHERE release_id=?`).all().catch(()=>({results:[]}));
+    return { ...rel, packages: pkgs.results || [] };
+  },
+
+  async publishRelease(request: Request, env: any) {
+    const id = new URL(request.url).pathname.split('/')[3] || new URL(request.url).pathname.split('/').pop() || '';
+    // URL is /admin/releases/:id/publish -> id is 3rd segment
+    const parts = new URL(request.url).pathname.split('/');
+    const relId = parts[3] || parts[parts.length-2];
+    const rel: any = await env.DB.prepare(`SELECT * FROM releases WHERE id=?`).bind(relId).first();
+    if (!rel) return { error: 'Release not found' };
+    if (rel.status === 'published') return { error: 'Already published' };
+    // Verify packages exist and have sha256 and R2 file
+    const pkgs: any = await env.DB.prepare(`SELECT * FROM packages WHERE release_id=?`).bind(relId).all();
+    if (!pkgs.results || pkgs.results.length===0) return { error: 'No packages uploaded for this release. Upload at least one platform.' };
+    for (const p of pkgs.results) {
+      if (!p.sha256 || !p.storage_key) return { error: `Package ${p.platform} missing checksum or storage` };
+      // Verify R2 file exists
+      const obj = await env.STORAGE.head(p.storage_key).catch(()=>null);
+      if (!obj) return { error: `R2 file missing for ${p.platform}: ${p.storage_key}` };
+    }
+    await env.DB.prepare(`UPDATE releases SET status='published', published_at=datetime('now'), updated_at=datetime('now') WHERE id=?`).bind(relId).run();
+    // Set as latest stable if channel stable
+    if (rel.channel === 'stable') {
+      await env.DB.prepare(`UPDATE applications SET current_version=?, last_updated=datetime('now') WHERE id=?`).bind(rel.version, rel.application_id).run();
+    }
+    await env.DB.prepare(`INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?, ?, ?)`).bind(`log_${Date.now()}`, 'publish_release', 'release', relId, JSON.stringify({ version: rel.version })).run().catch(()=>{});
+    return { success: true, id: relId, version: rel.version };
+  },
+
+  async rollbackRelease(request: Request, env: any) {
+    const parts = new URL(request.url).pathname.split('/');
+    const relId = parts[3] || parts[parts.length-2];
+    const body: any = await request.json().catch(()=>({}));
+    if (body?.password !== 'iseedeAdpeople#233') return { error: 'Invalid password for rollback' };
+    const rel: any = await env.DB.prepare(`SELECT * FROM releases WHERE id=?`).bind(relId).first();
+    if (!rel) return { error: 'Release not found' };
+    // Find previous published version for same app
+    const prev: any = await env.DB.prepare(`SELECT * FROM releases WHERE application_id=? AND status='published' AND id!=? ORDER BY published_at DESC LIMIT 1`).bind(rel.application_id, relId).first();
+    if (!prev) return { error: 'No previous published release to rollback to' };
+    await env.DB.prepare(`UPDATE releases SET status='rolled_back', updated_at=datetime('now') WHERE id=?`).bind(relId).run();
+    // Optionally set prev as latest
+    await env.DB.prepare(`UPDATE applications SET current_version=? WHERE id=?`).bind(prev.version, rel.application_id).run();
+    await env.DB.prepare(`INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?, ?, ?)`).bind(`log_${Date.now()}`, 'rollback_release', 'release', relId, JSON.stringify({ from: rel.version, to: prev.version })).run().catch(()=>{});
+    return { success: true, rolledBack: rel.version, now: prev.version };
+  },
+
+  async updateReleaseStatus(request: Request, env: any) {
+    const parts = new URL(request.url).pathname.split('/');
+    const relId = parts[3];
+    const { status } = await request.json().catch(()=>({})) as any;
+    const allowed = ['draft','disabled','archived'];
+    if (!allowed.includes(status)) return { error: 'Invalid status' };
+    await env.DB.prepare(`UPDATE releases SET status=?, updated_at=datetime('now') WHERE id=?`).bind(status, relId).run();
+    return { success: true, id: relId, status };
+  },
+
   async updateApp(request: Request, env: any) {
     const url = new URL(request.url);
     const slug = url.pathname.split('/')[3];

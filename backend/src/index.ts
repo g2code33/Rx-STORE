@@ -92,6 +92,31 @@ export default {
       const data = await adminRoutes.dashboard(normalizedRequest as any, env);
       return json({ success: true, data }, 200, origin);
     }
+    // New Release Management
+    if (path === '/admin/releases' && request.method === 'POST') {
+      const data = await (adminRoutes as any).createNewRelease(normalizedRequest as any, env);
+      if ((data as any)?.error) return json({ success: false, error: { code: 'ERROR', message: (data as any).error } }, 400, origin);
+      return json({ success: true, data }, 200, origin);
+    }
+    if (path === '/admin/releases' && request.method === 'GET') {
+      const data = await (adminRoutes as any).listReleases(normalizedRequest as any, env);
+      return json({ success: true, data }, 200, origin);
+    }
+    if (path.match(/^\/admin\/releases\/[^\/]+$/) && request.method === 'GET') {
+      const data = await (adminRoutes as any).getRelease(normalizedRequest as any, env);
+      if ((data as any)?.error) return json({ success: false, error: data }, 404, origin);
+      return json({ success: true, data }, 200, origin);
+    }
+    if (path.match(/^\/admin\/releases\/[^\/]+\/publish$/) && request.method === 'POST') {
+      const data = await (adminRoutes as any).publishRelease(normalizedRequest as any, env);
+      if ((data as any)?.error) return json({ success: false, error: { code: 'ERROR', message: (data as any).error } }, 400, origin);
+      return json({ success: true, data }, 200, origin);
+    }
+    if (path.match(/^\/admin\/releases\/[^\/]+\/rollback$/) && request.method === 'POST') {
+      const data = await (adminRoutes as any).rollbackRelease(normalizedRequest as any, env);
+      if ((data as any)?.error) return json({ success: false, error: { code: 'ERROR', message: (data as any).error } }, 400, origin);
+      return json({ success: true, data }, 200, origin);
+    }
     if (path === '/admin/reset-stats' && request.method === 'POST') {
       const auth = request.headers.get('Authorization') || '';
       if (!auth.startsWith('Bearer ')) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
