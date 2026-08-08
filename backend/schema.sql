@@ -274,7 +274,7 @@ CREATE INDEX IF NOT EXISTS idx_dlstats_release ON download_statistics(release_id
 
 -- ==================== SEED (idempotent) ====================
 INSERT OR IGNORE INTO applications (id, slug, name, description, category, developer, icon, status, current_version, rating, download_count, price_type, platforms, is_featured) VALUES
-('clinical-rx','clinical-rx','Clinical Rx','Advanced clinical decision support','healthcare','Calcitonin Technologies','🏥','active','3.2.1',4.8,156000,'subscription','["web","windows","linux","android","ios"]',1),
+('clinical-rx','clinical-rx','Clinical Rx','Advanced clinical decision support','healthcare','Calcitonin Technologies','/v1.png','active','3.2.1',4.8,156000,'subscription','["web","windows","linux","android","ios"]',1),
 ('pharmagame','pharmagame','PharmaGAME','Gamified pharmaceutical education','gaming','Calcitonin Technologies','🎮','active','2.4.0',4.9,98000,'free','["web","android","windows"]',1),
 ('code-rx-society','code-rx-society','Code Rx Society','Healthcare developer platform','technology','Calcitonin Technologies','💻','active','1.8.3',4.7,42000,'free','["web","windows","linux"]',1),
 ('tawomo','tawomo','TAWOMO','Healthcare workforce management','productivity','Calcitonin Technologies','👥','active','1.2.0',4.5,18000,'subscription','["web","android"]',0),

@@ -60,7 +60,7 @@ export const apps: App[] = [
     longDescription: 'Clinical Rx is a comprehensive clinical decision support platform designed for healthcare professionals. It provides evidence-based prescribing guidance, real-time drug interaction checking, and patient care optimization tools. Built with the latest medical research and AI-powered insights, Clinical Rx helps clinicians make better decisions faster.\n\nKey capabilities include automated drug interaction screening, dosage recommendations based on patient demographics, integration with major EHR systems, and real-time clinical alerts. The platform is continuously updated with the latest medical literature and FDA advisories.',
     category: 'healthcare',
     tags: ['clinical', 'prescribing', 'drug-interactions', 'EHR', 'decision-support'],
-    icon: '🏥',
+    icon: '/v1.png',
     color: '#FF6B6B',
     gradient: 'from-red-500 to-pink-600',
     screenshots: [],
