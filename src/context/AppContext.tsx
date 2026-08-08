@@ -44,7 +44,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const data = await api.apps.list({ limit: 100 });
       if (data.apps && Array.isArray(data.apps) && data.apps.length > 0) {
-        setApps(data.apps as unknown as App[]);
+        const normalized = (data.apps as any[]).map((a) => normalizeApp(a));
+        setApps(normalized);
       }
     } catch (e: any) {
       setError(e.message || 'Failed to load apps');
@@ -52,6 +53,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setIsLoading(false);
     }
   };
+
+  const normalizeApp = (a: any): App => ({
+    id: a.id,
+    slug: a.slug,
+    name: a.name,
+    description: a.description || '',
+    longDescription: a.longDescription || a.long_description || a.description || '',
+    category: a.category,
+    tags: Array.isArray(a.tags) ? a.tags : [],
+    icon: a.icon || '📦',
+    color: a.color || '#FFD600',
+    gradient: a.gradient || 'from-rx-dark to-rx-dark-secondary',
+    screenshots: Array.isArray(a.screenshots) ? a.screenshots : [],
+    version: a.version || a.current_version || '1.0.0',
+    size: a.size || (a.size_mb ? `${a.size_mb} MB` : '—'),
+    developer: a.developer || 'Calcitonin Technologies',
+    rating: a.rating ?? 4.5,
+    reviewCount: a.reviewCount ?? a.review_count ?? 0,
+    downloadCount: a.downloadCount ?? a.download_count ?? 0,
+    price: (a.price as any) || a.price_type || 'free',
+    priceAmount: a.priceAmount ?? a.price_amount,
+    platforms: Array.isArray(a.platforms) ? a.platforms : [],
+    releaseDate: a.releaseDate || a.release_date || a.created_at || '',
+    lastUpdated: a.lastUpdated || a.last_updated || a.updated_at || '',
+    releaseNotes: Array.isArray(a.releaseNotes) ? a.releaseNotes : (Array.isArray(a.release_notes) ? a.release_notes : ['Latest stable release']),
+    features: Array.isArray(a.features) ? a.features : ['Secure & Verified', 'Cross-platform', 'Auto-updates'],
+    status: a.status || 'active',
+    isFeatured: a.is_featured ?? a.isFeatured,
+    isNew: a.is_new ?? a.isNew,
+    isTrending: a.is_trending ?? a.isTrending,
+  });
 
   useEffect(() => {
     if (isApiConfigured()) refresh();

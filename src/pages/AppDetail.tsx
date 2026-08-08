@@ -131,7 +131,7 @@ export default function AppDetail() {
               <div className="space-y-8 animate-fade-in">
                 <div>
                   <h2 className="text-xl font-bold text-white mb-4">About this application</h2>
-                  {app.longDescription.split('\n\n').map((paragraph, i) => (
+                  {(app.longDescription || app.description || '').split('\n\n').map((paragraph, i) => (
                     <p key={i} className="text-rx-gray-medium leading-relaxed mb-4">{paragraph}</p>
                   ))}
                 </div>

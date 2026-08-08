@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { Search, Menu, X, Bell, User, ChevronDown, LogOut, Settings, Shield, Download } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
@@ -12,6 +12,23 @@ export default function Header() {
   const { searchQuery, setSearchQuery } = useApps();
   const navigate = useNavigate();
   const location = useLocation();
+  const profileRef = useRef<HTMLDivElement>(null);
+  const notifRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onClickOutside = (e: MouseEvent) => {
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) setIsProfileOpen(false);
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) setIsNotifOpen(false);
+    };
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, []);
+
+  useEffect(() => {
+    setIsProfileOpen(false);
+    setIsNotifOpen(false);
+    setIsMenuOpen(false);
+  }, [location.pathname]);
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
@@ -88,7 +105,7 @@ export default function Header() {
           <div className="flex items-center gap-2">
             {/* Notifications */}
             {user && (
-              <div className="relative">
+              <div className="relative" ref={notifRef}>
                 <button
                   onClick={() => { setIsNotifOpen(!isNotifOpen); setIsProfileOpen(false); }}
                   className="relative p-2.5 rounded-xl text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all"
@@ -128,7 +145,7 @@ export default function Header() {
                       ))}
                     </div>
                     <div className="p-3">
-                      <Link to="/profile" className="text-xs text-rx-yellow hover:underline text-center block">
+                      <Link to="/profile" onClick={()=>setIsProfileOpen(false)} className="text-xs text-rx-yellow hover:underline text-center block">
                         View all notifications
                       </Link>
                     </div>
@@ -139,7 +156,7 @@ export default function Header() {
 
             {/* Profile / Auth */}
             {user ? (
-              <div className="relative">
+              <div className="relative" ref={profileRef}>
                 <button
                   onClick={() => { setIsProfileOpen(!isProfileOpen); setIsNotifOpen(false); }}
                   className="flex items-center gap-2 p-1.5 pr-3 rounded-xl hover:bg-white/5 transition-all"
@@ -158,17 +175,17 @@ export default function Header() {
                       <p className="text-xs text-rx-gray-medium">{user.email}</p>
                     </div>
                     <div className="p-2">
-                      <Link to="/profile" className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all">
+                      <Link to="/profile" onClick={()=>setIsProfileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all">
                         <User className="w-4 h-4" /> My Profile
                       </Link>
-                      <Link to="/profile" className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all">
+                      <Link to="/profile" onClick={()=>setIsProfileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all">
                         <Download className="w-4 h-4" /> My Apps
                       </Link>
-                      <Link to="/profile" className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all">
+                      <Link to="/profile" onClick={()=>setIsProfileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all">
                         <Settings className="w-4 h-4" /> Settings
                       </Link>
                       {user.role === 'admin' && (
-                        <Link to="/admin" className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-yellow hover:bg-rx-yellow/10 transition-all">
+                        <Link to="/admin" onClick={()=>setIsProfileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-yellow hover:bg-rx-yellow/10 transition-all">
                           <Shield className="w-4 h-4" /> Admin Dashboard
                         </Link>
                       )}

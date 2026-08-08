@@ -145,6 +145,18 @@ export default {
       if (seg === 'login') { const d: any = await authRoutes.login(normalizedRequest as any, env); if (d.code || d.error) return json({ success:false, error:{ code: d.code || 'ERROR', message: d.message || d.error } }, d.code==='UNAUTHORIZED'?401:400,origin); return json({ success:true, data:d },200,origin); }
       if (seg === 'logout') { const d: any = await authRoutes.logout(normalizedRequest as any, env); return json({ success:true, data:d },200,origin); }
     }
+    if (path === '/users/me' && request.method === 'GET') {
+      const auth = request.headers.get('Authorization') || '';
+      const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+      if (!token) return json({ success:false, error:{ code:'UNAUTHORIZED', message:'No token' }},401,origin);
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1] || ''));
+        const userId = payload.userId;
+        const user: any = await env.DB.prepare('SELECT id, name, email, avatar_url, role, created_at FROM users WHERE id = ?').bind(userId).first();
+        if (!user) return json({ success:false, error:{ code:'NOT_FOUND', message:'User not found' }},404,origin);
+        return json({ success:true, data:{ user:{ id:user.id, name:user.name, email:user.email, avatar:user.avatar_url||'👤', role:user.role, joinDate:(user.created_at||'').slice(0,10) }}},200,origin);
+      } catch (e:any) { return json({ success:false, error:{ message:e.message }},401,origin); }
+    }
     if (path === '/health') return json({ status: 'ok', version: '1.0.0', timestamp: new Date().toISOString() },200,origin);
 
     const res = await router.handle(normalizedRequest as any, env);
