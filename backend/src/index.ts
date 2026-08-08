@@ -4,7 +4,7 @@
 import { Router } from './router';
 import { authMiddleware } from './middleware/auth';
 import { rateLimiter } from './middleware/rateLimiter';
-import { corsMiddleware } from './middleware/cors';
+import { corsMiddleware, corsHeaders } from './middleware/cors';
 
 import { authRoutes } from './routes/auth';
 import { appsRoutes } from './routes/apps';
@@ -34,75 +34,84 @@ router.get('/health', () => ({
   timestamp: new Date().toISOString(),
 }));
 
-function json(data: any, status = 200) {
-  return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } });
+function json(data: any, status = 200, origin = '') {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...corsHeaders(origin) },
+  });
+}
+
+function withCors(res: Response, origin: string): Response {
+  const headers = new Headers(res.headers);
+  const cors = corsHeaders(origin);
+  for (const [k, v] of Object.entries(cors)) headers.set(k, v);
+  return new Response(res.body, { status: res.status, headers });
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const path = url.pathname;
+    let path = url.pathname;
+    if (path.startsWith('/v1')) path = path.slice(3) || '/';
+    const normalizedUrl = new URL(request.url);
+    normalizedUrl.pathname = path;
+    const normalizedRequest = new Request(normalizedUrl.toString(), request);
+    const origin = request.headers.get('Origin') || '';
 
-    // CORS preflight
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,Authorization' } });
+      return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
 
-    // Update check — universal (GET /updates/check or /update/check)
     if ((path === '/updates/check' || path === '/update/check' || path === '/api/updates/check' || path === '/api/update/check') && request.method === 'GET') {
-      const data = await updatesRoutes.checkUpdate(request, env);
-      if ((data as any)?.error) return json({ success: false, error: { code: 'NOT_FOUND', message: (data as any).error } }, 404);
-      return json({ success: true, data });
+      const data = await updatesRoutes.checkUpdate(normalizedRequest as any, env);
+      if ((data as any)?.error) return json({ success: false, error: { code: 'NOT_FOUND', message: (data as any).error } }, 404, origin);
+      return json({ success: true, data }, 200, origin);
     }
 
-    // AI routes — multi-provider (handle directly for correct dispatch)
+    if (path === '/admin/ai/settings' && (request.method === 'PUT' || request.method === 'POST')) {
+      const auth = request.headers.get('Authorization') || '';
+      if (!auth.startsWith('Bearer ')) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+      const data = await aiRoutes.updateSettings(normalizedRequest as any, env);
+      if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
+      return json({ success: true, data }, 200, origin);
+    }
+    if (path === '/admin/users' && request.method === 'GET') {
+      const data = await adminRoutes.listUsers(normalizedRequest as any, env);
+      return json({ success: true, data }, 200, origin);
+    }
+    if (path.match(/^\/admin\/users\/[^\/]+\/role$/) && request.method === 'PATCH') {
+      const data = await adminRoutes.updateUserRole(normalizedRequest as any, env);
+      if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
+      return json({ success: true, data }, 200, origin);
+    }
+    if (path === '/admin/revenue' && request.method === 'GET') {
+      const data = await adminRoutes.revenue(normalizedRequest as any, env);
+      return json({ success: true, data }, 200, origin);
+    }
+    if (path.match(/^\/admin\/apps\/[^\/]+\/releases$/) && request.method === 'POST') {
+      const data = await adminRoutes.createRelease(normalizedRequest as any, env);
+      if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
+      return json({ success: true, data }, 200, origin);
+    }
+
     if (path.startsWith('/ai/') || path === '/ai') {
-      // Public list of providers (no auth needed for status)
       if (path === '/ai/providers' && request.method === 'GET') {
-        const data = await aiRoutes.providers(request, env);
-        return json({ success: true, data });
+        const data = await aiRoutes.providers(normalizedRequest as any, env);
+        return json({ success: true, data }, 200, origin);
       }
-      // Chat / recommend require auth if JWT present; but allow unauthenticated for marketplace assistant
       if (path === '/ai/chat' && request.method === 'POST') {
-        const data = await aiRoutes.chat(request, env);
-        if ((data as any)?.error) return json({ success: false, error: data }, 400);
-        return json({ success: true, data });
+        const data = await aiRoutes.chat(normalizedRequest as any, env);
+        if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
+        return json({ success: true, data }, 200, origin);
       }
       if (path === '/ai/recommend' && request.method === 'POST') {
-        const data = await aiRoutes.recommend(request, env);
-        return json({ success: true, data });
+        const data = await aiRoutes.recommend(normalizedRequest as any, env);
+        return json({ success: true, data }, 200, origin);
       }
-      // Admin: update provider/model (and optionally apiKey via admin UI)
-      if (path === '/admin/ai/settings' && (request.method === 'PUT' || request.method === 'POST')) {
-        const auth = request.headers.get('Authorization') || '';
-        if (!auth.startsWith('Bearer ')) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401);
-        const data = await aiRoutes.updateSettings(request, env);
-        if ((data as any)?.error) return json({ success: false, error: data }, 400);
-        return json({ success: true, data });
-      }
-      if (path === '/admin/users' && request.method === 'GET') {
-        const data = await adminRoutes.listUsers(request, env);
-        return json({ success: true, data });
-      }
-      if (path.match(/^\/admin\/users\/[^\/]+\/role$/) && request.method === 'PATCH') {
-        const data = await adminRoutes.updateUserRole(request, env);
-        if ((data as any)?.error) return json({ success: false, error: data }, 400);
-        return json({ success: true, data });
-      }
-      if (path === '/admin/revenue' && request.method === 'GET') {
-        const data = await adminRoutes.revenue(request, env);
-        return json({ success: true, data });
-      }
-      if (path.match(/^\/admin\/apps\/[^\/]+\/releases$/) && request.method === 'POST') {
-        const data = await adminRoutes.createRelease(request, env);
-        if ((data as any)?.error) return json({ success: false, error: data }, 400);
-        return json({ success: true, data });
-      }
-      if (path === '/ai/providers') return json({ success: false, error: { code: 'NOT_FOUND' } }, 404);
     }
-    // Admin AI also accessible via /admin/ai/settings already handled inside /ai block for convenience
 
-    return router.handle(request, env);
+    const res = await router.handle(normalizedRequest as any, env);
+    return withCors(res, origin);
   },
 };
 
@@ -111,7 +120,6 @@ interface Env {
   STORAGE: R2Bucket;
   CACHE: KVNamespace;
   JWT_SECRET: string;
-  // AI — multi-provider secrets (all optional, at least one needed for live AI)
   NVIDIA_API_KEY?: string;
   OPENAI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
