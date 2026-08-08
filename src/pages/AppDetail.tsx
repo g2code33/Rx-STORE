@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Star, Download, ArrowLeft, Share2, ExternalLink, Check, ChevronRight, Shield, Clock, Monitor, Calendar, Tag, ThumbsUp } from 'lucide-react';
+import DownloadModal from '../components/apps/DownloadModal';
 import { useApps } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
 import { reviews } from '../data/apps';
@@ -17,6 +18,7 @@ export default function AppDetail() {
   const [newRating, setNewRating] = useState(5);
   const [newComment, setNewComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [showDownload, setShowDownload] = useState(false);
 
   if (!app) {
     return (
@@ -30,44 +32,71 @@ export default function AppDetail() {
   }
 
   const isInstalled = installedApps.includes(app.id);
-  const appReviews = reviews.filter((r) => r.appId === app.id);
+  const [liveReviews, setLiveReviews] = React.useState<any[] | null>(null);
+  React.useEffect(() => {
+    const API = (import.meta as any).env?.VITE_API_URL;
+    if (!API || !app.slug) return;
+    fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/reviews`)
+      .then(r=>r.json()).then(j=>{
+        const arr = j?.data || j?.results || j;
+        if (Array.isArray(arr) && arr.length) {
+          const mapped = arr.map((r:any)=>({
+            id: r.id,
+            appId: app.id,
+            userId: r.user_id || r.userId,
+            userName: r.user_name || r.userName || r.name || 'User',
+            userAvatar: r.avatar_url || r.userAvatar || '👤',
+            rating: r.rating,
+            comment: r.comment,
+            date: r.created_at || r.date || new Date().toISOString(),
+            helpful: r.helpful_count ?? r.helpful ?? 0,
+          }));
+          setLiveReviews(mapped);
+        }
+      }).catch(()=>{});
+  }, [app.slug]);
+  const appReviews = (liveReviews || reviews.filter((r) => r.appId === app.id));
 
   const handleInstall = async () => {
     if (!user) { toast.error('Please sign in to install applications'); return; }
+    if (isInstalled) return;
+    setShowDownload(true);
+  };
+  const doDownload = async (platform: string) => {
     setIsInstalling(true);
+    setShowDownload(false);
     try {
       const API = (import.meta as any).env?.VITE_API_URL;
+      const token = localStorage.getItem('rx-store-token')||'';
+      const url = API ? `${API.replace(/\/$/,'')}/apps/${app.slug}/download?platform=${platform}` : null;
       let downloadOk = false;
-      if (API) {
-        const plat = (navigator as any).userAgent?.includes('Android') ? 'android' : (navigator.platform?.toLowerCase().includes('win') ? 'windows' : 'web');
-        const token = localStorage.getItem('rx-store-token')||'';
-        const r = await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/download?platform=${plat}`, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} });
+      if (url) {
+        const r = await fetch(url, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} });
         const j = await r.json().catch(()=>null);
         if (!r.ok || !j?.success) throw new Error(j?.error?.message || 'Download failed');
         downloadOk = true;
-        const url = j?.data?.url;
-        if (url && url.startsWith('http')) {
+        const dlUrl = j?.data?.url;
+        if (dlUrl && dlUrl.startsWith('http')) {
           const a = document.createElement('a');
-          a.href = url;
-          a.download = `${app.slug}-${app.version}`;
+          a.href = dlUrl;
+          a.download = `${app.slug}-${app.version}-${platform}`;
           a.target = '_blank';
           document.body.appendChild(a);
           a.click();
           a.remove();
         }
-        toast.success(`Installed ${app.name} — download counted`);
+        toast.success(`Downloading ${app.name} for ${platform} — counted`);
       } else {
-        await new Promise((r) => setTimeout(r, 800));
+        await new Promise((r) => setTimeout(r, 600));
         downloadOk = true;
         toast.success(`${app.name} installed`);
       }
       if (downloadOk) {
         installApp(app.id);
-        // refresh to show new download_count live
         setTimeout(()=> (window as any).rxRefreshApps?.(), 500);
       }
     } catch (e:any) {
-      toast.error(e.message || 'Install failed — not counted');
+      toast.error(e.message || 'Download failed — not counted');
     }
     setIsInstalling(false);
   };
@@ -147,6 +176,7 @@ export default function AppDetail() {
           </div>
         </div>
       </div>
+      {showDownload && <DownloadModal app={app} onClose={()=>setShowDownload(false)} onDownload={doDownload} />}
 
       <div className="section-container py-8">
         <div className="flex gap-1 border-b border-white/10 mb-8 overflow-x-auto">
