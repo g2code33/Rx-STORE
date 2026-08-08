@@ -29,10 +29,10 @@ export const authRoutes = {
     }
 
     const passwordHash = await hashPassword(password);
-    
-    const { id } = await env.DB.prepare(
-      'INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?) RETURNING id'
-    ).bind(name, email, passwordHash).first();
+    const id = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO users (id, name, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?, datetime(\'now\'))'
+    ).bind(id, name, email, passwordHash, 'user').run();
 
     const token = generateToken({ userId: id, role: 'user' }, env.JWT_SECRET);
     const refreshToken = generateRefreshToken({ userId: id }, env.JWT_SECRET);
@@ -59,7 +59,7 @@ export const authRoutes = {
     const refreshToken = generateRefreshToken({ userId: user.id }, env.JWT_SECRET);
 
     // Update last login
-    await env.DB.prepare('UPDATE users SET last_login_at = NOW() WHERE id = ?').bind(user.id).run();
+    await env.DB.prepare(`UPDATE users SET last_login_at = datetime('now') WHERE id = ?`).bind(user.id).run();
 
     return {
       user: { id: user.id, name: user.name, email: user.email, role: user.role },
