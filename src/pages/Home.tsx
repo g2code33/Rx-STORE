@@ -1,10 +1,51 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, Shield, Zap, Globe, Download, Star, Users, Cpu, Heart, GraduationCap, Gamepad2 } from 'lucide-react';
 import { useApps } from '../context/AppContext';
 import { featuredApps, trendingApps, newApps, categories } from '../data/apps';
 import AppCard from '../components/apps/AppCard';
 import { formatDownloadCount } from '../utils/helpers';
+
+
+function StatsBar({ apps }: { apps: any[] }) {
+  const [stats, setStats] = React.useState({ apps: apps.length || 0, downloads: 0, platforms: 5, rating: 0 });
+  React.useEffect(() => {
+    const API = (import.meta as any).env?.VITE_API_URL;
+    if (!API) {
+      const totalDl = apps.reduce((s,a)=> s + (a.downloadCount||0), 0);
+      const avg = apps.length ? (apps.reduce((s,a)=> s + (a.rating||0),0)/apps.length) : 0;
+      setStats({ apps: apps.length, downloads: totalDl, platforms: 5, rating: Number(avg.toFixed(1)) });
+      return;
+    }
+    fetch(`${API.replace(/\/$/,'')}/admin/dashboard`, { headers: { 'Authorization': `Bearer ${localStorage.getItem('rx-store-token')||''}` } })
+      .then(r=>r.json()).then(j=>{
+        const d=j.data||j;
+        const totalDl = d.totalDownloads ?? apps.reduce((s,a)=> s + (a.downloadCount||0),0);
+        const avg = d.averageRating ?? (apps.length ? apps.reduce((s,a)=> s + (a.rating||0),0)/apps.length : 0);
+        setStats({ apps: apps.length || d.totalUsers || 0, downloads: totalDl, platforms: 5, rating: Number(Number(avg).toFixed(1)) });
+      }).catch(()=>{
+        const totalDl = apps.reduce((s,a)=> s + (a.downloadCount||0),0);
+        const avg = apps.length ? apps.reduce((s,a)=> s + (a.rating||0),0)/apps.length : 0;
+        setStats({ apps: apps.length, downloads: totalDl, platforms: 5, rating: Number(avg.toFixed(1)) });
+      });
+  }, [apps]);
+  const fmt = (n:number)=> n>=1000 ? `${(n/1000).toFixed(n>=10000?0:1)}K` : String(n);
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 mt-16 max-w-2xl mx-auto animate-slide-up" style={{ animationDelay: '0.3s' }}>
+      {[
+        { value: String(stats.apps), label: 'Applications' },
+        { value: stats.downloads===0 ? '0' : fmt(stats.downloads), label: 'Downloads' },
+        { value: String(stats.platforms), label: 'Platforms' },
+        { value: stats.rating ? String(stats.rating) : '0.0', label: 'Avg Rating' },
+      ].map((stat) => (
+        <div key={stat.label} className="text-center">
+          <p className="text-2xl sm:text-3xl font-bold text-rx-yellow">{stat.value}</p>
+          <p className="text-xs text-rx-gray-medium mt-1">{stat.label}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function Home() {
   const { apps } = useApps();
@@ -55,20 +96,8 @@ export default function Home() {
               </Link>
             </div>
 
-            {/* Stats */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 mt-16 max-w-2xl mx-auto animate-slide-up" style={{ animationDelay: '0.3s' }}>
-              {[
-                { value: '8+', label: 'Applications' },
-                { value: '700K+', label: 'Downloads' },
-                { value: '5', label: 'Platforms' },
-                { value: '4.7', label: 'Avg Rating' },
-              ].map((stat) => (
-                <div key={stat.label} className="text-center">
-                  <p className="text-2xl sm:text-3xl font-bold text-rx-yellow">{stat.value}</p>
-                  <p className="text-xs text-rx-gray-medium mt-1">{stat.label}</p>
-                </div>
-              ))}
-            </div>
+            {/* Stats — real from D1 */}
+            <StatsBar apps={apps} />
           </div>
         </div>
 
