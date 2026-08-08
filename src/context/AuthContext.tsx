@@ -102,18 +102,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = async (email: string, password: string): Promise<boolean> => {
     setIsLoading(true);
-    try {
-      if (isApiConfigured()) {
+    if (isApiConfigured()) {
+      try {
         const { user: apiUser } = await api.auth.login(email, password);
         setUser(apiUser);
         localStorage.setItem('rx-store-user', JSON.stringify(apiUser));
+        setIsLoading(false);
         return true;
+      } catch (e: any) {
+        setIsLoading(false);
+        // Don't fallback to mock when API is live — show real error (wrong password etc.)
+        const msg = e.message || 'Login failed';
+        // Only fallback to mock if it's a network/config error, not auth error
+        if (msg.includes('Invalid credentials') || msg.includes('not found') || msg.includes('401') || msg.includes('403')) {
+          throw e;
+        }
+        // Network error — allow mock fallback for offline demo
+        if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('API not configured')) {
+          await new Promise((resolve) => setTimeout(resolve, 600));
+          const demoUser = { ...mockUser, email };
+          setUser(demoUser);
+          localStorage.setItem('rx-store-user', JSON.stringify(demoUser));
+          return true;
+        }
+        throw e;
       }
-    } catch {
-      // fall through to mock
     }
     await new Promise((resolve) => setTimeout(resolve, 600));
-    // demo: accept any credentials when offline
     const demoUser = { ...mockUser, email };
     setUser(demoUser);
     localStorage.setItem('rx-store-user', JSON.stringify(demoUser));
@@ -123,16 +138,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const register = async (name: string, email: string, password: string): Promise<boolean> => {
     setIsLoading(true);
-    try {
-      if (isApiConfigured()) {
+    if (isApiConfigured()) {
+      try {
         const { user: apiUser } = await api.auth.register(name, email, password);
         setUser(apiUser);
         localStorage.setItem('rx-store-user', JSON.stringify(apiUser));
         setIsLoading(false);
         return true;
+      } catch (e: any) {
+        setIsLoading(false);
+        const msg = e.message || '';
+        if (msg.includes('already registered') || msg.includes('Invalid email') || msg.includes('Password')) throw e;
+        if (msg.includes('Failed to fetch') || msg.includes('API not configured')) {
+          await new Promise((resolve) => setTimeout(resolve, 600));
+          const newUser = { ...mockUser, name, email };
+          setUser(newUser);
+          localStorage.setItem('rx-store-user', JSON.stringify(newUser));
+          return true;
+        }
+        throw e;
       }
-    } catch {
-      // fall through
     }
     await new Promise((resolve) => setTimeout(resolve, 600));
     const newUser = { ...mockUser, name, email };
