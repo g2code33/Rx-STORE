@@ -135,14 +135,26 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
                 if (!token) { window.location.href = '/login'; return; }
                 try {
                   const API = (import.meta as any).env?.VITE_API_URL;
+                  let ok = false;
                   if (API) {
                     const r = await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/download?platform=web`, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} });
                     const j = await r.json().catch(()=>null);
+                    if (!r.ok || !j?.success) throw new Error(j?.error?.message||'Download failed');
+                    ok = true;
                     const url = j?.data?.url;
                     if (url && url.startsWith('http')) window.open(url, '_blank');
+                  } else {
+                    ok = true;
                   }
-                } catch {}
-                installApp(app.id);
+                  if (ok) {
+                    installApp(app.id);
+                    // trigger refresh of counts if available
+                    (window as any).dispatchEvent(new CustomEvent('rx-refresh'));
+                  }
+                } catch (err:any) {
+                  const { default: toast } = await import('react-hot-toast');
+                  toast.error(err.message || 'Install failed');
+                }
               }}
               className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-all ${app.price === 'free' ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-rx-yellow text-rx-dark hover:bg-rx-yellow-light'}`}
             >

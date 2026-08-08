@@ -37,11 +37,15 @@ export default function AppDetail() {
     setIsInstalling(true);
     try {
       const API = (import.meta as any).env?.VITE_API_URL;
+      let downloadOk = false;
       if (API) {
         const plat = (navigator as any).userAgent?.includes('Android') ? 'android' : (navigator.platform?.toLowerCase().includes('win') ? 'windows' : 'web');
-        const r = await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/download?platform=${plat}`);
+        const token = localStorage.getItem('rx-store-token')||'';
+        const r = await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/download?platform=${plat}`, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} });
         const j = await r.json().catch(()=>null);
-        const url = j?.data?.url || j?.url;
+        if (!r.ok || !j?.success) throw new Error(j?.error?.message || 'Download failed');
+        downloadOk = true;
+        const url = j?.data?.url;
         if (url && url.startsWith('http')) {
           const a = document.createElement('a');
           a.href = url;
@@ -50,18 +54,20 @@ export default function AppDetail() {
           document.body.appendChild(a);
           a.click();
           a.remove();
-          toast.success(`Downloading ${app.name}...`);
-        } else {
-          toast.success(`${app.name} queued for download`);
         }
+        toast.success(`Installed ${app.name} — download counted`);
       } else {
-        await new Promise((r) => setTimeout(r, 1200));
-        toast.success(`${app.name} installed successfully!`);
+        await new Promise((r) => setTimeout(r, 800));
+        downloadOk = true;
+        toast.success(`${app.name} installed`);
       }
-      installApp(app.id);
+      if (downloadOk) {
+        installApp(app.id);
+        // refresh to show new download_count live
+        setTimeout(()=> (window as any).rxRefreshApps?.(), 500);
+      }
     } catch (e:any) {
-      installApp(app.id);
-      toast.success(`${app.name} installed`);
+      toast.error(e.message || 'Install failed — not counted');
     }
     setIsInstalling(false);
   };

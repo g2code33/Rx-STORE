@@ -87,6 +87,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (isApiConfigured()) refresh();
+    const onRefresh = () => refresh();
+    window.addEventListener('rx-refresh', onRefresh);
+    (window as any).rxRefreshApps = refresh;
+    return () => window.removeEventListener('rx-refresh', onRefresh);
   }, []);
 
   const getFilteredApps = () => {
