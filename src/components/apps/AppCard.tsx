@@ -17,7 +17,7 @@ function AppIcon({ icon, gradient, size = 'w-16 h-16 text-2xl' }: { icon: string
 }
 
 export default function AppCard({ app, variant = 'default' }: AppCardProps) {
-  const { installedApps } = useApps();
+  const { installedApps, installApp } = useApps();
   const isInstalled = installedApps.includes(app.id);
   const isLogoUrl = app.icon?.startsWith('http') || app.icon?.startsWith('/') || app.icon?.startsWith('data:');
 
@@ -112,8 +112,8 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
           {app.description}
         </p>
 
-        {/* Stats */}
-        <div className="flex items-center justify-between mt-auto">
+        {/* Stats + Install */}
+        <div className="flex items-center justify-between mt-auto gap-2">
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1">
               <Star className={`w-4 h-4 ${getRatingColor(app.rating)} fill-current`} />
@@ -126,13 +126,28 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
           </div>
 
           {isInstalled ? (
-            <span className="text-xs font-medium text-green-400 bg-green-400/10 px-2.5 py-1 rounded-lg">
-              Installed
-            </span>
+            <span className="text-xs font-medium text-green-400 bg-green-400/10 px-2.5 py-1 rounded-lg">Installed</span>
           ) : (
-            <span className={`text-sm font-semibold ${app.price === 'free' ? 'text-green-400' : 'text-rx-yellow'}`}>
-              {app.price === 'free' ? 'Free' : `$${app.priceAmount}${app.price === 'subscription' ? '/mo' : ''}`}
-            </span>
+            <button
+              onClick={async (e) => {
+                e.preventDefault(); e.stopPropagation();
+                const token = localStorage.getItem('rx-store-token');
+                if (!token) { window.location.href = '/login'; return; }
+                try {
+                  const API = (import.meta as any).env?.VITE_API_URL;
+                  if (API) {
+                    const r = await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/download?platform=web`, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} });
+                    const j = await r.json().catch(()=>null);
+                    const url = j?.data?.url;
+                    if (url && url.startsWith('http')) window.open(url, '_blank');
+                  }
+                } catch {}
+                installApp(app.id);
+              }}
+              className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-all ${app.price === 'free' ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-rx-yellow text-rx-dark hover:bg-rx-yellow-light'}`}
+            >
+              {app.price === 'free' ? 'Install' : `Get $${app.priceAmount || ''}`}
+            </button>
           )}
         </div>
 
