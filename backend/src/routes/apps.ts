@@ -59,6 +59,35 @@ export const appsRoutes = {
     const slug = url.pathname.split('/').filter(Boolean)[1];
     const app: any = await env.DB.prepare(`SELECT id FROM applications WHERE slug = ?`).bind(slug).first();
     if (!app) return { error: 'Application not found' };
+    if (request.method === 'POST') {
+      let body: any;
+      try { body = await request.json(); } catch { return { error: 'Invalid JSON' }; }
+      const { rating, comment } = body || {};
+      if (!rating || rating < 1 || rating > 5) return { error: 'Rating 1-5 required' };
+      const auth = request.headers.get('Authorization') || '';
+      if (!auth.startsWith('Bearer ')) return { error: 'Please sign in to review' };
+      let uid: string | null = null;
+      let uname = 'User';
+      try {
+        const payload = JSON.parse(atob(auth.slice(7).split('.')[1]||''));
+        uid = payload.userId;
+        const u: any = await env.DB.prepare('SELECT name FROM users WHERE id=?').bind(uid).first().catch(()=>null);
+        if (u?.name) uname = u.name;
+      } catch {}
+      if (!uid) return { error: 'Invalid token' };
+      const id = `rev_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+      try {
+        await env.DB.prepare(`INSERT INTO reviews (id, app_id, user_id, rating, comment, helpful_count) VALUES (?,?,?,?,?,0)`).bind(id, app.id, uid, rating, comment||'').run();
+      } catch (e:any) {
+        if (String(e.message).includes('UNIQUE')) {
+          await env.DB.prepare(`UPDATE reviews SET rating=?, comment=?, updated_at=datetime('now') WHERE app_id=? AND user_id=?`).bind(rating, comment||'', app.id, uid).run();
+        } else throw e;
+      }
+      const agg: any = await env.DB.prepare(`SELECT AVG(rating) as avg, COUNT(*) as cnt FROM reviews WHERE app_id=?`).bind(app.id).first().catch(()=>null);
+      if (agg) await env.DB.prepare(`UPDATE applications SET rating=?, review_count=? WHERE id=?`).bind(agg.avg||0, agg.cnt||0, app.id).run().catch(()=>{});
+      const created: any = await env.DB.prepare(`SELECT r.*, u.name as user_name FROM reviews r LEFT JOIN users u ON r.user_id=u.id WHERE r.id=?`).bind(id).first().catch(()=>({ id, rating, comment, user_name: uname }));
+      return created || { id, rating, comment, user_name: uname };
+    }
     const reviews: any = await env.DB.prepare(`SELECT r.*, u.name as user_name, u.avatar_url FROM reviews r LEFT JOIN users u ON r.user_id = u.id WHERE r.app_id = ? ORDER BY r.created_at DESC`).bind(app.id).all();
     return reviews.results || [];
   },
