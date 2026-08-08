@@ -10,9 +10,16 @@ interface AppCardProps {
   variant?: 'default' | 'featured' | 'compact' | 'horizontal';
 }
 
+function AppIcon({ icon, gradient, size = 'w-16 h-16 text-2xl' }: { icon: string; gradient: string; size?: string }) {
+  const isUrl = icon?.startsWith('http') || icon?.startsWith('/') || icon?.startsWith('data:');
+  if (isUrl) return <img src={icon} alt="logo" className={`${size.split(' ')[0]} ${size.split(' ')[0].includes('w-') ? '' : 'w-16 h-16'} rounded-2xl object-cover shadow-lg`} style={{ width: '4rem', height: '4rem' }} />;
+  return <div className={`${size} rounded-2xl bg-gradient-to-br ${gradient} flex items-center justify-center flex-shrink-0 shadow-lg`}>{icon}</div>;
+}
+
 export default function AppCard({ app, variant = 'default' }: AppCardProps) {
   const { installedApps } = useApps();
   const isInstalled = installedApps.includes(app.id);
+  const isLogoUrl = app.icon?.startsWith('http') || app.icon?.startsWith('/') || app.icon?.startsWith('data:');
 
   if (variant === 'horizontal') {
     return (
@@ -20,9 +27,7 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
         to={`/app/${app.slug}`}
         className="card-hover p-4 flex items-center gap-4 group"
       >
-        <div className={`w-16 h-16 rounded-2xl bg-gradient-to-br ${app.gradient} flex items-center justify-center text-2xl flex-shrink-0 shadow-lg`}>
-          {app.icon}
-        </div>
+        {isLogoUrl ? <img src={app.icon} alt={app.name} className="w-16 h-16 rounded-2xl object-cover shadow-lg flex-shrink-0" /> : <div className={`w-16 h-16 rounded-2xl bg-gradient-to-br ${app.gradient} flex items-center justify-center text-2xl flex-shrink-0 shadow-lg`}>{app.icon}</div>}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="font-semibold text-white group-hover:text-rx-yellow transition-colors truncate">
@@ -53,9 +58,7 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
         to={`/app/${app.slug}`}
         className="card-hover p-4 flex flex-col items-center text-center group"
       >
-        <div className={`w-14 h-14 rounded-2xl bg-gradient-to-br ${app.gradient} flex items-center justify-center text-xl shadow-lg mb-3`}>
-          {app.icon}
-        </div>
+        {isLogoUrl ? <img src={app.icon} alt={app.name} className="w-14 h-14 rounded-2xl object-cover shadow-lg mb-3" /> : <div className={`w-14 h-14 rounded-2xl bg-gradient-to-br ${app.gradient} flex items-center justify-center text-xl shadow-lg mb-3`}>{app.icon}</div>}
         <h3 className="text-sm font-semibold text-white group-hover:text-rx-yellow transition-colors truncate w-full">
           {app.name}
         </h3>
@@ -71,9 +74,7 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
     >
       {/* Card Header / Icon Area */}
       <div className={`relative h-40 bg-gradient-to-br ${app.gradient} p-6 flex items-center justify-center`}>
-        <div className="text-6xl transform group-hover:scale-110 transition-transform duration-500">
-          {app.icon}
-        </div>
+        {isLogoUrl ? <img src={app.icon} alt={app.name} className="w-20 h-20 rounded-2xl object-cover transform group-hover:scale-110 transition-transform duration-500" /> : <div className="text-6xl transform group-hover:scale-110 transition-transform duration-500">{app.icon}</div>}
         {/* Badges */}
         <div className="absolute top-3 left-3 flex gap-2">
           {app.isFeatured && (

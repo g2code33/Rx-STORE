@@ -116,7 +116,27 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
             <div><label className="text-xs text-rx-gray-medium">Price Amount</label><input value={form.priceAmount} onChange={e=>setForm({...form, priceAmount:e.target.value})} placeholder="29.99" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
             <div><label className="text-xs text-rx-gray-medium">Version</label><input value={form.version} onChange={e=>setForm({...form, version:e.target.value})} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
             <div><label className="text-xs text-rx-gray-medium">Size (e.g. 148 MB)</label><input value={form.size} onChange={e=>setForm({...form, size:e.target.value})} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
-            <div><label className="text-xs text-rx-gray-medium">Icon (emoji)</label><input value={form.icon} onChange={e=>setForm({...form, icon:e.target.value})} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
+            <div><label className="text-xs text-rx-gray-medium">Logo (image file or URL / emoji)</label>
+              <div className="flex gap-2">
+                <input value={form.icon} onChange={e=>setForm({...form, icon:e.target.value})} placeholder="https://.../logo.png or 📦" className="flex-1 bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/>
+                <label className="px-3 py-2 rounded-xl bg-white/10 text-white text-sm cursor-pointer hover:bg-white/20 flex items-center gap-1">
+                  Upload
+                  <input type="file" accept="image/*" className="hidden" onChange={async (e)=>{
+                    const f=(e.target as HTMLInputElement).files?.[0]; if(!f) return;
+                    const fd=new FormData(); fd.append('file', f); fd.append('kind','icons'); fd.append('slug', form.slug||'app');
+                    try {
+                      const token=localStorage.getItem('rx-store-token')||'';
+                      const r=await fetch(`${(import.meta as any).env.VITE_API_URL}/admin/upload`,{method:'POST',headers:{'Authorization':`Bearer ${token}`},body:fd});
+                      const j=await r.json(); if(!r.ok) throw new Error(j.error?.message||'Upload failed');
+                      setForm((prev:any)=>({...prev, icon:j.data?.url || j.data?.key}));
+                      // @ts-ignore
+                      import('react-hot-toast').then(m=>m.default.success('Logo uploaded'));
+                    } catch(err:any){ (await import('react-hot-toast')).default.error(err.message); }
+                  }}/>
+                </label>
+              </div>
+              {form.icon?.startsWith('http') && <img src={form.icon} alt="logo" className="mt-2 w-16 h-16 rounded-xl object-cover border border-white/10"/>}
+            </div>
             <div><label className="text-xs text-rx-gray-medium">Rating</label><input type="number" step="0.1" value={form.rating} onChange={e=>setForm({...form, rating:e.target.value})} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
           </div>
           <div><label className="text-xs text-rx-gray-medium">Short Description</label><textarea value={form.description} onChange={e=>setForm({...form, description:e.target.value})} rows={2} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>

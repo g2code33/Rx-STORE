@@ -108,6 +108,26 @@ export default {
       if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
       return json({ success: true, data }, 200, origin);
     }
+    // Upload logo/screenshot to R2 — returns URL
+    if (path === '/admin/upload' && request.method === 'POST') {
+      const auth = request.headers.get('Authorization') || '';
+      if (!auth.startsWith('Bearer ')) return json({ success:false, error:{ message:'Unauthorized' }},401,origin);
+      try {
+        const form = await normalizedRequest.formData();
+        const file: any = form.get('file');
+        const kind = (form.get('kind') as string) || 'icons';
+        const slug = (form.get('slug') as string) || 'general';
+        if (!file || typeof file.arrayBuffer !== 'function') return json({ success:false, error:{ message:'No file' }},400,origin);
+        const buf = await file.arrayBuffer();
+        const ext = (file.name || 'png').split('.').pop() || 'png';
+        const key = `assets/${kind}/${slug}-${Date.now()}.${ext}`;
+        await env.STORAGE.put(key, buf, { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
+        // R2 public URL — if bucket is public, else Worker will serve via /assets/...
+        const url = `https://rx-store-storage.${env.CLOUDFLARE_ACCOUNT_ID || ''}.r2.dev/${key}`;
+        // For now return R2 key as url; frontend can use it via Worker proxy if needed
+        return json({ success:true, data:{ url, key }},200,origin);
+      } catch (e:any) { return json({ success:false, error:{ message:e.message }},500,origin); }
+    }
     // Download — record and return URL (real R2 signed URL when file exists)
     if (path.match(/^\/apps\/[^\/]+\/download$/) && request.method === 'GET') {
       try {

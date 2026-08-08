@@ -84,8 +84,8 @@ export default function AppDetail() {
             <ArrowLeft className="w-4 h-4" /> Back to Browse
           </Link>
           <div className="flex flex-col lg:flex-row gap-8 items-start">
-            <div className="w-24 h-24 lg:w-32 lg:h-32 rounded-3xl bg-white/20 backdrop-blur-xl flex items-center justify-center text-5xl lg:text-6xl shadow-2xl flex-shrink-0">
-              {app.icon}
+            <div className="w-24 h-24 lg:w-32 lg:h-32 rounded-3xl bg-white/20 backdrop-blur-xl flex items-center justify-center text-5xl lg:text-6xl shadow-2xl flex-shrink-0 overflow-hidden">
+              {app.icon?.startsWith('http') || app.icon?.startsWith('/') ? <img src={app.icon} alt={app.name} className="w-full h-full object-cover rounded-3xl" /> : app.icon}
             </div>
             <div className="flex-1">
               <div className="flex items-center gap-3 flex-wrap">
