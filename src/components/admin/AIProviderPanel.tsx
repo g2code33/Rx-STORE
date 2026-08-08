@@ -41,6 +41,8 @@ export default function AIProviderPanel() {
     if (!token) { toast.error('Login as admin first'); return; }
     setSaving(provider);
     try {
+      // Saving only stores the key/model for this provider — it does NOT change the active
+      // provider (use the "Activate" button for that), so NVIDIA stays main unless you switch it.
       const body: any = { provider, model: models[provider] || undefined };
       if (keys[provider]) body.apiKey = keys[provider];
       const res = await fetch(`${API_URL}/admin/ai/settings`, {
@@ -50,8 +52,8 @@ export default function AIProviderPanel() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || data.error || 'Failed');
-      toast.success(`${provider} saved — now active`);
-      setKeys(k => ({ ...k, [provider]: '' }));
+      toast.success(`${provider} key saved`);
+      // Keep the typed key in the field (don't clear it) so it doesn't look like it vanished.
       fetchProviders();
     } catch (e: any) { toast.error(e.message); }
     finally { setSaving(''); }
@@ -64,7 +66,7 @@ export default function AIProviderPanel() {
       const res = await fetch(`${API_URL}/admin/ai/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ provider, model: models[provider] || providers.find(p=>p.id===provider)?.defaultModel }),
+        body: JSON.stringify({ provider, model: models[provider] || providers.find(p=>p.id===provider)?.defaultModel, activate: true }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || 'Failed');
@@ -76,25 +78,29 @@ export default function AIProviderPanel() {
 
   const testProvider = async (provider: string) => {
     if (!API_URL) { toast.error('Set VITE_API_URL'); return; }
+    if (!token) { toast.error('Login as admin first'); return; }
     setTesting(provider);
     setTestResult(r=>({ ...r, [provider]: '' }));
     try {
-      const res = await fetch(`${API_URL}/ai/chat`, {
+      // Tests the key currently typed in the field (even if not saved yet). If the field is
+      // empty, the backend falls back to whatever key is already saved for this provider.
+      const res = await fetch(`${API_URL}/admin/ai/test`, {
         method: 'POST',
-        headers: { 'Content-Type':'application/json', ...(token?{'Authorization':`Bearer ${token}`}:{}) },
-        body: JSON.stringify({ message: 'Test: say hello in one sentence', provider }),
+        headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ provider, apiKey: keys[provider] || undefined, model: models[provider] || undefined }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error?.message || j.error?.error || 'Failed');
       const txt = j.data?.response || j.response || JSON.stringify(j).slice(0,300);
       setTestResult(r=>({ ...r, [provider]: txt }));
-      toast.success(`${provider} responded`);
+      toast.success(`${provider} key works ✅`);
     } catch (e:any) {
       setTestResult(r=>({ ...r, [provider]: 'Error: ' + e.message }));
       toast.error(e.message);
     }
     setTesting('');
   };
+
 
   if (loading) return <div className="card p-8 text-center text-rx-gray-medium flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin"/> Loading providers…</div>;
 
@@ -142,9 +148,10 @@ export default function AIProviderPanel() {
                   <button onClick={()=>save(p.id)} disabled={!!saving} className="flex-1 btn-primary py-2 text-sm flex items-center justify-center gap-1.5 disabled:opacity-50">
                     {saving===p.id ? <Loader2 className="w-4 h-4 animate-spin"/> : <Save className="w-4 h-4"/>} Save
                   </button>
-                  {p.hasKey && <button onClick={()=>testProvider(p.id)} disabled={testing===p.id} className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs flex items-center justify-center gap-1 disabled:opacity-50">{testing===p.id ? <Loader2 className="w-3 h-3 animate-spin"/> : <>🧪 Test</>}</button>}
+                  <button onClick={()=>testProvider(p.id)} disabled={testing===p.id || (!keys[p.id] && !p.hasKey)} title={!keys[p.id] && !p.hasKey ? 'Enter an API key first' : 'Test this API key'} className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs flex items-center justify-center gap-1 disabled:opacity-50">{testing===p.id ? <Loader2 className="w-3 h-3 animate-spin"/> : <>🧪 Test</>}</button>
                   {!isActive && <button onClick={()=>activate(p.id)} disabled={!!saving} className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm flex items-center gap-1.5"><Sparkles className="w-4 h-4"/> Active</button>}
                 </div>
+
                 {testResult[p.id] && <div className={`p-2 rounded-lg text-xs ${testResult[p.id].startsWith('Error') ? 'bg-red-500/10 border border-red-500/20 text-red-300' : 'bg-green-500/10 border border-green-500/20 text-green-300'}`}>{testResult[p.id].slice(0,300)}</div>}
               </div>
             </div>
@@ -154,7 +161,7 @@ export default function AIProviderPanel() {
 
       <div className="card p-4 bg-rx-dark-tertiary/30 border border-white/5">
         <p className="text-sm font-medium text-white">How it works</p>
-        <p className="text-xs text-rx-gray-medium mt-1">Frontend sends <code className="px-1 py-0.5 bg-white/10 rounded text-[11px]">{"{message, provider:'nvidia'}"}</code> to <code className="px-1 py-0.5 bg-white/10 rounded text-[11px]">POST /ai/chat</code>. Backend picks: request provider → D1 <code>ai_settings</code> (admin choice) → <code>env.AI_PROVIDER</code> (wrangler.toml). If chosen provider has no key or errors, it falls back to <code>AI_FALLBACK=openrouter,openai,gemini</code> automatically.</p>
+        <p className="text-xs text-rx-gray-medium mt-1">Frontend sends <code className="px-1 py-0.5 bg-white/10 rounded text-[11px]">{"{message, provider:'nvidia'}"}</code> to <code className="px-1 py-0.5 bg-white/10 rounded text-[11px]">POST /ai/chat</code>. Backend picks: request provider → D1 <code>ai_settings</code> (admin choice) → <code>env.AI_PROVIDER</code> (wrangler.toml). NVIDIA is always kept in the fallback chain (<code>AI_FALLBACK=nvidia,openrouter,openai,gemini</code>) so it's never dropped even if another provider is active. <strong className="text-white">Save</strong> only stores a provider's key/model — it won't change which provider is active. Use <strong className="text-white">Active</strong> to switch, and <strong className="text-white">🧪 Test</strong> to verify a key (typed or saved) before relying on it.</p>
       </div>
     </div>
   );

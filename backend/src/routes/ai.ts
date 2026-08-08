@@ -118,23 +118,31 @@ export const aiRoutes = {
     if (!message || typeof message !== 'string') return { error: 'message is required' };
 
     const { provider, model } = await getActiveProvider(env, requestedProvider);
-    const order: Provider[] = [provider, ...(((env.AI_FALLBACK as string) || 'openrouter,openai').split(',').map(s=>s.trim()).filter(Boolean) as Provider[])].filter((v,i,a)=>a.indexOf(v)===i) as Provider[];
+    const valid: Provider[] = ['nvidia', 'openrouter', 'openai', 'gemini'];
+    // NVIDIA is always the main/primary provider and is always kept in the chain — even if a
+    // different provider is currently "active" — so it's never silently dropped from fallback.
+    const fallbackList = ((env.AI_FALLBACK as string) || 'nvidia,openrouter,openai,gemini')
+      .split(',').map(s => s.trim().toLowerCase()).filter((s): s is Provider => valid.includes(s as Provider));
+    const combined = [provider, 'nvidia' as Provider, ...fallbackList];
+    const order: Provider[] = combined.filter((v, i, a) => valid.includes(v) && a.indexOf(v) === i);
 
-    let lastError = '';
+    const attempts: string[] = [];
     for (const p of order) {
       const { baseUrl, key } = await getProviderCreds(env, p);
       const m = p === provider ? model : PROVIDER_CONFIG[p].defaultModel;
-      if (!key) { lastError = `No key for ${p}`; continue; }
+      if (!key) { attempts.push(`${p}: no key`); continue; }
       try {
         const text = p === 'gemini' ? await callGemini(baseUrl, key, m, message) : await callOpenAICompatible(baseUrl, key, m, message);
         if (text) return { response: text, provider: p, model: m, suggestions: ['Show me healthcare apps','Compare Clinical Rx vs CureLink','What apps work offline?'] };
-      } catch (e: any) { lastError = e.message || String(e); continue; }
+        attempts.push(`${p}: empty response`);
+      } catch (e: any) { attempts.push(`${p}: ${(e.message || String(e)).slice(0,120)}`); continue; }
     }
     // If all providers failed, return detailed error for debugging
-    if (lastError) {
-      console.log(`AI chat failed for ${provider}, tried ${order.join(',')}: ${lastError}`);
+    if (attempts.length) {
+      console.log(`AI chat failed — tried ${order.join(',')} — ${attempts.join(' | ')}`);
     }
-    return { response: `I'm the RX Store Assistant (offline). ${lastError ? `(last error: ${lastError.slice(0,200)})` : ''} Try: Clinical Rx for prescribing, CureLink for patient communication.`, provider: 'offline', suggestions: ['Show me healthcare apps'] };
+    const summary = attempts.length ? ` (tried ${attempts.join('; ')})` : '';
+    return { response: `I'm the RX Store Assistant (offline).${summary} Try: Clinical Rx for prescribing, CureLink for patient communication. Ask an admin to add an API key under Admin → AI Providers.`, provider: 'offline', suggestions: ['Show me healthcare apps'] };
   },
 
   async recommend(request: Request, env: any) {
@@ -168,12 +176,59 @@ export const aiRoutes = {
     const model = body.model || '';
     const valid: Provider[] = ['nvidia','openrouter','openai','gemini'];
     if (!valid.includes(provider)) return { error: 'Invalid provider. Use nvidia|openrouter|openai|gemini' };
-    await env.DB.prepare(`INSERT INTO ai_settings (id, provider, model, updated_at) VALUES ('default', ?, ?, datetime('now')) ON CONFLICT(id) DO UPDATE SET provider=excluded.provider, model=excluded.model, updated_at=datetime('now')`).bind(provider, model || PROVIDER_CONFIG[provider as Provider].defaultModel).run();
+
+    // Saving a key/model for a provider does NOT change which provider is active — that only
+    // happens when `activate: true` is explicitly sent (the Admin UI's "Activate" button).
+    // This keeps NVIDIA as the main/active provider unless an admin deliberately switches it.
+    const shouldActivate = body.activate === true;
+    if (shouldActivate) {
+      await env.DB.prepare(`INSERT INTO ai_settings (id, provider, model, updated_at) VALUES ('default', ?, ?, datetime('now')) ON CONFLICT(id) DO UPDATE SET provider=excluded.provider, model=excluded.model, updated_at=datetime('now')`).bind(provider, model || PROVIDER_CONFIG[provider as Provider].defaultModel).run();
+    } else if (model) {
+      // Still let the admin update the model for a provider that isn't active yet, stored under its own key row.
+      await env.DB.prepare(`INSERT INTO ai_settings (id, provider, model, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT(id) DO UPDATE SET model=excluded.model, updated_at=datetime('now')`).bind('model_'+provider, provider, model).run();
+    }
     // Also allow storing keys via admin (encrypted at rest — simple obfuscation here; for production use Secrets Store)
     if (body.apiKey && typeof body.apiKey === 'string' && body.apiKey.length > 10) {
       // Store in D1 as fallback if env secret not set — not recommended for highly sensitive keys, but enables admin UI
-      await env.DB.prepare(`INSERT INTO ai_settings (id, provider, model, api_key, updated_at) VALUES ('key_'+?, ?, ?, ?, datetime('now')) ON CONFLICT(id) DO UPDATE SET api_key=excluded.api_key, updated_at=datetime('now')`).bind(provider, provider, model, body.apiKey).run();
+      // NOTE: SQLite `+` is numeric coercion, not string concat — must use `||` to build the id.
+      await env.DB.prepare(`INSERT INTO ai_settings (id, provider, model, api_key, updated_at) VALUES ('key_' || ?, ?, ?, ?, datetime('now')) ON CONFLICT(id) DO UPDATE SET api_key=excluded.api_key, updated_at=datetime('now')`).bind(provider, provider, model, body.apiKey).run();
     }
-    return { success: true, provider, model: model || PROVIDER_CONFIG[provider as Provider].defaultModel };
+    return { success: true, provider, model: model || PROVIDER_CONFIG[provider as Provider].defaultModel, activated: shouldActivate };
+
+  },
+
+  // Admin: test a provider's API key directly (no fallback chain, nothing saved unless the key
+  // was already stored). Lets the admin verify a freshly-typed, unsaved key before hitting Save.
+  async testKey(request: Request, env: any) {
+    const body: any = await request.json().catch(() => ({}));
+    const provider = (body.provider || '').toLowerCase() as Provider;
+    const valid: Provider[] = ['nvidia', 'openrouter', 'openai', 'gemini'];
+    if (!valid.includes(provider)) return { error: 'Invalid provider. Use nvidia|openrouter|openai|gemini' };
+
+    const cfg = PROVIDER_CONFIG[provider];
+    const baseUrl = (body.baseUrl && typeof body.baseUrl === 'string' ? body.baseUrl : '') || env[cfg.baseUrlEnv] || cfg.defaultBase;
+    const model = (body.model && typeof body.model === 'string' ? body.model : '') || cfg.defaultModel;
+
+    // Prefer the key typed in the form (not yet saved); otherwise fall back to whatever is already stored.
+    let key: string = (body.apiKey && typeof body.apiKey === 'string' ? body.apiKey : '') || '';
+    if (!key) {
+      key = env[cfg.keyEnv] || '';
+      if (!key && env.DB) {
+        try {
+          const row: any = await env.DB.prepare(`SELECT api_key FROM ai_settings WHERE id=?`).bind('key_' + provider).first();
+          if (row?.api_key) key = row.api_key;
+        } catch {}
+      }
+    }
+    if (!key) return { error: `No API key provided or saved for ${provider}` };
+
+    try {
+      const text = provider === 'gemini'
+        ? await callGemini(baseUrl, key, model, 'Reply with a short one-sentence greeting to confirm this API key works.')
+        : await callOpenAICompatible(baseUrl, key, model, 'Reply with a short one-sentence greeting to confirm this API key works.');
+      return { success: true, provider, model, response: text || '(empty response)' };
+    } catch (e: any) {
+      return { error: `${provider} test failed: ${(e.message || String(e)).slice(0, 300)}` };
+    }
   },
 };

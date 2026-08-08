@@ -75,6 +75,13 @@ export default {
       if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
       return json({ success: true, data }, 200, origin);
     }
+    if (path === '/admin/ai/test' && request.method === 'POST') {
+      const auth = request.headers.get('Authorization') || '';
+      if (!auth.startsWith('Bearer ')) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+      const data = await aiRoutes.testKey(normalizedRequest as any, env);
+      if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
+      return json({ success: true, data }, 200, origin);
+    }
     if (path === '/admin/users' && request.method === 'GET') {
       const data = await adminRoutes.listUsers(normalizedRequest as any, env);
       return json({ success: true, data }, 200, origin);
