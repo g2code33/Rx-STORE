@@ -52,32 +52,14 @@ const mockUser: User = {
   avatar: '👨‍⚕️',
   role: 'user',
   joinDate: '2024-01-15',
-  downloadedApps: ['clinical-rx', 'curelink', 'pharma-game'],
-  subscriptions: [
-    {
-      id: 'sub-1',
-      appId: 'clinical-rx',
-      plan: 'Professional',
-      status: 'active',
-      startDate: '2024-01-15',
-      endDate: '2025-01-15',
-      amount: 29.99,
-    },
-    {
-      id: 'sub-2',
-      appId: 'curelink',
-      plan: 'Standard',
-      status: 'active',
-      startDate: '2024-06-01',
-      endDate: '2025-06-01',
-      amount: 19.99,
-    },
-  ],
+  downloadedApps: [],
+  subscriptions: [],
   notifications: mockNotifications,
 };
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const dispatchAuth = (u: any) => { try { window.dispatchEvent(new CustomEvent('rx-auth-change')); } catch {} };
   const [isLoading, setIsLoading] = useState(true);
   const [notifications, setNotifications] = useState<Notification[]>(mockNotifications);
 
@@ -124,6 +106,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const { user: apiUser } = await api.auth.login(email, password);
         setUser(apiUser);
         localStorage.setItem('rx-store-user', JSON.stringify(apiUser));
+        dispatchAuth(apiUser);
         setIsLoading(false);
         return true;
       } catch (e: any) {
@@ -137,9 +120,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Network error — allow mock fallback for offline demo
         if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('API not configured')) {
           await new Promise((resolve) => setTimeout(resolve, 600));
-          const demoUser = { ...mockUser, email };
+          const demoUser = { ...mockUser, email, downloadedApps: [], subscriptions: [] };
           setUser(demoUser);
           localStorage.setItem('rx-store-user', JSON.stringify(demoUser));
+          dispatchAuth(demoUser);
           return true;
         }
         throw e;
@@ -160,6 +144,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const { user: apiUser } = await api.auth.register(name, email, password, phone);
         setUser(apiUser);
         localStorage.setItem('rx-store-user', JSON.stringify(apiUser));
+        dispatchAuth(apiUser);
         setIsLoading(false);
         return true;
       } catch (e: any) {
@@ -168,18 +153,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (msg.includes('already registered') || msg.includes('Invalid email') || msg.includes('Password') || msg.includes('phone')) throw e;
         if (msg.includes('Failed to fetch') || msg.includes('API not configured')) {
           await new Promise((resolve) => setTimeout(resolve, 600));
-          const newUser = { ...mockUser, name, email, phone };
+          const newUser = { ...mockUser, name, email, phone, downloadedApps: [], subscriptions: [] };
           setUser(newUser);
           localStorage.setItem('rx-store-user', JSON.stringify(newUser));
+          dispatchAuth(newUser);
           return true;
         }
         throw e;
       }
     }
     await new Promise((resolve) => setTimeout(resolve, 600));
-    const newUser = { ...mockUser, name, email, phone };
+    const newUser = { ...mockUser, name, email, phone, downloadedApps: [], subscriptions: [] };
     setUser(newUser);
     localStorage.setItem('rx-store-user', JSON.stringify(newUser));
+    dispatchAuth(newUser);
     setIsLoading(false);
     return true;
   };
@@ -197,6 +184,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearToken();
     setUser(null);
     localStorage.removeItem('rx-store-user');
+    dispatchAuth(null);
+    try { localStorage.removeItem('rx-store-installed'); } catch {}
   };
 
   const updateProfile = (updates: Partial<User>) => {
@@ -204,6 +193,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const updatedUser = { ...user, ...updates };
       setUser(updatedUser);
       localStorage.setItem('rx-store-user', JSON.stringify(updatedUser));
+      dispatchAuth(updatedUser);
     }
   };
 

@@ -33,8 +33,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [selectedCategory, setSelectedCategory] = useState<AppCategory | null>(null);
   const [selectedPlatform, setSelectedPlatform] = useState<string | null>(null);
   const [installedApps, setInstalledApps] = useState<string[]>(() => {
-    const saved = localStorage.getItem('rx-store-installed');
-    return saved ? JSON.parse(saved) : ['clinical-rx', 'curelink'];
+    // Brand new site: start empty. Per-user key to avoid new accounts seeing old installs.
+    const userStr = localStorage.getItem('rx-store-user');
+    let userId = '';
+    try { userId = userStr ? JSON.parse(userStr).id : ''; } catch {}
+    const key = userId ? `rx-store-installed-${userId}` : 'rx-store-installed';
+    const saved = localStorage.getItem(key) || localStorage.getItem('rx-store-installed');
+    if (saved) { try { const arr = JSON.parse(saved); return Array.isArray(arr) ? arr : []; } catch {} }
+    return [];
   });
 
   const refresh = async () => {
@@ -125,10 +131,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const getAppsByCategory = (category: AppCategory) =>
     apps.filter((app) => app.category === category);
 
+  const getInstalledKey = () => {
+    try {
+      const u = localStorage.getItem('rx-store-user');
+      const uid = u ? JSON.parse(u).id : '';
+      return uid ? `rx-store-installed-${uid}` : 'rx-store-installed';
+    } catch { return 'rx-store-installed'; }
+  };
+
   const installApp = (appId: string) => {
     setInstalledApps((prev) => {
+      if (prev.includes(appId)) return prev;
       const updated = [...prev, appId];
-      localStorage.setItem('rx-store-installed', JSON.stringify(updated));
+      localStorage.setItem(getInstalledKey(), JSON.stringify(updated));
+      localStorage.setItem('rx-store-installed', JSON.stringify(updated)); // keep legacy for fallback
       return updated;
     });
   };
@@ -136,10 +152,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const uninstallApp = (appId: string) => {
     setInstalledApps((prev) => {
       const updated = prev.filter((id) => id !== appId);
+      localStorage.setItem(getInstalledKey(), JSON.stringify(updated));
       localStorage.setItem('rx-store-installed', JSON.stringify(updated));
       return updated;
     });
   };
+
+  // Reload per-user installs when user changes (login/logout)
+  useEffect(() => {
+    const h = () => {
+      const key = getInstalledKey();
+      const saved = localStorage.getItem(key) || localStorage.getItem('rx-store-installed');
+      if (saved) { try { const arr = JSON.parse(saved); setInstalledApps(Array.isArray(arr)?arr:[]); return; } catch {} }
+      setInstalledApps([]);
+    };
+    window.addEventListener('storage', h);
+    // also listen for auth changes via custom event
+    window.addEventListener('rx-auth-change', h as any);
+    return () => { window.removeEventListener('storage', h); window.removeEventListener('rx-auth-change', h as any); };
+  }, []);
 
   return (
     <AppContext.Provider
