@@ -110,6 +110,42 @@ export default {
       }
     }
 
+    if (path === '/apps' && request.method === 'GET') {
+      try {
+        const data = await appsRoutes.list(normalizedRequest as any, env);
+        if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
+        return json({ success: true, data }, 200, origin);
+      } catch (e: any) { return json({ success: false, error: { message: e.message } }, 500, origin); }
+    }
+    if (path === '/categories' && request.method === 'GET') {
+      const cats = [
+        { id: 'healthcare', name: 'Healthcare', icon: 'Heart', description: 'Clinical tools', count: 3, color: '#FF6B6B' },
+        { id: 'education', name: 'Education', icon: 'GraduationCap', description: 'Learning platforms', count: 2, color: '#4ECDC4' },
+        { id: 'productivity', name: 'Productivity', icon: 'Zap', description: 'Workflow tools', count: 2, color: '#45B7D1' },
+        { id: 'technology', name: 'Technology', icon: 'Cpu', description: 'Developer tools', count: 2, color: '#96CEB4' },
+        { id: 'gaming', name: 'Gaming', icon: 'Gamepad2', description: 'Educational games', count: 1, color: '#FFEAA7' },
+        { id: 'social', name: 'Social', icon: 'Users', description: 'Community', count: 1, color: '#DDA0DD' },
+      ];
+      return json({ success: true, data: cats }, 200, origin);
+    }
+    if (path.startsWith('/apps/') && request.method === 'GET') {
+      try {
+        if (path.endsWith('/reviews')) {
+          const data = await appsRoutes.reviews(normalizedRequest as any, env);
+          return json({ success: true, data }, 200, origin);
+        }
+        const data = await appsRoutes.detail(normalizedRequest as any, env);
+        if ((data as any)?.error) return json({ success: false, error: data }, 404, origin);
+        return json({ success: true, data }, 200, origin);
+      } catch (e: any) { return json({ success: false, error: { message: e.message } }, 500, origin); }
+    }
+    if (path.startsWith('/auth/') && request.method === 'POST') {
+      const seg = path.split('/')[2];
+      if (seg === 'register') { const d: any = await authRoutes.register(normalizedRequest as any, env); if (d.error) return json({ success:false, error:d },400,origin); return json({ success:true, data:d },200,origin); }
+      if (seg === 'login') { const d: any = await authRoutes.login(normalizedRequest as any, env); if (d.error) return json({ success:false, error:d },400,origin); return json({ success:true, data:d },200,origin); }
+    }
+    if (path === '/health') return json({ status: 'ok', version: '1.0.0', timestamp: new Date().toISOString() },200,origin);
+
     const res = await router.handle(normalizedRequest as any, env);
     return withCors(res, origin);
   },
