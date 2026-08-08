@@ -37,7 +37,22 @@ export const appsRoutes = {
     const slug = url.pathname.split('/').filter(Boolean).pop() || '';
     const app: any = await env.DB.prepare(`SELECT * FROM applications WHERE slug = ?`).bind(slug).first();
     if (!app) return { error: 'Application not found' };
-    return { ...app, platforms: tryParse(app.platforms, []), tags: tryParse(app.tags, []), downloadCount: app.download_count, reviewCount: app.review_count, priceAmount: app.price_amount, price: app.price_type || app.price };
+    const row = { ...app, platforms: tryParse(app.platforms, []), tags: tryParse(app.tags, []), downloadCount: app.download_count, reviewCount: app.review_count, priceAmount: app.price_amount, price: app.price_type || app.price || 'free' };
+    // Provide frontend defaults for fields not stored in D1
+    row.longDescription = app.long_description || app.description || '';
+    row.features = tryParse(app.features, null) || ['Secure & Verified', 'Cross-platform', 'Auto-updates', 'Cloud sync'];
+    row.releaseNotes = tryParse(app.release_notes, null) || ['Latest stable release'];
+    row.screenshots = tryParse(app.screenshots, []);
+    row.gradient = app.gradient || 'from-rx-dark to-rx-dark-secondary';
+    row.color = app.color || '#FFD600';
+    row.size = app.size || (app.size_mb ? `${app.size_mb} MB` : '—');
+    row.version = app.current_version || app.version || '1.0.0';
+    row.releaseDate = app.release_date || app.created_at;
+    row.lastUpdated = app.last_updated || app.updated_at || app.created_at;
+    row.developer = app.developer || 'Calcitonin Technologies';
+    row.status = app.status || 'active';
+    row.category = app.category || 'healthcare';
+    return row;
   },
   async reviews(request: Request, env: any) {
     const url = new URL(request.url);

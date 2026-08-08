@@ -51,7 +51,7 @@ export default function AppDetail() {
 
   return (
     <div className="min-h-screen">
-      <div className={`relative bg-gradient-to-br ${app.gradient}`}>
+      <div className={`relative bg-gradient-to-br ${app.gradient || 'from-rx-dark to-rx-dark-secondary'}`}>
         <div className="absolute inset-0 bg-black/20" />
         <div className="relative section-container py-12 lg:py-16">
           <Link to="/browse" className="inline-flex items-center gap-2 text-white/70 hover:text-white text-sm mb-6 transition-colors">
@@ -84,7 +84,7 @@ export default function AppDetail() {
                 </div>
               </div>
               <div className="flex items-center gap-2 mt-4">
-                {app.platforms.map((p) => (
+                {(app.platforms || []).map((p: any) => (
                   <span key={p} className="px-3 py-1 bg-white/10 backdrop-blur-sm text-white/90 text-xs rounded-lg capitalize">{p}</span>
                 ))}
               </div>
@@ -138,7 +138,7 @@ export default function AppDetail() {
                 <div>
                   <h2 className="text-xl font-bold text-white mb-4">Key Features</h2>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {app.features.map((feature, i) => (
+                    {(app.features || []).map((feature, i) => (
                       <div key={i} className="flex items-start gap-3 p-3 rounded-xl bg-rx-dark-secondary/50 border border-white/5">
                         <div className="w-6 h-6 rounded-lg bg-rx-yellow/20 flex items-center justify-center flex-shrink-0 mt-0.5">
                           <Check className="w-3.5 h-3.5 text-rx-yellow" />
@@ -152,7 +152,7 @@ export default function AppDetail() {
                   <h2 className="text-xl font-bold text-white mb-4">Screenshots</h2>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     {[1, 2, 3, 4].map((i) => (
-                      <div key={i} className={`aspect-video rounded-xl bg-gradient-to-br ${app.gradient} opacity-40 flex items-center justify-center`}>
+                      <div key={i} className={`aspect-video rounded-xl bg-gradient-to-br ${app.gradient || 'from-rx-dark to-rx-dark-secondary'} opacity-40 flex items-center justify-center`}>
                         <span className="text-white/50 text-sm">Screenshot {i}</span>
                       </div>
                     ))}
@@ -221,7 +221,7 @@ export default function AppDetail() {
                     <span className="text-xs text-rx-gray-medium">Latest · {formatDate(app.lastUpdated)}</span>
                   </div>
                   <ul className="space-y-2">
-                    {app.releaseNotes.map((note, i) => (
+                    {(app.releaseNotes || []).map((note: any, i: number) => (
                       <li key={i} className="flex items-start gap-2 text-sm text-rx-gray-medium">
                         <ChevronRight className="w-4 h-4 text-rx-yellow flex-shrink-0 mt-0.5" />{note}
                       </li>
@@ -257,9 +257,9 @@ export default function AppDetail() {
               <h3 className="font-bold text-white text-lg">Information</h3>
               <div className="space-y-3">
                 {[
-                  { icon: Calendar, label: 'Released', value: formatDate(app.releaseDate) },
-                  { icon: Clock, label: 'Updated', value: formatDate(app.lastUpdated) },
-                  { icon: Monitor, label: 'Size', value: app.size },
+                  { icon: Calendar, label: 'Released', value: app.releaseDate ? formatDate(app.releaseDate) : '—' },
+                  { icon: Clock, label: 'Updated', value: app.lastUpdated ? formatDate(app.lastUpdated) : '—' },
+                  { icon: Monitor, label: 'Size', value: app.size || '—' },
                   { icon: Tag, label: 'Version', value: app.version },
                   { icon: Shield, label: 'Security', value: 'Verified & Safe' },
                 ].map((item) => (
@@ -275,7 +275,7 @@ export default function AppDetail() {
             <div className="card p-6">
               <h3 className="font-bold text-white mb-3">Tags</h3>
               <div className="flex flex-wrap gap-2">
-                {app.tags.map((tag) => (
+                {(app.tags || []).map((tag: any) => (
                   <span key={tag} className="px-2.5 py-1 bg-rx-dark-tertiary text-rx-gray-medium text-xs rounded-lg hover:text-rx-yellow hover:bg-rx-yellow/10 transition-all cursor-pointer">#{tag}</span>
                 ))}
               </div>
