@@ -52,10 +52,17 @@ async function getActiveProvider(env: any, requested?: string): Promise<{ provid
   return { provider, model };
 }
 
-function getProviderCreds(env: any, provider: Provider) {
+async function getProviderCreds(env: any, provider: Provider) {
   const cfg = PROVIDER_CONFIG[provider];
   const baseUrl = env[cfg.baseUrlEnv] || cfg.defaultBase;
-  const key = env[cfg.keyEnv] || '';
+  let key = env[cfg.keyEnv] || '';
+  // Fallback to D1 stored key (from Admin UI)
+  if (!key && env.DB) {
+    try {
+      const row: any = await env.DB.prepare(`SELECT api_key FROM ai_settings WHERE id=?`).bind('key_'+provider).first();
+      if (row?.api_key) key = row.api_key;
+    } catch {}
+  }
   const model = env.AI_MODEL || cfg.defaultModel;
   return { baseUrl, key, model };
 }
@@ -115,8 +122,7 @@ export const aiRoutes = {
 
     let lastError = '';
     for (const p of order) {
-      const { baseUrl, key } = getProviderCreds(env, p);
-      // For env-overridden model, prefer resolved model when p === provider
+      const { baseUrl, key } = await getProviderCreds(env, p);
       const m = p === provider ? model : PROVIDER_CONFIG[p].defaultModel;
       if (!key) { lastError = `No key for ${p}`; continue; }
       try {
@@ -138,11 +144,17 @@ export const aiRoutes = {
 
   async providers(request: Request, env: any) {
     const { provider: active } = await getActiveProvider(env);
-    const list = (['nvidia','openrouter','openai','gemini'] as Provider[]).map(p => {
+    const list = await Promise.all((['nvidia','openrouter','openai','gemini'] as Provider[]).map(async p => {
       const cfg = PROVIDER_CONFIG[p];
-      const key = env[cfg.keyEnv] || '';
+      let key = env[cfg.keyEnv] || '';
+      if (!key && env.DB) {
+        try {
+          const row: any = await env.DB.prepare(`SELECT api_key FROM ai_settings WHERE id=?`).bind('key_'+p).first();
+          if (row?.api_key) key = row.api_key;
+        } catch {}
+      }
       return { id: p, enabled: !!key, hasKey: !!key, baseUrl: env[cfg.baseUrlEnv] || cfg.defaultBase, defaultModel: cfg.defaultModel, active: p===active };
-    });
+    }));
     return { active, providers: list };
   },
 

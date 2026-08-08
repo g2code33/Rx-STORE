@@ -215,13 +215,21 @@ export default function AppDetail() {
                 </div>
                 <div>
                   <h2 className="text-xl font-bold text-white mb-4">Screenshots</h2>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {[1, 2, 3, 4].map((i) => (
-                      <div key={i} className={`aspect-video rounded-xl bg-gradient-to-br ${app.gradient || 'from-rx-dark to-rx-dark-secondary'} opacity-40 flex items-center justify-center`}>
-                        <span className="text-white/50 text-sm">Screenshot {i}</span>
-                      </div>
-                    ))}
-                  </div>
+                  {(app.screenshots && (app.screenshots as any[]).length > 0) ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {(app.screenshots as any[]).map((url: string, i: number) => (
+                        <img key={i} src={url} alt={`Screenshot ${i+1}`} className="aspect-video rounded-xl object-cover border border-white/10" />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {[1, 2, 3, 4].map((i) => (
+                        <div key={i} className={`aspect-video rounded-xl bg-gradient-to-br ${app.gradient || 'from-rx-dark to-rx-dark-secondary'} opacity-40 flex items-center justify-center`}>
+                          <span className="text-white/50 text-sm">Screenshot {i} — upload in Admin → Edit</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             )}

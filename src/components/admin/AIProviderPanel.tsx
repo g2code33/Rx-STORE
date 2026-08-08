@@ -12,6 +12,8 @@ export default function AIProviderPanel() {
   const [saving, setSaving] = useState('');
   const [keys, setKeys] = useState<Record<string, string>>({});
   const [models, setModels] = useState<Record<string, string>>({});
+  const [testing, setTesting] = useState('');
+  const [testResult, setTestResult] = useState<Record<string,string>>({});
 
   const token = localStorage.getItem('rx-store-token') || '';
 
@@ -72,6 +74,28 @@ export default function AIProviderPanel() {
     finally { setSaving(''); }
   };
 
+  const testProvider = async (provider: string) => {
+    if (!API_URL) { toast.error('Set VITE_API_URL'); return; }
+    setTesting(provider);
+    setTestResult(r=>({ ...r, [provider]: '' }));
+    try {
+      const res = await fetch(`${API_URL}/ai/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', ...(token?{'Authorization':`Bearer ${token}`}:{}) },
+        body: JSON.stringify({ message: 'Test: say hello in one sentence', provider }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error?.message || j.error?.error || 'Failed');
+      const txt = j.data?.response || j.response || JSON.stringify(j).slice(0,300);
+      setTestResult(r=>({ ...r, [provider]: txt }));
+      toast.success(`${provider} responded`);
+    } catch (e:any) {
+      setTestResult(r=>({ ...r, [provider]: 'Error: ' + e.message }));
+      toast.error(e.message);
+    }
+    setTesting('');
+  };
+
   if (loading) return <div className="card p-8 text-center text-rx-gray-medium flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin"/> Loading providers…</div>;
 
   const brand: Record<string, { color: string; label: string; desc: string }> = {
@@ -120,6 +144,14 @@ export default function AIProviderPanel() {
                   </button>
                   {!isActive && <button onClick={()=>activate(p.id)} disabled={!!saving} className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm flex items-center gap-1.5"><Sparkles className="w-4 h-4"/> Make Active</button>}
                 </div>
+                {p.hasKey && (
+                  <div className="space-y-2">
+                    <button onClick={()=>testProvider(p.id)} disabled={testing===p.id} className="w-full py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs flex items-center justify-center gap-1">
+                      {testing===p.id ? <><Loader2 className="w-3 h-3 animate-spin"/> Testing...</> : <>🧪 Test {p.id} API</>}
+                    </button>
+                    {testResult[p.id] && <div className={`p-2 rounded-lg text-xs ${testResult[p.id].startsWith('Error') ? 'bg-red-500/10 border border-red-500/20 text-red-300' : 'bg-green-500/10 border border-green-500/20 text-green-300'}`}>{testResult[p.id].slice(0,300)}</div>}
+                  </div>
+                )}
               </div>
             </div>
           );

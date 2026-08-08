@@ -208,7 +208,42 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
               <p className="text-[11px] text-rx-gray-medium mt-1">Tap to select, or type custom.</p>
             </div>
           </div>
-          <div><label className="text-xs text-rx-gray-medium">Screenshots (URLs, comma separated)</label><textarea value={form.screenshots} onChange={e=>setForm({...form, screenshots:e.target.value})} placeholder="https://.../1.png, https://.../2.png" rows={2} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
+          <div>
+            <label className="text-xs text-rx-gray-medium">Screenshots — Upload images (stored to R2)</label>
+            <div className="mt-1 p-3 rounded-xl bg-rx-dark border border-white/10">
+              <div className="flex flex-wrap gap-2 mb-2">
+                {form.screenshots.split(',').map((s:string)=>s.trim()).filter(Boolean).map((url:string, i:number)=>(
+                  <div key={i} className="relative group">
+                    <img src={url} alt="screenshot" className="w-20 h-12 rounded-lg object-cover border border-white/10"/>
+                    <button type="button" onClick={()=>{
+                      const arr=form.screenshots.split(',').map((x:string)=>x.trim()).filter(Boolean);
+                      arr.splice(i,1);
+                      setForm({...form, screenshots: arr.join(', ')});
+                    }} className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-white text-xs opacity-0 group-hover:opacity-100">✕</button>
+                  </div>
+                ))}
+              </div>
+              <label className="flex items-center justify-center gap-2 p-3 rounded-xl border-2 border-dashed border-white/10 hover:border-rx-yellow/30 bg-rx-dark/50 cursor-pointer">
+                <span className="text-sm text-rx-gray-medium">Upload screenshots (PNG/JPG)</span>
+                <input type="file" accept="image/*" multiple className="hidden" onChange={async (e)=>{
+                  const files=(e.target as HTMLInputElement).files; if(!files) return;
+                  for (const f of Array.from(files)) {
+                    const fd=new FormData(); fd.append('file', f); fd.append('kind','screenshots'); fd.append('slug', form.slug||'app');
+                    try {
+                      const token=localStorage.getItem('rx-store-token')||'';
+                      const r=await fetch(`${(import.meta as any).env.VITE_API_URL}/admin/upload`,{method:'POST',headers:{'Authorization':`Bearer ${token}`},body:fd});
+                      const j=await r.json(); if(!r.ok) throw new Error(j.error?.message||'Upload failed');
+                      const url=j.data?.url;
+                      setForm((prev:any)=>({ ...prev, screenshots: prev.screenshots ? prev.screenshots + ', ' + url : url }));
+                      const { default: toast } = await import('react-hot-toast'); toast.success('Screenshot uploaded');
+                    } catch(err:any){ const { default: toast } = await import('react-hot-toast'); toast.error(err.message); }
+                  }
+                }}/>
+              </label>
+              <p className="text-[11px] text-rx-gray-medium mt-1">Or paste URLs comma-separated. Uploaded to <code className="px-1 bg-white/10 rounded">R2 assets/screenshots/</code>.</p>
+              <input value={form.screenshots} onChange={e=>setForm({...form, screenshots:e.target.value})} placeholder="https://.../1.png, https://.../2.png" className="mt-2 w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder:text-rx-gray-medium/60" />
+            </div>
+          </div>
           <div><label className="text-xs text-rx-gray-medium">Features (one per line)</label><textarea value={form.features} onChange={e=>setForm({...form, features:e.target.value})} rows={3} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
           <div><label className="text-xs text-rx-gray-medium">Release Notes (one per line)</label><textarea value={form.releaseNotes} onChange={e=>setForm({...form, releaseNotes:e.target.value})} rows={3} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
           <div className="grid grid-cols-2 gap-4">
