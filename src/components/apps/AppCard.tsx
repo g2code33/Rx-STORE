@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
+import DownloadModal from './DownloadModal';
 import { Star, Download, ArrowRight } from 'lucide-react';
 import { App } from '../../types';
 import { formatDownloadCount, getRatingColor } from '../../utils/helpers';
@@ -18,6 +19,7 @@ function AppIcon({ icon, gradient, size = 'w-16 h-16 text-2xl' }: { icon: string
 
 export default function AppCard({ app, variant = 'default' }: AppCardProps) {
   const { installedApps, installApp } = useApps();
+  const [showDl, setShowDl] = useState(false);
   const isInstalled = installedApps.includes(app.id);
   const isLogoUrl = app.icon?.startsWith('http') || app.icon?.startsWith('/') || app.icon?.startsWith('data:');
 
@@ -68,6 +70,7 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
   }
 
   return (
+    <>
     <Link
       to={`/app/${app.slug}`}
       className="card-hover overflow-hidden group flex flex-col"
@@ -129,33 +132,7 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
             <span className="text-xs font-medium text-green-400 bg-green-400/10 px-2.5 py-1 rounded-lg">Installed</span>
           ) : (
             <button
-              onClick={async (e) => {
-                e.preventDefault(); e.stopPropagation();
-                const token = localStorage.getItem('rx-store-token');
-                if (!token) { window.location.href = '/login'; return; }
-                try {
-                  const API = (import.meta as any).env?.VITE_API_URL;
-                  let ok = false;
-                  if (API) {
-                    const r = await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/download?platform=web`, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} });
-                    const j = await r.json().catch(()=>null);
-                    if (!r.ok || !j?.success) throw new Error(j?.error?.message||'Download failed');
-                    ok = true;
-                    const url = j?.data?.url;
-                    if (url && url.startsWith('http')) window.open(url, '_blank');
-                  } else {
-                    ok = true;
-                  }
-                  if (ok) {
-                    installApp(app.id);
-                    // trigger refresh of counts if available
-                    (window as any).dispatchEvent(new CustomEvent('rx-refresh'));
-                  }
-                } catch (err:any) {
-                  const { default: toast } = await import('react-hot-toast');
-                  toast.error(err.message || 'Install failed');
-                }
-              }}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); const token=localStorage.getItem('rx-store-token'); if(!token){ window.location.href='/login'; return; } setShowDl(true); }}
               className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-all ${app.price === 'free' ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-rx-yellow text-rx-dark hover:bg-rx-yellow-light'}`}
             >
               {app.price === 'free' ? 'Install' : `Get $${app.priceAmount || ''}`}
@@ -173,5 +150,28 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
         </div>
       </div>
     </Link>
+    {showDl && <DownloadModal app={app} onClose={()=>setShowDl(false)} onDownload={async (platform)=>{
+      const token=localStorage.getItem('rx-store-token');
+      if(!token){ window.location.href='/login'; return; }
+      try{
+        const API=(import.meta as any).env?.VITE_API_URL;
+        const r=await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/download?platform=${platform}`,{headers:{'Authorization':`Bearer ${token}`}});
+        const j=await r.json().catch(()=>null);
+        if(!r.ok||!j?.success) throw new Error(j?.error?.message||'Download failed');
+        if (j.data?.isPWA && j.data?.deploymentUrl) { window.open(j.data.deploymentUrl, '_blank'); setShowDl(false); return; }
+        const url=j?.data?.url;
+        const fr = await fetch(url);
+        if(!fr.ok) throw new Error('File not found — upload may be incomplete');
+        const blob = await fr.blob();
+        if(blob.size===0) throw new Error('File is empty');
+        const blobUrl=URL.createObjectURL(blob);
+        const a=document.createElement('a'); a.href=blobUrl; a.download=`${app.slug}-${app.version}-${platform}`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(blobUrl),2000);
+        installApp(app.id);
+        window.dispatchEvent(new CustomEvent('rx-refresh'));
+        const {default:toast}=await import('react-hot-toast'); toast.success(`Installed ${app.name} for ${platform}`);
+        setShowDl(false);
+      }catch(e:any){ const {default:toast}=await import('react-hot-toast'); toast.error(e.message + ' — not marked as complete, you can try again'); }
+    }} />}
+    </>
   );
 }

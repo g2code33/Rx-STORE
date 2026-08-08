@@ -68,35 +68,49 @@ export default function AppDetail() {
     try {
       const API = (import.meta as any).env?.VITE_API_URL;
       const token = localStorage.getItem('rx-store-token')||'';
-      const url = API ? `${API.replace(/\/$/,'')}/apps/${app.slug}/download?platform=${platform}` : null;
-      let downloadOk = false;
-      if (url) {
-        const r = await fetch(url, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} });
-        const j = await r.json().catch(()=>null);
-        if (!r.ok || !j?.success) throw new Error(j?.error?.message || 'Download failed');
-        downloadOk = true;
-        const dlUrl = j?.data?.url;
-        if (dlUrl && dlUrl.startsWith('http')) {
-          const a = document.createElement('a');
-          a.href = dlUrl;
-          a.download = `${app.slug}-${app.version}-${platform}`;
-          a.target = '_blank';
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-        }
-        toast.success(`Downloading ${app.name} for ${platform} — counted`);
-      } else {
-        await new Promise((r) => setTimeout(r, 600));
-        downloadOk = true;
-        toast.success(`${app.name} installed`);
-      }
-      if (downloadOk) {
+      if (!API) {
+        await new Promise((r) => setTimeout(r, 800));
         installApp(app.id);
-        setTimeout(()=> (window as any).rxRefreshApps?.(), 500);
+        toast.success(`${app.name} installed`);
+        setIsInstalling(false);
+        return;
       }
+      // Step 1: get download URL from API (counts as download + increments)
+      const r = await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/download?platform=${platform}`, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} });
+      const j = await r.json().catch(()=>null);
+      if (!r.ok || !j?.success) throw new Error(j?.error?.message || 'Download failed');
+
+      const dlUrl = j?.data?.url;
+      const isPWA = j?.data?.isPWA;
+      if (isPWA && dlUrl) {
+        window.open(dlUrl, '_blank');
+        toast.success(`Opening ${app.name} PWA`);
+        setIsInstalling(false);
+        return;
+      }
+
+      // Step 2: actually fetch the file to ensure it exists and is downloadable
+      toast(`Downloading ${app.name} (${platform})...`, { icon: '⬇️' });
+      const fileRes = await fetch(dlUrl);
+      if (!fileRes.ok) throw new Error(`File not found on storage (${fileRes.status}) — upload may be incomplete. Please try again or contact admin.`);
+      const blob = await fileRes.blob();
+      if (blob.size === 0) throw new Error('Downloaded file is empty — upload may be incomplete');
+
+      // Step 3: trigger browser download with verified blob
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `${app.slug}-${app.version}-${platform}` + (dlUrl.split('.').pop()?.split('?')[0] ? '.'+dlUrl.split('.').pop()!.split('?')[0] : '');
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(()=> URL.revokeObjectURL(blobUrl), 2000);
+
+      toast.success(`Installed ${app.name} for ${platform} — download verified and counted`);
+      installApp(app.id);
+      setTimeout(()=> (window as any).rxRefreshApps?.(), 500);
     } catch (e:any) {
-      toast.error(e.message || 'Download failed — not counted');
+      toast.error(e.message || 'Install failed — not marked as complete. You can try again.');
     }
     setIsInstalling(false);
   };
