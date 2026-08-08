@@ -9,26 +9,47 @@
 type Provider = 'nvidia' | 'openrouter' | 'openai' | 'gemini';
 
 const PROVIDER_CONFIG: Record<Provider, { baseUrlEnv: string; keyEnv: string; defaultBase: string; defaultModel: string }> = {
-  nvidia:     { baseUrlEnv: 'AI_BASE_URL_NVIDIA',     keyEnv: 'NVIDIA_API_KEY',     defaultBase: 'https://integrate.api.nvidia.com/v1', defaultModel: 'meta/llama-3.1-70b-instruct' },
-  openrouter: { baseUrlEnv: 'AI_BASE_URL_OPENROUTER', keyEnv: 'OPENROUTER_API_KEY', defaultBase: 'https://openrouter.ai/api/v1', defaultModel: 'meta-llama/llama-3.1-70b-instruct' },
+  nvidia:     { baseUrlEnv: 'AI_BASE_URL_NVIDIA',     keyEnv: 'NVIDIA_API_KEY',     defaultBase: 'https://integrate.api.nvidia.com/v1', defaultModel: 'meta/llama-3.1-8b-instruct' },
+  openrouter: { baseUrlEnv: 'AI_BASE_URL_OPENROUTER', keyEnv: 'OPENROUTER_API_KEY', defaultBase: 'https://openrouter.ai/api/v1', defaultModel: 'meta-llama/llama-3.1-8b-instruct' },
   openai:     { baseUrlEnv: 'AI_BASE_URL_OPENAI',     keyEnv: 'OPENAI_API_KEY',     defaultBase: 'https://api.openai.com/v1',          defaultModel: 'gpt-4o-mini' },
   gemini:     { baseUrlEnv: 'AI_BASE_URL_GEMINI',     keyEnv: 'GEMINI_API_KEY',     defaultBase: 'https://generativelanguage.googleapis.com/v1beta', defaultModel: 'gemini-1.5-flash' },
 };
 
-const SYSTEM_PROMPT = `You are the RX Store AI Assistant, helping users find and use applications from the RX Store marketplace.
+// Build the system prompt from the LIVE store catalog — the assistant may only
+// speak from this data (no hallucinations), and may only point "outside" to an
+// app's own link when that app actually has one in the DB.
+async function buildSystemPrompt(env: any): Promise<string> {
+  let catalog = '';
+  try {
+    if (env.DB) {
+      const rows: any = await env.DB.prepare(`SELECT slug, name, category, description, developer, price_type, price_amount, platforms, rating, current_version FROM applications WHERE status='active' AND deleted_at IS NULL ORDER BY download_count DESC LIMIT 60`).all();
+      const apps = rows.results || [];
+      const links: Record<string, string> = {};
+      for (const a of apps) {
+        try {
+          const p: any = await env.DB.prepare(`SELECT p.deployment_url FROM packages p JOIN releases r ON r.id=p.release_id WHERE p.application_id=(SELECT id FROM applications WHERE slug=?) AND p.platform IN ('web','pwa') AND r.status='published' AND p.deployment_url IS NOT NULL LIMIT 1`).bind(a.slug).first().catch(()=>null);
+          if (p?.deployment_url) links[a.name] = p.deployment_url;
+        } catch {}
+      }
+      catalog = apps.map((a: any) => {
+        let plats = a.platforms; try { plats = JSON.parse(a.platforms || '[]').join('+'); } catch {}
+        const price = a.price_type === 'paid' ? `$${a.price_amount}` : (a.price_type || 'free');
+        const link = links[a.name] ? ` | official link: ${links[a.name]}` : '';
+        return `- ${a.name} (${a.category}) by ${a.developer}: ${a.description}. ${price}, v${a.current_version}, rated ${a.rating}/5, platforms: ${plats}.${link}`;
+      }).join('\n');
+    }
+  } catch {}
 
-Available applications:
-1. Clinical Rx - Clinical decision support (drug interactions, prescribing guidance)
-2. PharmaGAME - Gamified pharmaceutical education
-3. Code Rx Society - Healthcare software development platform
-4. TAWOMO - Healthcare workforce management
-5. CureLink - Patient-caregiver communication
-6. MediLearn Academy - Medical education platform
-7. Rx Assistant AI - AI-powered clinical documentation
-8. PharmaConnect - Professional networking
+  return `You are the RX Store Assistant for the RX Store marketplace by Calcitonin Technologies.
 
-Be helpful, professional, and provide specific recommendations based on the user's needs.
-Focus on healthcare, education, and productivity use cases.`;
+ONLY source of truth — the live store catalog below. You must NOT use outside knowledge, NOT invent apps, features, prices or links, and NOT recommend anything not in the catalog. If the answer is not in the catalog, say it plainly in one line and point to the closest catalog app.
+You may only reference "external" info through an app's own official link IF that app has one listed below (say "check the app's official link"); otherwise stay inside the store.
+
+STYLE: straight to the point. Max 3 short bullet points or 60 words, whichever is less. No intros, no outros, no essays. App names in **bold**.
+
+LIVE CATALOG (${catalog ? 'authoritative' : 'UNAVAILABLE — say you cannot browse the catalog right now'}):
+${catalog || '(empty)'}`;
+}
 
 async function getActiveProvider(env: any, requested?: string): Promise<{ provider: Provider; model: string }> {
   let provider = (requested || '').toLowerCase() as Provider;
@@ -73,7 +94,7 @@ function maskKey(k: string): string {
   return k.slice(0, 7) + '•'.repeat(8) + k.slice(-4);
 }
 
-async function callOpenAICompatible(baseUrl: string, key: string, model: string, message: string): Promise<string> {
+async function callOpenAICompatible(baseUrl: string, key: string, model: string, message: string, systemPrompt: string): Promise<string> {
   const res = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -84,11 +105,11 @@ async function callOpenAICompatible(baseUrl: string, key: string, model: string,
     body: JSON.stringify({
       model,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: message },
       ],
-      max_tokens: 600,
-      temperature: 0.7,
+      max_tokens: 288,
+      temperature: 0.3,
     }),
   });
   if (!res.ok) {
@@ -99,15 +120,42 @@ async function callOpenAICompatible(baseUrl: string, key: string, model: string,
   return data.choices?.[0]?.message?.content || data.choices?.[0]?.text || '';
 }
 
-async function callGemini(baseUrl: string, key: string, model: string, message: string): Promise<string> {
+// Streaming version — returns the provider's raw SSE body (OpenAI-compatible delta format)
+async function streamOpenAICompatible(baseUrl: string, key: string, model: string, message: string, systemPrompt: string): Promise<ReadableStream> {
+  const res = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${key}`,
+      'Content-Type': 'application/json',
+      ...(baseUrl.includes('openrouter.ai') ? { 'HTTP-Referer': 'https://rxstore.calcitonin.tech', 'X-Title': 'RX Store' } : {}),
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: message },
+      ],
+      max_tokens: 288,
+      temperature: 0.3,
+      stream: true,
+    }),
+  });
+  if (!res.ok || !res.body) {
+    const err = await res.text().catch(() => '');
+    throw new Error(`Provider error ${res.status}: ${err.slice(0,300)}`);
+  }
+  return res.body;
+}
+
+async function callGemini(baseUrl: string, key: string, model: string, message: string, systemPrompt: string): Promise<string> {
   // Gemini REST: POST /v1beta/models/{model}:generateContent?key=KEY
   const url = `${baseUrl.replace(/\/$/, '')}/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: SYSTEM_PROMPT + "\n\nUser: " + message }] }],
-      generationConfig: { maxOutputTokens: 600, temperature: 0.7 },
+      contents: [{ parts: [{ text: systemPrompt + "\n\nUser: " + message }] }],
+      generationConfig: { maxOutputTokens: 288, temperature: 0.3 },
     }),
   });
   if (!res.ok) {
@@ -118,13 +166,29 @@ async function callGemini(baseUrl: string, key: string, model: string, message: 
   return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 }
 
+// Provider fallback order: chosen provider first, then the env AI_FALLBACK chain
+function providerOrder(env: any, provider: Provider): Provider[] {
+  return [provider, ...(((env.AI_FALLBACK as string) || 'openrouter,openai').split(',').map(s=>s.trim()).filter(Boolean) as Provider[])].filter((v,i,a)=>a.indexOf(v)===i) as Provider[];
+}
+
+// Wrap plain text as a one-chunk OpenAI-compatible SSE stream (for Gemini + offline replies)
+function sseSingle(text: string): Response {
+  const enc = new TextEncoder();
+  const chunk = JSON.stringify({ choices: [{ delta: { content: text } }] });
+  const body = `data: ${chunk}\n\ndata: [DONE]\n\n`;
+  return new Response(new ReadableStream({ start(c) { c.enqueue(enc.encode(body)); c.close(); } }), {
+    headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
+  });
+}
+
 export const aiRoutes = {
   async chat(request: Request, env: any) {
     const { message, context, provider: requestedProvider } = await request.json().catch(() => ({}));
     if (!message || typeof message !== 'string') return { error: 'message is required' };
 
     const { provider, model } = await getActiveProvider(env, requestedProvider);
-    const order: Provider[] = [provider, ...(((env.AI_FALLBACK as string) || 'openrouter,openai').split(',').map(s=>s.trim()).filter(Boolean) as Provider[])].filter((v,i,a)=>a.indexOf(v)===i) as Provider[];
+    const order = providerOrder(env, provider);
+    const systemPrompt = await buildSystemPrompt(env);
 
     let lastError = '';
     for (const p of order) {
@@ -132,7 +196,7 @@ export const aiRoutes = {
       const m = p === provider ? model : PROVIDER_CONFIG[p].defaultModel;
       if (!key) { lastError = `No key for ${p}`; continue; }
       try {
-        const text = p === 'gemini' ? await callGemini(baseUrl, key, m, message) : await callOpenAICompatible(baseUrl, key, m, message);
+        const text = p === 'gemini' ? await callGemini(baseUrl, key, m, message, systemPrompt) : await callOpenAICompatible(baseUrl, key, m, message, systemPrompt);
         if (text) return { response: text, provider: p, model: m, suggestions: ['Show me healthcare apps','Compare Clinical Rx vs CureLink','What apps work offline?'] };
       } catch (e: any) { lastError = e.message || String(e); continue; }
     }
@@ -140,7 +204,36 @@ export const aiRoutes = {
     if (lastError) {
       console.log(`AI chat failed for ${provider}, tried ${order.join(',')}: ${lastError}`);
     }
-    return { response: `I'm the RX Store Assistant (offline). ${lastError ? `(last error: ${lastError.slice(0,200)})` : ''} Try: Clinical Rx for prescribing, CureLink for patient communication.`, provider: 'offline', suggestions: ['Show me healthcare apps'] };
+    return { response: `I'm the RX Store Assistant (offline). ${lastError ? `(last error: ${lastError.slice(0,200)})` : ''} Browse the store directly — each app page lists full details.`, provider: 'offline', suggestions: ['Show me healthcare apps'] };
+  },
+
+  // Streaming chat — first tokens arrive in ~1s instead of one slow final blob.
+  // Proxies the provider's OpenAI-compatible SSE straight through.
+  async chatStream(request: Request, env: any): Promise<Response> {
+    const { message, provider: requestedProvider } = await request.json().catch(() => ({} as any));
+    if (!message || typeof message !== 'string') return sseSingle('Ask me something about the store apps.');
+
+    const { provider, model } = await getActiveProvider(env, requestedProvider as string);
+    const order = providerOrder(env, provider);
+    const systemPrompt = await buildSystemPrompt(env);
+
+    let lastError = '';
+    for (const p of order) {
+      const { baseUrl, key } = await getProviderCreds(env, p);
+      const m = p === provider ? model : PROVIDER_CONFIG[p].defaultModel;
+      if (!key) { lastError = `No key for ${p}`; continue; }
+      try {
+        if (p === 'gemini') {
+          // Gemini stays buffered (REST shape differs) — one SSE chunk keeps the client simple
+          const text = await callGemini(baseUrl, key, m, message, systemPrompt);
+          if (text) return sseSingle(text);
+          continue;
+        }
+        const stream = await streamOpenAICompatible(baseUrl, key, m, message, systemPrompt);
+        return new Response(stream, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' } });
+      } catch (e: any) { lastError = e.message || String(e); continue; }
+    }
+    return sseSingle(`I'm offline at the moment (${lastError.slice(0,120)}). Browse the store directly — each app page lists full details.`);
   },
 
   async recommend(request: Request, env: any) {
@@ -195,9 +288,10 @@ export const aiRoutes = {
     const started = Date.now();
     try {
       const probe = 'Reply with exactly: RX Store connection OK';
+      const probeSystem = 'You are a connectivity probe. Reply exactly as instructed.';
       const text = provider === 'gemini'
-        ? await callGemini(baseUrl, key, model, probe)
-        : await callOpenAICompatible(baseUrl, key, model, probe);
+        ? await callGemini(baseUrl, key, model, probe, probeSystem)
+        : await callOpenAICompatible(baseUrl, key, model, probe, probeSystem);
       return { ok: true, provider, model, usedStoredKey: key === storedKey, latencyMs: Date.now() - started, reply: (text || '').slice(0, 300) };
     } catch (e: any) {
       return { ok: false, provider, model, latencyMs: Date.now() - started, error: (e.message || String(e)).slice(0, 400) };

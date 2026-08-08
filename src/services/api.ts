@@ -144,6 +144,42 @@ export const api = {
         signal,
       });
     },
+    // Streaming chat — SSE from the Worker. onDelta receives the full text-so-far
+    // on every token; resolves with the final text. Feels instant vs one slow blob.
+    async chatStream(message: string, onDelta: (fullText: string) => void, signal?: AbortSignal): Promise<string> {
+      if (!API_URL) throw new Error('API not configured');
+      const res = await fetch(`${API_URL}/ai/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, stream: true }),
+        signal,
+      });
+      if (!res.ok || !res.body) throw new Error(`Stream failed: HTTP ${res.status}`);
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      let full = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
+        for (const line of lines) {
+          const t = line.trim();
+          if (!t.startsWith('data:')) continue;
+          const payload = t.slice(5).trim();
+          if (payload === '[DONE]') { try { await reader.cancel(); } catch {} continue; }
+          try {
+            const j = JSON.parse(payload);
+            const d = j.choices?.[0]?.delta?.content ?? j.choices?.[0]?.message?.content ?? '';
+            if (d) { full += d; onDelta(full); }
+          } catch { /* keep-alive / partial chunks */ }
+        }
+      }
+      if (!full.trim()) throw new Error('Empty stream');
+      return full;
+    },
     async recommend(payload: any) {
       return request<{ recommendations: any[] }>('/ai/recommend', {
         method: 'POST',

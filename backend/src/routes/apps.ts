@@ -29,7 +29,7 @@ export const appsRoutes = {
 
     const result: any = await env.DB.prepare(query).bind(...bindings).all();
     const apps = result.results || [];
-    const normalized = apps.map((a:any)=> ({ ...a, platforms: tryParse(a.platforms, []), tags: tryParse(a.tags, []), downloadCount: a.download_count, reviewCount: a.review_count, priceAmount: a.price_amount, price: a.price_type || a.price }));
+    const normalized = apps.map((a:any)=> ({ ...a, platforms: tryParse(a.platforms, []), tags: tryParse(a.tags, []), screenshots: tryParse(a.screenshots, []), features: tryParse(a.features, []), releaseNotes: tryParse(a.release_notes, []), version: a.current_version || a.version || '1.0.0', downloadCount: a.download_count, reviewCount: a.review_count, priceAmount: a.price_amount, price: a.price_type || a.price }));
     return { apps: normalized, pagination: { page, limit, total: normalized.length } };
   },
   async detail(request: Request, env: any) {

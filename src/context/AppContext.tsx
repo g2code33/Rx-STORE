@@ -60,6 +60,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Tolerates both JSON strings (raw D1 rows) and already-parsed arrays
+  const asArray = (v: any): string[] | null => {
+    if (Array.isArray(v)) return v;
+    if (typeof v === 'string') { try { const p = JSON.parse(v); if (Array.isArray(p)) return p; } catch {} }
+    return null;
+  };
+
   const normalizeApp = (a: any): App => ({
     id: a.id,
     slug: a.slug,
@@ -67,11 +74,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     description: a.description || '',
     longDescription: a.longDescription || a.long_description || a.description || '',
     category: a.category,
-    tags: Array.isArray(a.tags) ? a.tags : [],
+    tags: asArray(a.tags) || [],
     icon: a.icon || '📦',
     color: a.color || '#FFD600',
     gradient: a.gradient || 'from-rx-dark to-rx-dark-secondary',
-    screenshots: Array.isArray(a.screenshots) ? a.screenshots : [],
+    screenshots: asArray(a.screenshots) || [],
     version: a.version || a.current_version || '1.0.0',
     size: a.size || (a.size_mb ? `${a.size_mb} MB` : '—'),
     developer: a.developer || 'Calcitonin Technologies',
@@ -80,11 +87,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     downloadCount: a.downloadCount ?? a.download_count ?? 0,
     price: (a.price as any) || a.price_type || 'free',
     priceAmount: a.priceAmount ?? a.price_amount,
-    platforms: Array.isArray(a.platforms) ? a.platforms : [],
+    platforms: (asArray(a.platforms) || []) as any,
     releaseDate: a.releaseDate || a.release_date || a.created_at || '',
     lastUpdated: a.lastUpdated || a.last_updated || a.updated_at || '',
-    releaseNotes: Array.isArray(a.releaseNotes) ? a.releaseNotes : (Array.isArray(a.release_notes) ? a.release_notes : ['Latest stable release']),
-    features: Array.isArray(a.features) ? a.features : ['Secure & Verified', 'Cross-platform', 'Auto-updates'],
+    releaseNotes: asArray(a.releaseNotes) || asArray(a.release_notes) || ['Latest stable release'],
+    features: asArray(a.features)?.length ? asArray(a.features)! : ['Secure & Verified', 'Cross-platform', 'Auto-updates'],
     status: a.status || 'active',
     isFeatured: a.is_featured ?? a.isFeatured,
     isNew: a.is_new ?? a.isNew,

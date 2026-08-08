@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS applications (
   color TEXT,
   gradient TEXT,
   screenshots TEXT DEFAULT '[]',
+  features TEXT DEFAULT '[]',
+  release_notes TEXT DEFAULT '[]',
   status TEXT DEFAULT 'active' CHECK (status IN ('active','beta','coming-soon','archived')),
   deleted_at TEXT,
   current_version TEXT,
@@ -199,7 +201,7 @@ CREATE TABLE IF NOT EXISTS ai_settings (
   api_key TEXT,
   updated_at TEXT DEFAULT (datetime('now'))
 );
-INSERT OR IGNORE INTO ai_settings (id, provider, model) VALUES ('default','nvidia','meta/llama-3.1-70b-instruct');
+INSERT OR IGNORE INTO ai_settings (id, provider, model) VALUES ('default','nvidia','meta/llama-3.1-8b-instruct');
 
 -- ==================== RELEASE MANAGEMENT (Production) ====================
 CREATE TABLE IF NOT EXISTS releases (

@@ -47,21 +47,40 @@ export function AIChatPanel({ onClose }: { onClose: () => void }) {
     setLoading(true);
 
     try {
-      let reply: string;
       if (isApiConfigured()) {
         abortRef.current?.abort();
         const ctrl = new AbortController();
         abortRef.current = ctrl;
-        const res = await api.ai.chat(trimmed, undefined, ctrl.signal);
-        reply = res.response;
+        // Streaming: tokens appear as they are generated (fast model + short answers).
+        // Append a placeholder bubble and fill it progressively.
+        setMessages((m) => [...m, { role: 'assistant', content: '' }]);
+        let gotFirst = false;
+        try {
+          await api.ai.chatStream(trimmed, (full) => {
+            if (!gotFirst) { gotFirst = true; setLoading(false); }
+            setMessages((m) => {
+              const copy = [...m];
+              copy[copy.length - 1] = { role: 'assistant', content: full };
+              return copy;
+            });
+          }, ctrl.signal);
+        } catch (streamErr: any) {
+          if (streamErr?.name === 'AbortError') return;
+          // Streaming unavailable → buffered endpoint, then local demo fallback
+          setMessages((m) => m.slice(0, -1));
+          try {
+            const res = await api.ai.chat(trimmed, undefined, ctrl.signal);
+            setMessages((m) => [...m, { role: 'assistant', content: res.response }]);
+          } catch {
+            setMessages((m) => [...m, { role: 'assistant', content: mockReply(trimmed) }]);
+          }
+        }
       } else {
         await new Promise((r) => setTimeout(r, 600));
-        reply = mockReply(trimmed);
+        setMessages((m) => [...m, { role: 'assistant', content: mockReply(trimmed) }]);
       }
-      setMessages((m) => [...m, { role: 'assistant', content: reply }]);
     } catch (e: any) {
       if (e?.name !== 'AbortError') {
-        // fallback to mock on error
         setMessages((m) => [...m, { role: 'assistant', content: mockReply(trimmed) }]);
       }
     } finally {

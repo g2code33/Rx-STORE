@@ -3,6 +3,21 @@
  * Requires admin role authentication (checked in Worker fetch).
  */
 
+// Live column list for a table (cached per request) — prod DBs evolve via ALTER
+// migrations, so writes must tolerate columns that don't exist yet
+async function tableColumns(env: any, table: string): Promise<Set<string>> {
+  (env as any)._tcols = (env as any)._tcols || {};
+  if (!(env as any)._tcols[table]) {
+    try {
+      const rows: any = await env.DB.prepare(`PRAGMA table_info(${table})`).all();
+      (env as any)._tcols[table] = new Set((rows.results || []).map((r: any) => r.name));
+    } catch {
+      (env as any)._tcols[table] = new Set();
+    }
+  }
+  return (env as any)._tcols[table];
+}
+
 // Map package platform ids → the app.platforms ids the install modal checks
 function platformDisplayId(p: string): string {
   if (p === 'linux_appimage' || p === 'flatpak') return 'linux';
@@ -322,11 +337,12 @@ export const adminRoutes = {
     const body: any = await request.json().catch(()=>({}));
     const app: any = await env.DB.prepare(`SELECT id FROM applications WHERE slug=?`).bind(slug).first();
     if (!app) return { error: 'Application not found' };
-    const fields = ['name','description','long_description','category','tags','developer','icon','color','gradient','screenshots','status','current_version','size_mb','rating','price_type','price_amount','platforms','is_featured','is_new','is_trending','release_date','last_updated'];
+    const fields = ['name','description','long_description','category','tags','developer','icon','color','gradient','screenshots','features','release_notes','status','current_version','size_mb','rating','price_type','price_amount','platforms','is_featured','is_new','is_trending','release_date','last_updated'];
+    const cols = await tableColumns(env, 'applications');
     const sets: string[] = [];
     const binds: any[] = [];
     for (const f of fields) {
-      if (body[f] !== undefined) {
+      if (body[f] !== undefined && (cols.size === 0 || cols.has(f))) {
         let v: any = body[f];
         if (['tags','platforms','screenshots'].includes(f) && Array.isArray(v)) v = JSON.stringify(v);
         if (['release_notes','features'].includes(f) && Array.isArray(v)) v = JSON.stringify(v);
@@ -354,33 +370,68 @@ export const adminRoutes = {
 
   async deleteApp(request: Request, env: any) {
     const slug = new URL(request.url).pathname.split('/')[3];
-    // Soft delete — move to recycle bin
-    await env.DB.prepare(`UPDATE applications SET status='archived', deleted_at=datetime('now'), updated_at=datetime('now') WHERE slug=?`).bind(slug).run();
+    // Soft delete — move to recycle bin (tolerate prod DBs missing deleted_at pre-migration)
+    const cols = await tableColumns(env, 'applications');
+    const sets = [`status='archived'`, `updated_at=datetime('now')`];
+    if (cols.has('deleted_at')) sets.unshift(`deleted_at=datetime('now')`);
+    await env.DB.prepare(`UPDATE applications SET ${sets.join(', ')} WHERE slug=?`).bind(slug).run();
     await env.DB.prepare(`INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?, ?, ?)`).bind(`log_${Date.now()}`, 'soft_delete_app', 'application', slug, JSON.stringify({ slug })).run().catch(()=>{});
     return { success: true, slug, deleted: true };
   },
 
   async listDeleted(request: Request, env: any) {
-    const apps: any = await env.DB.prepare(`SELECT * FROM applications WHERE deleted_at IS NOT NULL OR status='archived' ORDER BY deleted_at DESC LIMIT 50`).all().catch(()=>({results:[]}));
-    const rels: any = await env.DB.prepare(`SELECT r.*, a.slug as app_slug FROM releases WHERE r.deleted_at IS NOT NULL OR r.status='archived' ORDER BY deleted_at DESC LIMIT 50`).all().catch(()=>({results:[]}));
+    const appCols = await tableColumns(env, 'applications');
+    const relCols = await tableColumns(env, 'releases');
+    const appWhere = appCols.has('deleted_at') ? `deleted_at IS NOT NULL OR status='archived'` : `status='archived'`;
+    const relWhere = relCols.has('deleted_at') ? `r.deleted_at IS NOT NULL OR r.status='archived'` : `r.status='archived'`;
+    const apps: any = await env.DB.prepare(`SELECT * FROM applications WHERE ${appWhere} ORDER BY updated_at DESC LIMIT 50`).all().catch(()=>({results:[]}));
+    const rels: any = await env.DB.prepare(`SELECT r.*, a.slug as app_slug FROM releases r JOIN applications a ON a.id=r.application_id WHERE ${relWhere} ORDER BY r.created_at DESC LIMIT 50`).all().catch(()=>({results:[]}));
     return { apps: apps.results || [], releases: rels.results || [] };
   },
 
   async restoreApp(request: Request, env: any) {
     const slug = new URL(request.url).pathname.split('/')[3];
-    await env.DB.prepare(`UPDATE applications SET status='active', deleted_at=NULL, updated_at=datetime('now') WHERE slug=?`).bind(slug).run();
+    const cols = await tableColumns(env, 'applications');
+    const sets = [`status='active'`, `updated_at=datetime('now')`];
+    if (cols.has('deleted_at')) sets.push(`deleted_at=NULL`);
+    await env.DB.prepare(`UPDATE applications SET ${sets.join(', ')} WHERE slug=?`).bind(slug).run();
     return { success: true, slug, restored: true };
   },
 
   async createApp(request: Request, env: any) {
-    const data: any = await request.json();
+    const data: any = await request.json().catch(()=>({}));
     const id = `app_${Date.now()}`;
     let slug = data.slug || data.name?.toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9-]/g,'') || id;
     // Ensure slug is unique
     const exists: any = await env.DB.prepare(`SELECT id FROM applications WHERE slug=?`).bind(slug).first().catch(()=>null);
     if (exists) slug = `${slug}-${Date.now().toString().slice(-4)}`;
-    await env.DB.prepare(`INSERT INTO applications (id, slug, name, description, category, developer, icon, status, current_version, price_type, platforms) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-      .bind(id, slug, data.name||'New App', data.description||'', data.category||'healthcare', data.developer||'Calcitonin Technologies', data.icon||'📦', data.status||'active', data.version||'1.0.0', data.price_type||'free', JSON.stringify(data.platforms||['web'])).run();
+    // Save everything the editor sends (like updateApp), tolerating columns missing on older prod DBs
+    const cols = await tableColumns(env, 'applications');
+    const candidate: Record<string, any> = {
+      name: data.name || 'New App',
+      description: data.description || '',
+      long_description: data.long_description || '',
+      category: data.category || 'healthcare',
+      tags: JSON.stringify(data.tags || []),
+      developer: data.developer || 'Calcitonin Technologies',
+      icon: data.icon || '📦',
+      color: data.color || '#FFD600',
+      gradient: data.gradient || null,
+      screenshots: JSON.stringify(data.screenshots || []),
+      features: JSON.stringify(data.features || []),
+      release_notes: JSON.stringify(data.release_notes || []),
+      status: data.status || 'active',
+      current_version: data.current_version || data.version || '1.0.0',
+      size_mb: data.size_mb ?? null,
+      rating: data.rating ?? 0,
+      price_type: data.price_type || data.price || 'free',
+      price_amount: data.price_amount ?? null,
+      platforms: JSON.stringify(data.platforms || ['web']),
+      is_featured: data.is_featured ? 1 : 0,
+    };
+    const names = Object.keys(candidate).filter(k => cols.size === 0 || cols.has(k));
+    await env.DB.prepare(`INSERT INTO applications (id, slug, ${names.join(', ')}) VALUES (?, ?, ${names.map(()=>'?').join(', ')})`)
+      .bind(id, slug, ...names.map(n=>candidate[n])).run();
     const app: any = await env.DB.prepare(`SELECT * FROM applications WHERE slug=?`).bind(slug).first();
     return app;
   },

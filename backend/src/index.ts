@@ -75,6 +75,12 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
 
+    // Every /admin/* endpoint requires a valid admin JWT (production hardening —
+    // previously PUT/DELETE apps, releases, uploads etc. were open to any request)
+    if (path.startsWith('/admin')) {
+      if (!isAdminRequest(request)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+    }
+
     if ((path === '/updates/check' || path === '/update/check' || path === '/api/updates/check' || path === '/api/update/check') && request.method === 'GET') {
       const data = await updatesRoutes.checkUpdate(normalizedRequest as any, env);
       if ((data as any)?.error) return json({ success: false, error: { code: 'NOT_FOUND', message: (data as any).error } }, 404, origin);
@@ -149,6 +155,16 @@ export default {
     if (path.match(/^\/admin\/releases\/[^\/]+\/rollback$/) && request.method === 'POST') {
       const data = await (adminRoutes as any).rollbackRelease(normalizedRequest as any, env);
       if ((data as any)?.error) return json({ success: false, error: { code: 'ERROR', message: (data as any).error } }, 400, origin);
+      return json({ success: true, data }, 200, origin);
+    }
+    // Recycle Bin — list soft-deleted items and restore them
+    if (path === '/admin/recycle' && request.method === 'GET') {
+      const data = await adminRoutes.listDeleted(normalizedRequest as any, env);
+      return json({ success: true, data }, 200, origin);
+    }
+    if (path.match(/^\/admin\/apps\/[^\/]+\/restore$/) && request.method === 'POST') {
+      const data = await adminRoutes.restoreApp(normalizedRequest as any, env);
+      if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
       return json({ success: true, data }, 200, origin);
     }
     if (path === '/admin/reset-stats' && request.method === 'POST') {
@@ -286,6 +302,11 @@ export default {
         const data = await aiRoutes.chat(normalizedRequest as any, env);
         if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
         return json({ success: true, data }, 200, origin);
+      }
+      // Streaming chat — SSE passthrough for fast perceived response
+      if (path === '/ai/chat/stream' && request.method === 'POST') {
+        const res = await aiRoutes.chatStream(normalizedRequest as any, env);
+        return withCors(res, origin);
       }
       if (path === '/ai/recommend' && request.method === 'POST') {
         const data = await aiRoutes.recommend(normalizedRequest as any, env);
