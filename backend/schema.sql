@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   username TEXT UNIQUE,
   email TEXT UNIQUE NOT NULL,
+  phone TEXT UNIQUE,
   password_hash TEXT NOT NULL,
   name TEXT NOT NULL,
   avatar_url TEXT,
@@ -15,10 +16,13 @@ CREATE TABLE IF NOT EXISTS users (
   email_verified INTEGER DEFAULT 0,
   preferences TEXT DEFAULT '{}',
   last_login_at TEXT,
+  reset_token TEXT,
+  reset_token_expiry TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 
 -- ==================== APPLICATIONS ====================

@@ -144,6 +144,8 @@ export default {
       if (seg === 'register') { const d: any = await authRoutes.register(normalizedRequest as any, env); if (d.code || d.error) return json({ success:false, error:{ code: d.code || 'ERROR', message: d.message || d.error } }, d.code==='CONFLICT'?409:400,origin); return json({ success:true, data:d },200,origin); }
       if (seg === 'login') { const d: any = await authRoutes.login(normalizedRequest as any, env); if (d.code || d.error) return json({ success:false, error:{ code: d.code || 'ERROR', message: d.message || d.error } }, d.code==='UNAUTHORIZED'?401:400,origin); return json({ success:true, data:d },200,origin); }
       if (seg === 'logout') { const d: any = await authRoutes.logout(normalizedRequest as any, env); return json({ success:true, data:d },200,origin); }
+      if (seg === 'forgot-password') { const d: any = await authRoutes.forgotPassword(normalizedRequest as any, env); if (d.code || d.error) return json({ success:false, error:{ code: d.code || 'ERROR', message: d.message || d.error } },400,origin); return json({ success:true, data:d },200,origin); }
+      if (seg === 'reset-password') { const d: any = await authRoutes.resetPassword(normalizedRequest as any, env); if (d.code || d.error) return json({ success:false, error:{ code: d.code || 'ERROR', message: d.message || d.error } },400,origin); return json({ success:true, data:d },200,origin); }
     }
     if (path === '/users/me' && request.method === 'GET') {
       const auth = request.headers.get('Authorization') || '';

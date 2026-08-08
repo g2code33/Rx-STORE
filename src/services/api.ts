@@ -78,18 +78,19 @@ export interface ApiApp {
 export const api = {
   auth: {
     async login(email: string, password: string) {
+      // email param can be email or phone — backend handles both
       const data = await request<{ user: any; token: string; refreshToken: string }>('/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, identifier: email }),
         auth: false,
       });
       setToken(data.token);
       return data;
     },
-    async register(name: string, email: string, password: string) {
+    async register(name: string, email: string, password: string, phone?: string) {
       const data = await request<{ user: any; token: string }>('/auth/register', {
         method: 'POST',
-        body: JSON.stringify({ name, email, password }),
+        body: JSON.stringify({ name, email, password, phone }),
         auth: false,
       });
       setToken(data.token);
@@ -104,6 +105,12 @@ export const api = {
     },
     async me() {
       return request<{ user: any }>('/users/me', { method: 'GET' });
+    },
+    async forgotPassword(email: string) {
+      return request<{ success: boolean; message: string; resetToken?: string }>('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }), auth: false });
+    },
+    async resetPassword(token: string, password: string) {
+      return request<any>('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, password }), auth: false });
     },
   },
 

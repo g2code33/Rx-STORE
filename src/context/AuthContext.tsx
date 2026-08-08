@@ -6,7 +6,9 @@ interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<boolean>;
-  register: (name: string, email: string, password: string) => Promise<boolean>;
+  register: (name: string, email: string, password: string, phone?: string) => Promise<boolean>;
+  forgotPassword: (email: string) => Promise<string>;
+  resetPassword: (token: string, password: string) => Promise<void>;
   logout: () => void;
   updateProfile: (updates: Partial<User>) => void;
   notifications: Notification[];
@@ -46,6 +48,7 @@ const mockUser: User = {
   id: 'user-1',
   name: 'Dr. Alex Morgan',
   email: 'alex.morgan@healthcare.com',
+  phone: '+233000000000',
   avatar: '👨‍⚕️',
   role: 'user',
   joinDate: '2024-01-15',
@@ -136,11 +139,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return true;
   };
 
-  const register = async (name: string, email: string, password: string): Promise<boolean> => {
+  const register = async (name: string, email: string, password: string, phone?: string): Promise<boolean> => {
     setIsLoading(true);
     if (isApiConfigured()) {
       try {
-        const { user: apiUser } = await api.auth.register(name, email, password);
+        const { user: apiUser } = await api.auth.register(name, email, password, phone);
         setUser(apiUser);
         localStorage.setItem('rx-store-user', JSON.stringify(apiUser));
         setIsLoading(false);
@@ -148,10 +151,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch (e: any) {
         setIsLoading(false);
         const msg = e.message || '';
-        if (msg.includes('already registered') || msg.includes('Invalid email') || msg.includes('Password')) throw e;
+        if (msg.includes('already registered') || msg.includes('Invalid email') || msg.includes('Password') || msg.includes('phone')) throw e;
         if (msg.includes('Failed to fetch') || msg.includes('API not configured')) {
           await new Promise((resolve) => setTimeout(resolve, 600));
-          const newUser = { ...mockUser, name, email };
+          const newUser = { ...mockUser, name, email, phone };
           setUser(newUser);
           localStorage.setItem('rx-store-user', JSON.stringify(newUser));
           return true;
@@ -160,11 +163,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
     await new Promise((resolve) => setTimeout(resolve, 600));
-    const newUser = { ...mockUser, name, email };
+    const newUser = { ...mockUser, name, email, phone };
     setUser(newUser);
     localStorage.setItem('rx-store-user', JSON.stringify(newUser));
     setIsLoading(false);
     return true;
+  };
+
+  const forgotPassword = async (email: string): Promise<string> => {
+    const res: any = await api.auth.forgotPassword(email);
+    return res.message || 'Reset email sent';
+  };
+  const resetPassword = async (token: string, password: string): Promise<void> => {
+    await api.auth.resetPassword(token, password);
   };
 
   const logout = () => {
@@ -195,6 +206,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isLoading,
         login,
         register,
+        forgotPassword,
+        resetPassword,
         logout,
         updateProfile,
         notifications,

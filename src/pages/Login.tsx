@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Mail, Lock, User, ArrowRight, Github } from 'lucide-react';
+import { Mail, Lock, User, ArrowRight, Github, Phone, KeyRound } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 
@@ -8,9 +8,14 @@ export default function Login() {
   const [searchParams] = useSearchParams();
   const initialMode = searchParams.get('mode') === 'register' ? 'register' : 'login';
   const [mode, setMode] = useState<'login' | 'register'>(initialMode);
-  const [formData, setFormData] = useState({ name: '', email: '', password: '' });
+  const [formData, setFormData] = useState({ name: '', email: '', phone: '', password: '' });
   const [isLoading, setIsLoading] = useState(false);
-  const { login, register } = useAuth();
+  const [forgotOpen, setForgotOpen] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [resetToken, setResetToken] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const { login, register, forgotPassword, resetPassword } = useAuth();
   const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -18,12 +23,13 @@ export default function Login() {
     setIsLoading(true);
     try {
       if (mode === 'login') {
-        await login(formData.email, formData.password);
+        // email field can be email or phone — backend handles both via identifier
+        await login(formData.email.trim(), formData.password);
         toast.success('Welcome back!');
         navigate('/');
       } else {
         if (!formData.name.trim()) { toast.error('Please enter your full name'); setIsLoading(false); return; }
-        await register(formData.name, formData.email, formData.password);
+        await register(formData.name, formData.email, formData.password, formData.phone || undefined);
         toast.success('Account created successfully!');
         navigate('/');
       }
@@ -31,6 +37,27 @@ export default function Login() {
       toast.error(e.message || 'Authentication failed. Please check your credentials.');
     }
     setIsLoading(false);
+  };
+
+  const handleForgot = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setForgotLoading(true);
+    try {
+      const res: any = await forgotPassword(forgotEmail.trim());
+      if (res.resetToken) setResetToken(res.resetToken);
+      toast.success('If that email exists, a reset link has been sent');
+      if (res.resetToken) toast(`Demo token: ${res.resetToken.slice(0,8)}…`, { icon: '🔑' });
+    } catch (e: any) { toast.error(e.message || 'Failed to send reset email'); }
+    setForgotLoading(false);
+  };
+
+  const handleReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await resetPassword(resetToken, newPassword);
+      toast.success('Password reset — please sign in');
+      setForgotOpen(false); setResetToken(''); setNewPassword('');
+    } catch (e: any) { toast.error(e.message || 'Reset failed'); }
   };
 
   return (
@@ -42,7 +69,7 @@ export default function Login() {
           </Link>
           <h1 className="text-2xl font-bold text-white">{mode === 'login' ? 'Welcome Back' : 'Create Account'}</h1>
           <p className="text-rx-gray-medium mt-2">
-            {mode === 'login' ? 'Sign in to access your applications and subscriptions' : 'Join RX Store to discover and manage your applications'}
+            {mode === 'login' ? 'Sign in with email or phone' : 'Join RX Store to discover and manage your applications'}
           </p>
         </div>
 
@@ -59,19 +86,29 @@ export default function Login() {
               </div>
             )}
             <div>
-              <label className="block text-sm font-medium text-rx-gray-medium mb-2">Email Address</label>
+              <label className="block text-sm font-medium text-rx-gray-medium mb-2">{mode === 'login' ? 'Email or Phone' : 'Email Address'}</label>
               <div className="relative">
                 <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-rx-gray-medium" />
-                <input type="email" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  placeholder="you@healthcare.com" className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl pl-11 pr-4 py-3 text-white placeholder-rx-gray-medium focus:outline-none focus:border-rx-yellow/50 focus:ring-1 focus:ring-rx-yellow/25 transition-all" required />
+                <input type={mode==='login' ? 'text' : 'email'} value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  placeholder={mode==='login' ? 'you@healthcare.com or +233...' : 'you@healthcare.com'} className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl pl-11 pr-4 py-3 text-white placeholder-rx-gray-medium focus:outline-none focus:border-rx-yellow/50 focus:ring-1 focus:ring-rx-yellow/25 transition-all" required />
               </div>
             </div>
+            {mode === 'register' && (
+              <div>
+                <label className="block text-sm font-medium text-rx-gray-medium mb-2">Phone <span className="text-rx-gray-medium/60 font-normal">(optional, for login)</span></label>
+                <div className="relative">
+                  <Phone className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-rx-gray-medium" />
+                  <input type="tel" value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                    placeholder="+233 24 123 4567" className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl pl-11 pr-4 py-3 text-white placeholder-rx-gray-medium focus:outline-none focus:border-rx-yellow/50 focus:ring-1 focus:ring-rx-yellow/25 transition-all" />
+                </div>
+              </div>
+            )}
             <div>
               <label className="block text-sm font-medium text-rx-gray-medium mb-2">Password</label>
               <div className="relative">
                 <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-rx-gray-medium" />
                 <input type="password" value={formData.password} onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  placeholder="••••••••" className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl pl-11 pr-4 py-3 text-white placeholder-rx-gray-medium focus:outline-none focus:border-rx-yellow/50 focus:ring-1 focus:ring-rx-yellow/25 transition-all" required minLength={6} />
+                  placeholder="••••••••" className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl pl-11 pr-4 py-3 text-white placeholder-rx-gray-medium focus:outline-none focus:border-rx-yellow/50 focus:ring-1 focus:ring-rx-yellow/25 transition-all" required minLength={8} />
               </div>
             </div>
             {mode === 'login' && (
@@ -80,7 +117,7 @@ export default function Login() {
                   <input type="checkbox" className="w-4 h-4 rounded border-white/20 bg-rx-dark-tertiary text-rx-yellow focus:ring-rx-yellow/25" />
                   <span className="text-sm text-rx-gray-medium">Remember me</span>
                 </label>
-                <a href="#" className="text-sm text-rx-yellow hover:underline">Forgot password?</a>
+                <button type="button" onClick={()=>setForgotOpen(true)} className="text-sm text-rx-yellow hover:underline">Forgot password?</button>
               </div>
             )}
             <button type="submit" disabled={isLoading} className="btn-primary w-full flex items-center justify-center gap-2">
@@ -91,6 +128,29 @@ export default function Login() {
               )}
             </button>
           </form>
+
+          {forgotOpen && (
+            <div className="mt-6 p-4 rounded-xl bg-rx-dark-tertiary/50 border border-white/10">
+              <h4 className="text-sm font-semibold text-white flex items-center gap-2"><KeyRound className="w-4 h-4"/> Reset via Email</h4>
+              {!resetToken ? (
+                <form onSubmit={handleForgot} className="mt-3 flex gap-2">
+                  <input type="email" value={forgotEmail} onChange={e=>setForgotEmail(e.target.value)} placeholder="you@healthcare.com" className="flex-1 bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white" required />
+                  <button type="submit" disabled={forgotLoading} className="btn-primary text-sm px-4">{forgotLoading ? '…' : 'Send'}</button>
+                  <button type="button" onClick={()=>setForgotOpen(false)} className="px-3 py-2 text-sm text-rx-gray-medium">Cancel</button>
+                </form>
+              ) : (
+                <form onSubmit={handleReset} className="mt-3 space-y-2">
+                  <p className="text-xs text-green-400">Token received (demo). Enter new password:</p>
+                  <input type="text" value={resetToken} readOnly className="w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-xs text-rx-gray-medium" />
+                  <input type="password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="New password (8+ chars)" className="w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white" required minLength={8} />
+                  <div className="flex gap-2">
+                    <button type="submit" className="btn-primary text-sm flex-1">Reset Password</button>
+                    <button type="button" onClick={()=>{setForgotOpen(false); setResetToken('');}} className="px-3 py-2 text-sm text-rx-gray-medium">Close</button>
+                  </div>
+                </form>
+              )}
+            </div>
+          )}
 
           <div className="relative my-6">
             <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/10"></div></div>
