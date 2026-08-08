@@ -17,15 +17,19 @@ export default function Login() {
     e.preventDefault();
     setIsLoading(true);
     try {
-      let success: boolean;
       if (mode === 'login') {
-        success = await login(formData.email, formData.password);
-        if (success) { toast.success('Welcome back!'); navigate('/'); }
+        await login(formData.email, formData.password);
+        toast.success('Welcome back!');
+        navigate('/');
       } else {
-        success = await register(formData.name, formData.email, formData.password);
-        if (success) { toast.success('Account created successfully!'); navigate('/'); }
+        if (!formData.name.trim()) { toast.error('Please enter your full name'); setIsLoading(false); return; }
+        await register(formData.name, formData.email, formData.password);
+        toast.success('Account created successfully!');
+        navigate('/');
       }
-    } catch { toast.error('Something went wrong. Please try again.'); }
+    } catch (e: any) {
+      toast.error(e.message || 'Authentication failed. Please check your credentials.');
+    }
     setIsLoading(false);
   };
 

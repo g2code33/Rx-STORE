@@ -141,8 +141,9 @@ export default {
     }
     if (path.startsWith('/auth/') && request.method === 'POST') {
       const seg = path.split('/')[2];
-      if (seg === 'register') { const d: any = await authRoutes.register(normalizedRequest as any, env); if (d.error) return json({ success:false, error:d },400,origin); return json({ success:true, data:d },200,origin); }
-      if (seg === 'login') { const d: any = await authRoutes.login(normalizedRequest as any, env); if (d.error) return json({ success:false, error:d },400,origin); return json({ success:true, data:d },200,origin); }
+      if (seg === 'register') { const d: any = await authRoutes.register(normalizedRequest as any, env); if (d.code || d.error) return json({ success:false, error:{ code: d.code || 'ERROR', message: d.message || d.error } }, d.code==='CONFLICT'?409:400,origin); return json({ success:true, data:d },200,origin); }
+      if (seg === 'login') { const d: any = await authRoutes.login(normalizedRequest as any, env); if (d.code || d.error) return json({ success:false, error:{ code: d.code || 'ERROR', message: d.message || d.error } }, d.code==='UNAUTHORIZED'?401:400,origin); return json({ success:true, data:d },200,origin); }
+      if (seg === 'logout') { const d: any = await authRoutes.logout(normalizedRequest as any, env); return json({ success:true, data:d },200,origin); }
     }
     if (path === '/health') return json({ status: 'ok', version: '1.0.0', timestamp: new Date().toISOString() },200,origin);
 
