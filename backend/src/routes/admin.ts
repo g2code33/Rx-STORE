@@ -38,21 +38,15 @@ export const adminRoutes = {
   },
 
   async revenue(request: Request, env: any) {
-    const url = new URL(request.url);
-    const period = url.searchParams.get('period') || '30d';
-    // Simplified: sum payments, byApp from payments JOIN applications if available
     const total = await env.DB.prepare(`SELECT SUM(amount) as total, COUNT(*) as count FROM payments WHERE status='completed'`).first() as any;
     const byApp = await env.DB.prepare(`SELECT a.name as name, SUM(p.amount) as revenue FROM payments p JOIN applications a ON a.id=p.subscription_id GROUP BY a.name LIMIT 5`).all().catch(()=>({results:[]})) as any;
+    const hasRevenue = !!(total?.total && Number(total.total) > 0);
     return {
-      monthlyRevenue: total?.total || 47832,
-      mrr: Math.round((total?.total || 47832) * 0.26),
-      activeSubs: total?.count || 1247,
-      byApp: (byApp.results && byApp.results.length) ? byApp.results.map((r:any)=>({name:r.name, revenue: r.revenue, growth:'+18%'})) : [
-        { name: 'Clinical Rx', revenue: 15420, growth: '+18%' },
-        { name: 'CureLink', revenue: 12800, growth: '+22%' },
-        { name: 'TAWOMO', revenue: 8950, growth: '+15%' },
-      ],
-      payments: await env.DB.prepare(`SELECT p.id, u.name as user, p.amount, p.provider, p.status, date(p.created_at) as date FROM payments p LEFT JOIN users u ON u.id=p.user_id ORDER BY p.created_at DESC LIMIT 5`).all().then((r:any)=>r.results).catch(()=>[]) as any,
+      monthlyRevenue: hasRevenue ? total.total : 0,
+      mrr: hasRevenue ? Math.round(Number(total.total) * 0.26) : 0,
+      activeSubs: total?.count || 0,
+      byApp: (byApp.results && byApp.results.length && hasRevenue) ? byApp.results.map((r:any)=>({name:r.name, revenue: r.revenue, growth:'+18%'})) : [],
+      payments: hasRevenue ? await env.DB.prepare(`SELECT p.id, u.name as user, p.amount, p.provider, p.status, date(p.created_at) as date FROM payments p LEFT JOIN users u ON u.id=p.user_id ORDER BY p.created_at DESC LIMIT 5`).all().then((r:any)=>r.results).catch(()=>[]) as any : [],
     };
   },
 
@@ -65,6 +59,16 @@ export const adminRoutes = {
     await env.DB.prepare(`DELETE FROM reviews`).run().catch(()=>{});
     await env.DB.prepare(`UPDATE applications SET rating=0`).run().catch(()=>{});
     return { success: true, message: 'All stats reset to 0 — brand new site ready' };
+  },
+
+  async resetApps(request: Request, env: any) {
+    const body: any = await request.json().catch(()=>({}));
+    const pwd = body?.password;
+    if (pwd !== 'iseedeAdpeople#233') return { error: 'Invalid password' };
+    await env.DB.prepare(`DELETE FROM applications`).run().catch(()=>{});
+    await env.DB.prepare(`DELETE FROM app_versions`).run().catch(()=>{});
+    await env.DB.prepare(`DELETE FROM versions`).run().catch(()=>{});
+    return { success: true, message: 'All apps cleared' };
   },
 
   async createRelease(request: Request, env: any) {
