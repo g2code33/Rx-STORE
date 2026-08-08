@@ -52,14 +52,9 @@ export default function Header() {
     <header className="fixed top-0 left-0 right-0 z-50 bg-rx-dark/80 backdrop-blur-xl border-b border-white/5">
       <div className="section-container">
         <div className="flex items-center justify-between h-16 lg:h-18">
-          {/* Logo */}
+          {/* Logo — v1.png */}
           <Link to="/" className="flex items-center gap-2.5 group">
-            <div className="relative">
-              <div className="w-9 h-9 bg-rx-yellow rounded-lg flex items-center justify-center font-bold text-rx-dark text-sm group-hover:shadow-glow transition-shadow duration-300">
-                Rx
-              </div>
-              <div className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-green-400 rounded-full border-2 border-rx-dark"></div>
-            </div>
+            <img src="/v1.png" alt="RX Store" className="w-9 h-9 rounded-lg object-cover group-hover:shadow-glow transition-shadow duration-300" />
             <div className="hidden sm:block">
               <span className="text-lg font-bold text-white">
                 RX <span className="text-rx-yellow">Store</span>
