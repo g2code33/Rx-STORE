@@ -249,7 +249,10 @@ export const adminRoutes = {
   async createApp(request: Request, env: any) {
     const data: any = await request.json();
     const id = `app_${Date.now()}`;
-    const slug = data.slug || data.name?.toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9-]/g,'') || id;
+    let slug = data.slug || data.name?.toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9-]/g,'') || id;
+    // Ensure slug is unique
+    const exists: any = await env.DB.prepare(`SELECT id FROM applications WHERE slug=?`).bind(slug).first().catch(()=>null);
+    if (exists) slug = `${slug}-${Date.now().toString().slice(-4)}`;
     await env.DB.prepare(`INSERT INTO applications (id, slug, name, description, category, developer, icon, status, current_version, price_type, platforms) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
       .bind(id, slug, data.name||'New App', data.description||'', data.category||'healthcare', data.developer||'Calcitonin Technologies', data.icon||'📦', data.status||'active', data.version||'1.0.0', data.price_type||'free', JSON.stringify(data.platforms||['web'])).run();
     const app: any = await env.DB.prepare(`SELECT * FROM applications WHERE slug=?`).bind(slug).first();

@@ -177,7 +177,7 @@ export default function Admin() {
                       <tr key={app.id} className="border-b border-white/5 hover:bg-white/5 transition-colors">
                         <td className="px-5 py-4">
                           <div className="flex items-center gap-3">
-                            <div className={`w-9 h-9 rounded-lg bg-gradient-to-br ${app.gradient} flex items-center justify-center text-lg`}>{app.icon}</div>
+                            {app.icon?.startsWith('http') || app.icon?.startsWith('/') ? <img src={app.icon} alt={app.name} className="w-9 h-9 rounded-lg object-cover" /> : <div className={`w-9 h-9 rounded-lg bg-gradient-to-br ${app.gradient} flex items-center justify-center text-lg`}>{app.icon}</div>}
                             <div><p className="font-medium text-white text-sm">{app.name}</p><p className="text-xs text-rx-gray-medium">v{app.version}</p></div>
                           </div>
                         </td>
