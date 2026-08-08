@@ -67,6 +67,12 @@ async function getProviderCreds(env: any, provider: Provider) {
   return { baseUrl, key, model };
 }
 
+function maskKey(k: string): string {
+  if (!k) return '';
+  if (k.length <= 10) return '•'.repeat(Math.max(k.length, 6));
+  return k.slice(0, 7) + '•'.repeat(8) + k.slice(-4);
+}
+
 async function callOpenAICompatible(baseUrl: string, key: string, model: string, message: string): Promise<string> {
   const res = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
@@ -148,32 +154,73 @@ export const aiRoutes = {
   async providers(request: Request, env: any) {
     const { provider: active } = await getActiveProvider(env);
     const list = await Promise.all((['nvidia','openrouter','openai','gemini'] as Provider[]).map(async p => {
+      const { key } = await getProviderCreds(env, p);
       const cfg = PROVIDER_CONFIG[p];
-      let key = env[cfg.keyEnv] || '';
-      if (!key && env.DB) {
-        try {
-          const row: any = await env.DB.prepare(`SELECT api_key FROM ai_settings WHERE id=?`).bind('key_'+p).first();
-          if (row?.api_key) key = row.api_key;
-        } catch {}
-      }
-      return { id: p, enabled: !!key, hasKey: !!key, baseUrl: env[cfg.baseUrlEnv] || cfg.defaultBase, defaultModel: cfg.defaultModel, active: p===active };
+      return { id: p, enabled: !!key, hasKey: !!key, maskedKey: maskKey(key), baseUrl: env[cfg.baseUrlEnv] || cfg.defaultBase, defaultModel: cfg.defaultModel, active: p===active };
     }));
     return { active, providers: list };
+  },
+
+  // Admin only — returns full keys so the Admin UI can pre-fill fields (never expose publicly)
+  async getSettings(request: Request, env: any) {
+    const { provider: active, model } = await getActiveProvider(env);
+    const keys: Record<string, string> = {} as any;
+    const maskedKeys: Record<string, string> = {} as any;
+    for (const p of ['nvidia','openrouter','openai','gemini'] as Provider[]) {
+      const { key } = await getProviderCreds(env, p);
+      keys[p] = key || '';
+      maskedKeys[p] = maskKey(key || '');
+    }
+    return { active, model, keys, maskedKeys };
+  },
+
+  // Admin only — test a specific provider key (typed in the form, or stored). No fallback chain — tests exactly what you picked.
+  async test(request: Request, env: any) {
+    const body: any = await request.json().catch(()=>({}));
+    const provider = (body.provider || '').toLowerCase() as Provider;
+    const valid: Provider[] = ['nvidia','openrouter','openai','gemini'];
+    if (!valid.includes(provider)) return { error: 'Invalid provider. Use nvidia|openrouter|openai|gemini' };
+    const { baseUrl, key: storedKey } = await getProviderCreds(env, provider);
+    const key = (typeof body.apiKey === 'string' && body.apiKey.trim().length > 10) ? body.apiKey.trim() : storedKey;
+    if (!key) return { ok: false, provider, error: `No key for ${provider} — enter one or save it first` };
+    let model = (body.model || '').trim();
+    if (!model) {
+      try {
+        const row: any = await env.DB?.prepare(`SELECT model FROM ai_settings WHERE id='default'`).first();
+        const activeRow: any = await env.DB?.prepare(`SELECT provider FROM ai_settings WHERE id='default'`).first();
+        if (row?.model && activeRow?.provider === provider) model = row.model;
+      } catch {}
+    }
+    if (!model) model = PROVIDER_CONFIG[provider].defaultModel;
+    const started = Date.now();
+    try {
+      const probe = 'Reply with exactly: RX Store connection OK';
+      const text = provider === 'gemini'
+        ? await callGemini(baseUrl, key, model, probe)
+        : await callOpenAICompatible(baseUrl, key, model, probe);
+      return { ok: true, provider, model, usedStoredKey: key === storedKey, latencyMs: Date.now() - started, reply: (text || '').slice(0, 300) };
+    } catch (e: any) {
+      return { ok: false, provider, model, latencyMs: Date.now() - started, error: (e.message || String(e)).slice(0, 400) };
+    }
   },
 
   async updateSettings(request: Request, env: any) {
     // Admin only — caller should be protected by admin middleware, but we also check here if middleware passed user
     const body: any = await request.json().catch(()=>({}));
     const provider = (body.provider || '').toLowerCase();
-    const model = body.model || '';
+    const model = (body.model || '').trim() || PROVIDER_CONFIG[provider as Provider]?.defaultModel || '';
     const valid: Provider[] = ['nvidia','openrouter','openai','gemini'];
     if (!valid.includes(provider)) return { error: 'Invalid provider. Use nvidia|openrouter|openai|gemini' };
-    await env.DB.prepare(`INSERT INTO ai_settings (id, provider, model, updated_at) VALUES ('default', ?, ?, datetime('now')) ON CONFLICT(id) DO UPDATE SET provider=excluded.provider, model=excluded.model, updated_at=datetime('now')`).bind(provider, model || PROVIDER_CONFIG[provider as Provider].defaultModel).run();
+    // Self-heal: a previous version stored keys under id '0' due to a SQL '+' concat bug
+    try { await env.DB.prepare(`DELETE FROM ai_settings WHERE id IN ('0', '')`).run(); } catch {}
+    await env.DB.prepare(`INSERT INTO ai_settings (id, provider, model, updated_at) VALUES ('default', ?, ?, datetime('now')) ON CONFLICT(id) DO UPDATE SET provider=excluded.provider, model=excluded.model, updated_at=datetime('now')`).bind(provider, model).run();
     // Also allow storing keys via admin (encrypted at rest — simple obfuscation here; for production use Secrets Store)
-    if (body.apiKey && typeof body.apiKey === 'string' && body.apiKey.length > 10) {
+    if (body.apiKey && typeof body.apiKey === 'string' && body.apiKey.trim().length > 10) {
       // Store in D1 as fallback if env secret not set — not recommended for highly sensitive keys, but enables admin UI
-      await env.DB.prepare(`INSERT INTO ai_settings (id, provider, model, api_key, updated_at) VALUES ('key_'+?, ?, ?, ?, datetime('now')) ON CONFLICT(id) DO UPDATE SET api_key=excluded.api_key, updated_at=datetime('now')`).bind(provider, provider, model, body.apiKey).run();
+      // NOTE: build the row id in JS — in SQLite '+' is arithmetic, '||' is concat (old bug stored keys under id '0')
+      const rowId = 'key_' + provider;
+      await env.DB.prepare(`INSERT INTO ai_settings (id, provider, model, api_key, updated_at) VALUES (?, ?, ?, ?, datetime('now')) ON CONFLICT(id) DO UPDATE SET api_key=excluded.api_key, model=excluded.model, updated_at=datetime('now')`).bind(rowId, provider, model, body.apiKey.trim()).run();
     }
-    return { success: true, provider, model: model || PROVIDER_CONFIG[provider as Provider].defaultModel };
+    return { success: true, provider, model };
   },
 };

@@ -41,6 +41,19 @@ function json(data: any, status = 200, origin = '') {
   });
 }
 
+// Decode the JWT payload and require the admin role (same decode pattern as /users/me)
+function isAdminRequest(request: Request): boolean {
+  const auth = request.headers.get('Authorization') || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  if (!token) return false;
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1] || ''));
+    return payload?.role === 'admin';
+  } catch {
+    return false;
+  }
+}
+
 function withCors(res: Response, origin: string): Response {
   const headers = new Headers(res.headers);
   const cors = corsHeaders(origin);
@@ -69,10 +82,22 @@ export default {
     }
 
     if (path === '/admin/ai/settings' && (request.method === 'PUT' || request.method === 'POST')) {
-      const auth = request.headers.get('Authorization') || '';
-      if (!auth.startsWith('Bearer ')) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+      if (!isAdminRequest(request)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
       const data = await aiRoutes.updateSettings(normalizedRequest as any, env);
       if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
+      return json({ success: true, data }, 200, origin);
+    }
+    // Admin: read full AI settings (unmasked keys) to pre-fill the Admin UI
+    if (path === '/admin/ai/settings' && request.method === 'GET') {
+      if (!isAdminRequest(request)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+      const data = await aiRoutes.getSettings(normalizedRequest as any, env);
+      return json({ success: true, data }, 200, origin);
+    }
+    // Admin: test a provider key (typed in the form or stored) against the real provider
+    if (path === '/admin/ai/test' && request.method === 'POST') {
+      if (!isAdminRequest(request)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+      const data = await aiRoutes.test(normalizedRequest as any, env);
+      if ((data as any)?.error && !(data as any)?.ok) return json({ success: false, error: data }, 400, origin);
       return json({ success: true, data }, 200, origin);
     }
     if (path === '/admin/users' && request.method === 'GET') {
