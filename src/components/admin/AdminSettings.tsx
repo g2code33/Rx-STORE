@@ -24,12 +24,12 @@ export default function AdminSettings() {
   };
 
   const doResetStats = async () => {
-    if (pwd !== 'iseedeAdpeople#233') { toast.error('Wrong password'); return; }
+    if (pwd.trim() !== 'iseedeAdpeople#233') { toast.error('Wrong password — must be iseedeAdpeople#233'); return; }
     await call('/admin/reset-stats', { password: pwd });
     setShowResetModal(null); setPwd('');
   };
   const doResetApps = async () => {
-    if (pwd !== 'iseedeAdpeople#233') { toast.error('Wrong password'); return; }
+    if (pwd.trim() !== 'iseedeAdpeople#233') { toast.error('Wrong password — must be iseedeAdpeople#233'); return; }
     if (!confirm('Delete ALL applications? This cannot be undone.')) return;
     await call('/admin/apps/reset', { password: pwd });
     setShowResetModal(null); setPwd('');

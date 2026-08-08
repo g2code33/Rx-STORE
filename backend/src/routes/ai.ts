@@ -124,14 +124,17 @@ export const aiRoutes = {
     for (const p of order) {
       const { baseUrl, key } = await getProviderCreds(env, p);
       const m = p === provider ? model : PROVIDER_CONFIG[p].defaultModel;
-      if (!key) { lastError = `No key for ${p} (checked env.${PROVIDER_CONFIG[p].keyEnv} and D1 key_${p})`; continue; }
+      if (!key) { lastError = `No key for ${p}`; continue; }
       try {
         const text = p === 'gemini' ? await callGemini(baseUrl, key, m, message) : await callOpenAICompatible(baseUrl, key, m, message);
         if (text) return { response: text, provider: p, model: m, suggestions: ['Show me healthcare apps','Compare Clinical Rx vs CureLink','What apps work offline?'] };
       } catch (e: any) { lastError = e.message || String(e); continue; }
     }
-    // fallback to mock if no provider configured
-    return { response: `I'm the RX Store Assistant (offline). ${lastError ? `(providers unavailable: ${lastError.slice(0,120)})` : ''} Try: Clinical Rx for prescribing, CureLink for patient communication.`, provider: 'offline', suggestions: ['Show me healthcare apps'] };
+    // If all providers failed, return detailed error for debugging
+    if (lastError) {
+      console.log(`AI chat failed for ${provider}, tried ${order.join(',')}: ${lastError}`);
+    }
+    return { response: `I'm the RX Store Assistant (offline). ${lastError ? `(last error: ${lastError.slice(0,200)})` : ''} Try: Clinical Rx for prescribing, CureLink for patient communication.`, provider: 'offline', suggestions: ['Show me healthcare apps'] };
   },
 
   async recommend(request: Request, env: any) {

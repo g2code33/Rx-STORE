@@ -53,7 +53,8 @@ export const adminRoutes = {
   async resetStats(request: Request, env: any) {
     const body: any = await request.json().catch(()=>({}));
     const pwd = body?.password || new URL(request.url).searchParams.get('password');
-    if (pwd !== 'iseedeAdpeople#233') return { error: 'Invalid reset password. Required: iseedeAdpeople#233' };
+    const clean = String(pwd||'').trim();
+    if (clean !== 'iseedeAdpeople#233') return { error: 'Invalid reset password. Required: iseedeAdpeople#233' };
     await env.DB.prepare(`UPDATE applications SET download_count=0, review_count=0, rating=0`).run().catch(()=>{});
     await env.DB.prepare(`DELETE FROM downloads`).run().catch(()=>{});
     await env.DB.prepare(`DELETE FROM reviews`).run().catch(()=>{});
@@ -64,7 +65,7 @@ export const adminRoutes = {
   async resetApps(request: Request, env: any) {
     const body: any = await request.json().catch(()=>({}));
     const pwd = body?.password;
-    if (pwd !== 'iseedeAdpeople#233') return { error: 'Invalid password' };
+    if (String(pwd||'').trim() !== 'iseedeAdpeople#233') return { error: 'Invalid password' };
     await env.DB.prepare(`DELETE FROM applications`).run().catch(()=>{});
     await env.DB.prepare(`DELETE FROM app_versions`).run().catch(()=>{});
     await env.DB.prepare(`DELETE FROM versions`).run().catch(()=>{});
@@ -167,7 +168,7 @@ export const adminRoutes = {
     const parts = new URL(request.url).pathname.split('/');
     const relId = parts[3] || parts[parts.length-2];
     const body: any = await request.json().catch(()=>({}));
-    if (body?.password !== 'iseedeAdpeople#233') return { error: 'Invalid password for rollback' };
+    if (String(body?.password||'').trim() !== 'iseedeAdpeople#233') return { error: 'Invalid password for rollback' };
     const rel: any = await env.DB.prepare(`SELECT * FROM releases WHERE id=?`).bind(relId).first();
     if (!rel) return { error: 'Release not found' };
     // Find previous published version for same app
