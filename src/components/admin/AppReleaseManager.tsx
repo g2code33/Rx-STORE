@@ -76,8 +76,11 @@ export default function AppReleaseManager() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || 'Failed');
-      toast.success(`Release ${version} published for ${appId} (${Object.keys(platformsObj).join(', ')})`);
-      setVersion(''); setNotes(''); setFiles({});
+      toast.success(`Release ${version} published for ${appId} (${Object.keys(platformsObj).join(', ')}) — version now ${version}`);
+      setVersion(''); setNotes(''); setFiles({}); setUploading({});
+      window.dispatchEvent(new CustomEvent('rx-refresh'));
+      // Also reload the page's apps list after a short delay to show new version
+      setTimeout(()=> window.location.reload(), 800);
     } catch (e:any) { toast.error(e.message); }
     finally { setSaving(false); }
   };
