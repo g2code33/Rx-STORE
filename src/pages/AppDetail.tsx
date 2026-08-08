@@ -14,6 +14,9 @@ export default function AppDetail() {
   const app = getAppBySlug(slug || '');
   const [activeTab, setActiveTab] = useState<'overview' | 'reviews' | 'versions' | 'docs'>('overview');
   const [isInstalling, setIsInstalling] = useState(false);
+  const [newRating, setNewRating] = useState(5);
+  const [newComment, setNewComment] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   if (!app) {
     return (
@@ -213,6 +216,39 @@ export default function AppDetail() {
                     </div>
                   </div>
                 </div>
+                {user && (
+                  <div className="card p-5">
+                    <h4 className="font-semibold text-white mb-3">Write a review</h4>
+                    <div className="flex items-center gap-2 mb-3">
+                      {[1,2,3,4,5].map(s=>(
+                        <button key={s} onClick={()=>setNewRating(s)} className={`w-8 h-8 rounded-lg flex items-center justify-center ${s<=newRating ? 'bg-rx-yellow text-rx-dark' : 'bg-white/10 text-white'}`}><Star className={`w-4 h-4 ${s<=newRating ? 'fill-current' : ''}`} /></button>
+                      ))}
+                      <span className="text-sm text-rx-gray-medium ml-2">{newRating} stars</span>
+                    </div>
+                    <textarea value={newComment} onChange={e=>setNewComment(e.target.value)} placeholder="Share your experience..." rows={3} className="w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-rx-gray-medium" />
+                    <button
+                      onClick={async()=>{
+                        if(!newComment.trim()) { toast.error('Please write a comment'); return; }
+                        setSubmitting(true);
+                        try {
+                          const API=(import.meta as any).env?.VITE_API_URL;
+                          const token=localStorage.getItem('rx-store-token')||'';
+                          const r=await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/reviews`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify({rating:newRating, comment:newComment})});
+                          const j=await r.json();
+                          if(!r.ok) throw new Error(j.error?.message||'Failed');
+                          toast.success('Review submitted');
+                          setNewComment('');
+                          window.location.reload();
+                        } catch(e:any){ toast.error(e.message); }
+                        setSubmitting(false);
+                      }}
+                      disabled={submitting}
+                      className="mt-3 btn-primary text-sm px-4 py-2 disabled:opacity-50"
+                    >
+                      {submitting ? 'Submitting...' : 'Submit Review'}
+                    </button>
+                  </div>
+                )}
                 {appReviews.length > 0 ? appReviews.map((review) => (
                   <div key={review.id} className="card p-5">
                     <div className="flex items-start gap-4">
