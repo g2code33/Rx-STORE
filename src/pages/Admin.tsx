@@ -6,15 +6,17 @@ import {
 import { useApps } from '../context/AppContext';
 import { formatDownloadCount } from '../utils/helpers';
 import AIProviderPanel from '../components/admin/AIProviderPanel';
+import AppEditor from '../components/admin/AppEditor';
 import AppReleaseManager from '../components/admin/AppReleaseManager';
 import UserRoleEditor from '../components/admin/UserRoleEditor';
 import RevenuePanel from '../components/admin/RevenuePanel';
 import { useAuth } from '../context/AuthContext';
 
 export default function Admin() {
-  const { apps } = useApps();
+  const { apps, refresh } = useApps();
   const { user } = useAuth();
   const [activeSection, setActiveSection] = useState('dashboard');
+  const [editingApp, setEditingApp] = useState<any>(null);
   const isAdmin = user?.role === 'admin';
 
   const stats = [
@@ -116,9 +118,10 @@ export default function Admin() {
           {activeSection === 'applications' && (
             <div className="space-y-6 animate-fade-in">
               <div className="flex items-center justify-between">
-                <div><h1 className="text-2xl font-bold text-white">Applications</h1><p className="text-rx-gray-medium mt-1">Manage all applications in the marketplace</p></div>
-                <button className="btn-primary flex items-center gap-2"><Plus className="w-4 h-4" /> Add Application</button>
+                <div><h1 className="text-2xl font-bold text-white">Applications</h1><p className="text-rx-gray-medium mt-1">Edit any app — real data, live to R2/D1. Click Edit to change everything.</p></div>
+                <button onClick={()=>setEditingApp({ slug:'', name:'', isNewPlaceholder:true })} className="btn-primary flex items-center gap-2"><Plus className="w-4 h-4" /> Add Application</button>
               </div>
+              {editingApp && <AppEditor app={editingApp} onClose={()=>setEditingApp(null)} onSaved={()=>refresh()} />}
               <div className="card overflow-hidden">
                 <table className="w-full">
                   <thead>
@@ -146,8 +149,13 @@ export default function Admin() {
                         <td className="px-5 py-4"><span className={`px-2 py-0.5 text-xs font-medium rounded-full ${app.status === 'active' ? 'bg-green-400/20 text-green-400' : app.status === 'beta' ? 'bg-purple-400/20 text-purple-400' : 'bg-gray-400/20 text-gray-400'}`}>{app.status}</span></td>
                         <td className="px-5 py-4 text-right">
                           <div className="flex items-center justify-end gap-1">
-                            <button className="p-1.5 text-rx-gray-medium hover:text-white hover:bg-white/10 rounded-lg transition-all"><Edit className="w-4 h-4" /></button>
-                            <button className="p-1.5 text-rx-gray-medium hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all"><Trash2 className="w-4 h-4" /></button>
+                            <button onClick={()=>setEditingApp(app)} className="p-1.5 text-rx-gray-medium hover:text-white hover:bg-white/10 rounded-lg transition-all"><Edit className="w-4 h-4" /></button>
+                            <button onClick={async()=>{
+                              if(!confirm(`Delete ${app.name}?`)) return;
+                              const token=localStorage.getItem('rx-store-token')||'';
+                              const res=await fetch(`${import.meta.env.VITE_API_URL}/admin/apps/${app.slug}`,{method:'DELETE',headers:{'Authorization':`Bearer ${token}`}});
+                              if(res.ok) { refresh(); } else { const j=await res.json(); alert(j.error?.message||'Failed'); }
+                            }} className="p-1.5 text-rx-gray-medium hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all"><Trash2 className="w-4 h-4" /></button>
                           </div>
                         </td>
                       </tr>

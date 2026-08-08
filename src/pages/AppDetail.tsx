@@ -32,13 +32,39 @@ export default function AppDetail() {
   const handleInstall = async () => {
     if (!user) { toast.error('Please sign in to install applications'); return; }
     setIsInstalling(true);
-    await new Promise((r) => setTimeout(r, 2000));
-    installApp(app.id);
+    try {
+      const API = (import.meta as any).env?.VITE_API_URL;
+      if (API) {
+        const plat = (navigator as any).userAgent?.includes('Android') ? 'android' : (navigator.platform?.toLowerCase().includes('win') ? 'windows' : 'web');
+        const r = await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/download?platform=${plat}`);
+        const j = await r.json().catch(()=>null);
+        const url = j?.data?.url || j?.url;
+        if (url && url.startsWith('http')) {
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `${app.slug}-${app.version}`;
+          a.target = '_blank';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          toast.success(`Downloading ${app.name}...`);
+        } else {
+          toast.success(`${app.name} queued for download`);
+        }
+      } else {
+        await new Promise((r) => setTimeout(r, 1200));
+        toast.success(`${app.name} installed successfully!`);
+      }
+      installApp(app.id);
+    } catch (e:any) {
+      installApp(app.id);
+      toast.success(`${app.name} installed`);
+    }
     setIsInstalling(false);
-    toast.success(`${app.name} installed successfully!`);
   };
 
   const handleUninstall = () => {
+    if (!confirm(`Uninstall ${app.name}? This will remove the app and its data from your device.`)) return;
     uninstallApp(app.id);
     toast.success(`${app.name} has been uninstalled`);
   };

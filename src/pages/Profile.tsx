@@ -67,8 +67,8 @@ export default function Profile() {
                       <Link to={`/app/${app.slug}`} className="font-semibold text-white hover:text-rx-yellow transition-colors truncate block">{app.name}</Link>
                       <p className="text-xs text-rx-gray-medium">v{app.version} · {app.size}</p>
                     </div>
-                    <button onClick={() => uninstallApp(appId)} className="p-2 text-rx-gray-medium hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all opacity-0 group-hover:opacity-100" title="Uninstall">
-                      <X className="w-4 h-4" />
+                    <button onClick={() => { if(confirm(`Uninstall ${app?.name}? This will remove the app from your device.`)) uninstallApp(appId); }} className="px-3 py-1.5 text-xs font-medium text-red-400 hover:text-white bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-lg transition-all flex items-center gap-1">
+                      <X className="w-3 h-3" /> Uninstall
                     </button>
                   </div>
                 );

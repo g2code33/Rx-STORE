@@ -72,10 +72,55 @@ export const adminRoutes = {
     return { success: true, version, appId: appSlug };
   },
 
+  async updateApp(request: Request, env: any) {
+    const url = new URL(request.url);
+    const slug = url.pathname.split('/')[3];
+    const body: any = await request.json().catch(()=>({}));
+    const app: any = await env.DB.prepare(`SELECT id FROM applications WHERE slug=?`).bind(slug).first();
+    if (!app) return { error: 'Application not found' };
+    const fields = ['name','description','long_description','category','tags','developer','icon','color','gradient','screenshots','status','current_version','size_mb','rating','price_type','price_amount','platforms','is_featured','is_new','is_trending','release_date','last_updated'];
+    const sets: string[] = [];
+    const binds: any[] = [];
+    for (const f of fields) {
+      if (body[f] !== undefined) {
+        let v: any = body[f];
+        if (['tags','platforms','screenshots'].includes(f) && Array.isArray(v)) v = JSON.stringify(v);
+        if (['release_notes','features'].includes(f) && Array.isArray(v)) v = JSON.stringify(v);
+        sets.push(`${f} = ?`);
+        binds.push(v);
+      }
+    }
+    // also support camelCase from frontend
+    const map: any = { longDescription:'long_description', currentVersion:'current_version', sizeMb:'size_mb', priceType:'price_type', priceAmount:'price_amount', isFeatured:'is_featured', isNew:'is_new', isTrending:'is_trending', releaseDate:'release_date', lastUpdated:'last_updated' };
+    for (const k in map) {
+      if (body[k] !== undefined) {
+        sets.push(`${map[k]} = ?`);
+        let v = body[k];
+        if (Array.isArray(v)) v = JSON.stringify(v);
+        binds.push(v);
+      }
+    }
+    if (sets.length===0) return { error: 'No fields to update' };
+    sets.push(`updated_at = datetime('now')`);
+    binds.push(slug);
+    await env.DB.prepare(`UPDATE applications SET ${sets.join(', ')} WHERE slug = ?`).bind(...binds).run();
+    const updated: any = await env.DB.prepare(`SELECT * FROM applications WHERE slug=?`).bind(slug).first();
+    return updated;
+  },
+
+  async deleteApp(request: Request, env: any) {
+    const slug = new URL(request.url).pathname.split('/')[3];
+    await env.DB.prepare(`DELETE FROM applications WHERE slug=?`).bind(slug).run();
+    return { success: true, slug };
+  },
+
   async createApp(request: Request, env: any) {
     const data: any = await request.json();
-    const app = await env.DB.prepare(`INSERT INTO applications (id, slug, name, description, category, developer) VALUES (?,?,?,?,?,?) RETURNING *`)
-      .bind(`app_${Date.now()}`, data.slug, data.name, data.description, data.category||'healthcare', data.developer||'Calcitonin Technologies').first();
+    const id = `app_${Date.now()}`;
+    const slug = data.slug || data.name?.toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9-]/g,'') || id;
+    await env.DB.prepare(`INSERT INTO applications (id, slug, name, description, category, developer, icon, status, current_version, price_type, platforms) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(id, slug, data.name||'New App', data.description||'', data.category||'healthcare', data.developer||'Calcitonin Technologies', data.icon||'📦', data.status||'active', data.version||'1.0.0', data.price_type||'free', JSON.stringify(data.platforms||['web'])).run();
+    const app: any = await env.DB.prepare(`SELECT * FROM applications WHERE slug=?`).bind(slug).first();
     return app;
   },
 };

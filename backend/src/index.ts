@@ -93,6 +93,40 @@ export default {
       if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
       return json({ success: true, data }, 200, origin);
     }
+    if (path.match(/^\/admin\/apps\/[^\/]+$/) && request.method === 'PUT') {
+      const data = await adminRoutes.updateApp(normalizedRequest as any, env);
+      if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
+      return json({ success: true, data }, 200, origin);
+    }
+    if (path.match(/^\/admin\/apps\/[^\/]+$/) && request.method === 'DELETE') {
+      const data = await adminRoutes.deleteApp(normalizedRequest as any, env);
+      if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
+      return json({ success: true, data }, 200, origin);
+    }
+    if (path === '/admin/apps' && request.method === 'POST') {
+      const data = await adminRoutes.createApp(normalizedRequest as any, env);
+      if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
+      return json({ success: true, data }, 200, origin);
+    }
+    // Download — record and return URL (real R2 signed URL when file exists)
+    if (path.match(/^\/apps\/[^\/]+\/download$/) && request.method === 'GET') {
+      try {
+        const slug = path.split('/')[2];
+        const platform = new URL(request.url).searchParams.get('platform') || 'web';
+        const app: any = await env.DB.prepare('SELECT id, current_version FROM applications WHERE slug=?').bind(slug).first();
+        if (!app) return json({ success:false, error:{ message:'App not found' }},404,origin);
+        // Try to get version file URL from app_versions
+        const ver: any = await env.DB.prepare('SELECT files FROM app_versions WHERE app_id=? ORDER BY created_at DESC LIMIT 1').bind(app.id).first().catch(()=>null);
+        let url = `https://rx-store-storage.r2.dev/apps/${slug}/${app.current_version}/${platform}/download`;
+        let checksum: any = null;
+        if (ver?.files) {
+          try { const files = JSON.parse(ver.files); const f = files[platform] || files.generic || Object.values(files)[0]; if (f?.fileUrl) url = f.fileUrl; if (f?.checksum) checksum = f.checksum; } catch {}
+        }
+        // Record download
+        try { await env.DB.prepare('INSERT INTO downloads (id, app_id, platform, version, created_at) VALUES (?,?,?, ?, datetime(\'now\'))').bind(`dl_${Date.now()}`, app.id, platform, app.current_version).run(); await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run(); } catch {}
+        return json({ success:true, data:{ url, checksum, version: app.current_version, platform }},200,origin);
+      } catch (e:any) { return json({ success:false, error:{ message:e.message }},500,origin); }
+    }
 
     if (path.startsWith('/ai/') || path === '/ai') {
       if (path === '/ai/providers' && request.method === 'GET') {
