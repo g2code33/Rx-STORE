@@ -8,6 +8,7 @@ import { AIFloatingButton } from './components/ai/AIChat';
 import UpdateBanner from './components/desktop/UpdateBanner';
 import PromoOptIn from './components/promo/PromoOptIn';
 import GetAppBanner from './components/platform/GetAppBanner';
+import { FaviconSync } from './icons/PlatformIcon';
 import { startPromoWatcher } from './promo';
 import { getPublicSettings } from './services/api';
 import { useAuth } from './context/AuthContext';
@@ -122,7 +123,9 @@ export default function App() {
         }}
       />
       <Header />
-      <main className="flex-1 pt-16 pb-16 lg:pb-0">
+      <FaviconSync />
+      {/* paddingTop tracks the REAL header height (announcement bar included) */}
+      <main className="flex-1 pb-16 lg:pb-0" style={{ paddingTop: 'var(--rx-header-h, 4rem)' }}>
         <GetAppBanner />
         <Suspense fallback={<LoadingFallback />}>
           <Routes>

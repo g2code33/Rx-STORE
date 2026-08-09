@@ -8,6 +8,8 @@ import Editable from '../edit/Editable';
 import SearchBox from '../search/SearchBox';
 import { DEFAULT_NAV, mergeNavLinks } from './nav';
 import { replayWelcomeIntro } from '../home/WelcomeIntro';
+import { useSiteIcon } from '../../icons/PlatformIcon';
+import { isImageIcon } from '../../icons/platformIcons';
 
 export default function Header() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
@@ -18,8 +20,22 @@ export default function Header() {
   const location = useLocation();
   const profileRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
   const [announcement, setAnnouncement] = useState('');
   const [announceDismissed, setAnnounceDismissed] = useState(false);
+
+  // Publish the REAL header height (announcement bar, mobile search row, etc.)
+  // as --rx-header-h so <main> can pad itself exactly — nothing ever hides
+  // underneath when the announcement is showing.
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const set = () => document.documentElement.style.setProperty('--rx-header-h', `${el.offsetHeight}px`);
+    set();
+    const ro = new ResizeObserver(set);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Admin-controlled site announcement (Admin → Settings)
   useEffect(() => {
@@ -49,9 +65,10 @@ export default function Header() {
   // Advertise is always present so visitors can see/book the sponsored slots.
   const { getJSON } = useContent();
   const navLinks = mergeNavLinks(getJSON<{ label: string; to: string }[]>('site.nav', DEFAULT_NAV));
+  const brandLogo = useSiteIcon('brand.logo', '/v1.png');
 
   return (
-    <header className="fixed top-0 left-0 right-0 z-50 bg-rx-dark/80 backdrop-blur-xl border-b border-white/5">
+    <header ref={headerRef} className="fixed top-0 left-0 right-0 z-50 bg-rx-dark/80 backdrop-blur-xl border-b border-white/5">
       {announcement && !announceDismissed && (
         <div className="bg-rx-yellow text-rx-dark text-center text-xs font-medium py-1.5 px-8 relative">
           <span>{announcement}</span>
@@ -66,9 +83,13 @@ export default function Header() {
       )}
       <div className="section-container">
         <div className="flex items-center justify-between h-16 lg:h-18">
-          {/* Logo — v1.png (name always visible, incl. phones). Clicking Home replays the 3s intro. */}
+          {/* Logo — v1.png by default, overridable in Admin → Icons. Clicking Home replays the 3s intro. */}
           <Link to="/" onClick={replayWelcomeIntro} className="flex items-center gap-2 group flex-shrink-0">
-            <img src="/v1.png" alt="RX Store" className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl object-cover group-hover:shadow-glow transition-shadow duration-300" />
+            {isImageIcon(brandLogo) ? (
+              <img src={brandLogo} alt="RX Store" className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl object-cover group-hover:shadow-glow transition-shadow duration-300" />
+            ) : (
+              <span className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-rx-dark-tertiary flex items-center justify-center text-2xl group-hover:shadow-glow transition-shadow duration-300">{brandLogo}</span>
+            )}
             <div>
               <span className="text-base sm:text-lg font-bold text-white whitespace-nowrap">
                 RX <span className="text-rx-yellow">Store</span>

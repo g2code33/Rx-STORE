@@ -1,5 +1,9 @@
 import React from 'react';
 import { X, Download, Monitor, Smartphone, Laptop, Globe, ExternalLink } from 'lucide-react';
+import PlatformIcon from '../../icons/PlatformIcon';
+
+/** download-dialog platform id → Admin → Icons slot id */
+const DL_ICON: Record<string, string> = { web: 'web', ios: 'ios', android: 'android', windows: 'windows', macos: 'macos', linux_deb: 'linux', linux_appimage: 'linux', linux: 'linux' };
 import { detectDevice, isPWADisplayStandalone } from '../../hooks/useDeviceDetect';
 import { getPublicSettings } from '../../services/api';
 
@@ -119,7 +123,7 @@ export default function DownloadModal({ app, onClose, onDownload }: Props) {
                   if (isPWA) {
                     return (
                       <button key={p.id} onClick={() => window.open(pwaUrl, '_blank')} className="w-full flex items-center gap-4 p-3 rounded-xl bg-rx-dark hover:bg-rx-dark-tertiary border border-white/10 text-left">
-                        <div className="w-10 h-10 rounded-xl bg-white/5 flex items-center justify-center"><p.icon className="w-5 h-5 text-rx-gray-medium"/></div>
+                        <div className="w-10 h-10 rounded-xl bg-white/5 flex items-center justify-center"><PlatformIcon id={DL_ICON[p.id] || 'web'} className="text-xl leading-none" imgClassName="w-6 h-6" /></div>
                         <div className="flex-1"><p className="text-sm font-medium text-white">{p.label}</p><p className="text-xs text-rx-gray-medium">Web/PWA • Open</p></div>
                         <ExternalLink className="w-4 h-4 text-rx-gray-medium"/>
                       </button>
@@ -127,7 +131,7 @@ export default function DownloadModal({ app, onClose, onDownload }: Props) {
                   }
                   return (
                     <button key={p.id} onClick={()=> isAvailable && onDownload(p.id)} disabled={!isAvailable} className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left ${!isAvailable ? 'bg-rx-dark/30 border-white/5 opacity-50' : 'bg-rx-dark hover:bg-rx-dark-tertiary border-white/10'}`}>
-                      <div className="w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center"><p.icon className="w-5 h-5 text-rx-gray-medium"/></div>
+                      <div className="w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center"><PlatformIcon id={DL_ICON[p.id] || 'web'} className="text-xl leading-none" imgClassName="w-6 h-6" /></div>
                       <div className="flex-1"><p className="text-sm text-white">{p.label} <span className="text-[10px] px-1 py-0.5 rounded bg-white/10 text-rx-gray-medium">{p.ext}</span></p><p className="text-xs text-rx-gray-medium">{isAvailable ? p.desc : 'Unavailable'}</p></div>
                       {isAvailable ? <Download className="w-4 h-4 text-rx-gray-medium"/> : <span className="text-xs text-amber-300">—</span>}
                     </button>

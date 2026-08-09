@@ -4,12 +4,13 @@ import toast from 'react-hot-toast';
 import {
   LayoutDashboard, Package, Users, BarChart3, DollarSign, Upload,
   Download, Star, Settings, Shield, Plus, Edit, Trash2, Activity, Database, Cloud, Bot, Key, Globe, FileText, Bell, Megaphone,
-  Monitor, Eye, Paintbrush, Loader2, Rocket, MousePointerClick, Tablet, Smartphone, PanelRight
+  Monitor, Eye, Paintbrush, Loader2, Rocket, MousePointerClick, Tablet, Smartphone, PanelRight, Shapes
 } from 'lucide-react';
 import { useApps } from '../context/AppContext';
 import { useCategories } from '../hooks/useCategories';
 import { formatDownloadCount } from '../utils/helpers';
 import NotificationComposer from '../components/admin/NotificationComposer';
+import IconManager from '../components/admin/IconManager';
 import { useContent } from '../context/ContentContext';
 import { EditCtxType, EditDescriptor, setBuilderCtx } from '../components/edit/EditMode';
 import Inspector from '../components/edit/Inspector';
@@ -158,6 +159,7 @@ export default function Admin() {
     { id: 'applications', label: 'Applications', icon: Package },
     { id: 'releases', label: 'Releases', icon: Upload },
     { id: 'users', label: 'Users', icon: Users },
+    { id: 'icons', label: 'Icons', icon: Shapes },
     { id: 'developers', label: 'Developers', icon: Shield },
     { id: 'ai', label: 'AI Providers', icon: Bot },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
@@ -462,6 +464,7 @@ export default function Admin() {
 
           {activeSection === 'releases' && (<div className="animate-fade-in"><ReleasesManager /></div>)}
           {activeSection === 'users' && (<div className="animate-fade-in"><UserRoleEditor /></div>)}
+          {activeSection === 'icons' && (<div className="animate-fade-in"><IconManager /></div>)}
 
           {activeSection === 'developers' && (
             <div className="space-y-6 animate-fade-in">

@@ -7,6 +7,11 @@ import { capturePwaInstallPrompt, subscribePwaInstall, pwaInstallAvailable, prom
 import { startStoreDownload, fetchSelfListing, type SelfListing } from '../platform/storeDownload';
 import { useContent } from '../context/ContentContext';
 import Editable from '../components/edit/Editable';
+import PlatformIcon from '../icons/PlatformIcon';
+import type { DeviceKind, StorePlatform } from '../platform/downloads';
+
+const DEVICE_ICON: Record<DeviceKind, string> = { windows: 'windows', linux: 'linux', android: 'android', ios: 'ios', mac: 'macos', unknown: '' };
+const OPTION_ICON: Record<StorePlatform, string> = { windows: 'windows', linux_deb: 'linux', linux_appimage: 'linux', android: 'android' };
 
 function useDevice() {
   return useMemo(
@@ -112,7 +117,9 @@ export default function GetApp() {
         <div className="absolute -top-10 -right-10 w-48 h-48 bg-rx-yellow/10 rounded-full blur-3xl" />
         <div className="relative flex flex-col sm:flex-row items-center gap-6">
           <div className="w-16 h-16 rounded-2xl bg-rx-dark-tertiary flex items-center justify-center text-4xl flex-shrink-0">
-            {device === 'ios' ? '🍎' : device === 'android' ? '🤖' : device === 'windows' ? '🪟' : device === 'linux' ? '🐧' : device === 'mac' ? '💻' : <MonitorSmartphone className="w-8 h-8 text-rx-yellow" />}
+            {DEVICE_ICON[device]
+              ? <PlatformIcon id={DEVICE_ICON[device]} className="text-4xl leading-none" imgClassName="w-11 h-11" />
+              : <MonitorSmartphone className="w-8 h-8 text-rx-yellow" />}
           </div>
           <div className="flex-1 text-center sm:text-left">
             <p className="text-xs font-bold uppercase tracking-widest text-rx-yellow">Recommended for you</p>
@@ -152,7 +159,7 @@ export default function GetApp() {
             <div key={opt.id} className={`card p-6 ${isPrimary ? 'border-rx-yellow/40' : ''}`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3">
-                  <span className="text-3xl">{opt.icon}</span>
+                  <PlatformIcon id={OPTION_ICON[opt.platformId]} className="text-3xl leading-none" imgClassName="w-8 h-8" />
                   <div>
                     <h3 className="font-bold text-white">{opt.platform}</h3>
                     <p className="text-xs text-rx-gray-medium">{opt.ext} · {opt.size}{listing ? ` · v${listing.version}` : ''}</p>
@@ -170,7 +177,7 @@ export default function GetApp() {
                   disabled={busyId === DOWNLOAD_OPTIONS.linux_appimage.id}
                   className="mt-2 inline-flex items-center gap-1.5 text-xs text-rx-yellow hover:underline disabled:opacity-60"
                 >
-                  {DOWNLOAD_OPTIONS.linux_appimage.icon} Prefer no installer? Get the AppImage instead <ArrowRight className="w-3 h-3" />
+                  <PlatformIcon id="linux" className="text-xs leading-none" imgClassName="w-3.5 h-3.5 inline-block" /> Prefer no installer? Get the AppImage instead <ArrowRight className="w-3 h-3" />
                 </button>
               )}
             </div>

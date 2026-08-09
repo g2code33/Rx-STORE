@@ -1,8 +1,11 @@
 import { useMemo, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Download, X, Loader2 } from 'lucide-react';
-import { detectDevice, downloadsFor, bannerPitch } from '../../platform/downloads';
+import { detectDevice, downloadsFor, bannerPitch, type DeviceKind } from '../../platform/downloads';
 import { startStoreDownload } from '../../platform/storeDownload';
+import PlatformIcon from '../../icons/PlatformIcon';
+
+const DEVICE_ICON: Record<DeviceKind, string> = { windows: 'windows', linux: 'linux', android: 'android', ios: 'ios', mac: 'macos', unknown: '' };
 
 const DISMISSED_KEY = 'rx-getapp-banner-dismissed';
 
@@ -45,7 +48,7 @@ export default function GetAppBanner() {
     <div className="bg-gradient-to-r from-rx-yellow/15 via-rx-yellow/10 to-rx-yellow/15 border-b border-rx-yellow/20">
       <div className="section-container py-2 flex items-center gap-3">
         <span className="text-lg flex-shrink-0" aria-hidden>
-          {device === 'ios' ? '🍎' : device === 'android' ? '🤖' : device === 'windows' ? '🪟' : device === 'linux' ? '🐧' : '📲'}
+          {DEVICE_ICON[device] ? <PlatformIcon id={DEVICE_ICON[device]} className="text-lg leading-none" imgClassName="w-5 h-5 inline-block" /> : '📲'}
         </span>
         <p className="flex-1 min-w-0 text-xs sm:text-sm text-white/90">
           <span className="font-semibold text-white">Get the RX Store app</span>

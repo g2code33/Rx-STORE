@@ -9,6 +9,7 @@ import { useCategories } from '../hooks/useCategories';
 import StatsBar, { DEFAULT_STATS } from '../components/home/StatsBar';
 import WelcomeIntro from '../components/home/WelcomeIntro';
 import PageBlocks from '../components/edit/PageBlocks';
+import PlatformIcon from '../icons/PlatformIcon';
 
 const HOME_PLATFORM_FILTERS = [
   { id: 'all', label: 'All', icon: '✨' },
@@ -39,6 +40,17 @@ const DEFAULT_FEATURES = [
   { icon: 'users', title: 'Community Driven', description: 'Join thousands of healthcare professionals who trust RX Store for their essential tools.', color: '#96CEB4' },
   { icon: 'star', title: 'Curated Quality', description: 'Every application undergoes rigorous review to meet our standards for quality and reliability.', color: '#DDA0DD' },
 ];
+
+/** "Web" → web, "iOS" → ios, … so card names resolve to icon slot ids */
+function platformCardIconId(name: string): string {
+  const n = String(name || '').toLowerCase();
+  if (n.includes('web')) return 'web';
+  if (n.includes('win')) return 'windows';
+  if (n.includes('linux') || n.includes('ubuntu') || n.includes('debian')) return 'linux';
+  if (n.includes('android')) return 'android';
+  if (n.includes('ios') || n.includes('apple') || n.includes('mac')) return n.includes('mac') ? 'macos' : 'ios';
+  return '';
+}
 
 /** Renders internal paths with router Links, external URLs with anchors. */
 function CLink({ to, className, children }: { to: string; className?: string; children: React.ReactNode }) {
@@ -155,7 +167,7 @@ export default function Home() {
                   : 'bg-rx-dark-tertiary/60 text-rx-gray-medium border-white/10 hover:text-white hover:border-rx-yellow/40'
               }`}
             >
-              <span>{f.icon}</span> {f.label}
+              {f.id === 'all' ? <span>{f.icon}</span> : <PlatformIcon id={f.id} className="text-sm leading-none" imgClassName="w-4 h-4 inline-block" />} {f.label}
             </button>
           ))}
         </div>
@@ -257,11 +269,13 @@ export default function Home() {
             </div>
 
             <Editable id="home.platformCards" type="platformCards" label="Platform cards" group>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-                {platformCards.map((p: any) => (
-                  <div key={p.name} className="text-center p-4 rounded-xl bg-rx-dark-tertiary/50 border border-white/5 hover:border-rx-yellow/20 transition-all">
-                    <span className="text-3xl">{p.icon}</span>
-                    <p className="text-sm font-semibold text-white mt-2">{p.name}</p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+              {platformCards.map((p: any) => (
+                <div key={p.name} className="text-center p-4 rounded-xl bg-rx-dark-tertiary/50 border border-white/5 hover:border-rx-yellow/20 transition-all">
+                  {platformCardIconId(p.name)
+                    ? <PlatformIcon id={platformCardIconId(p.name)} className="text-3xl leading-none" imgClassName="w-9 h-9 inline-block" />
+                    : <span className="text-3xl">{p.icon}</span>}
+                  <p className="text-sm font-semibold text-white mt-2">{p.name}</p>
                     <p className="text-xs text-rx-gray-medium">{p.desc}</p>
                   </div>
                 ))}

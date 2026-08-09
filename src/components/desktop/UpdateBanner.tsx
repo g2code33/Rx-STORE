@@ -34,7 +34,7 @@ export default function UpdateBanner() {
         : 'Downloading in the background…';
 
   return (
-    <div className="fixed top-20 right-3 sm:right-6 z-[60] w-[calc(100%-1.5rem)] max-w-sm animate-fade-in">
+    <div className="fixed right-3 sm:right-6 z-[60] w-[calc(100%-1.5rem)] max-w-sm animate-fade-in" style={{ top: 'calc(var(--rx-header-h, 5rem) + 0.75rem)' }}>
       <div className="card p-4 shadow-2xl shadow-black/60 border-rx-yellow/25">
         <div className="flex items-start gap-3">
           <div
