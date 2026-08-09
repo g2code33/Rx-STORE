@@ -12,6 +12,7 @@ import { usersRoutes } from './routes/users';
 import { paymentsRoutes } from './routes/payments';
 import { adminRoutes } from './routes/admin';
 import { aiRoutes } from './routes/ai';
+import { getSetting, getAllSettings, putSettings, SETTING_DEFAULTS, PUBLIC_SETTING_KEYS } from './services/settings';
 import { updatesRoutes } from './routes/updates';
 
 const router = new Router();
@@ -178,6 +179,38 @@ export default {
       if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
       return json({ success: true, data }, 200, origin);
     }
+    // Recycle Bin — permanent delete (only works on soft-deleted apps)
+    if (path.match(/^\/admin\/apps\/[^\/]+\/purge$/) && request.method === 'POST') {
+      try {
+        const data = await (adminRoutes as any).purgeApp(normalizedRequest as any, env);
+        if ((data as any)?.error) return json({ success: false, error: { code: 'ERROR', message: (data as any).error } }, 400, origin);
+        return json({ success: true, data }, 200, origin);
+      } catch (e: any) { return json({ success: false, error: { message: e.message } }, 500, origin); }
+    }
+    // Site Settings — public safe subset vs full admin read/write
+    if (path === '/settings' && request.method === 'GET') {
+      const all = await getAllSettings(env);
+      const out: Record<string, string> = {};
+      for (const k of PUBLIC_SETTING_KEYS) out[k] = all[k] ?? (SETTING_DEFAULTS as any)[k] ?? '';
+      return json({ success: true, data: out }, 200, origin);
+    }
+    if (path === '/admin/settings' && request.method === 'GET') {
+      const all = await getAllSettings(env);
+      return json({ success: true, data: { ...SETTING_DEFAULTS, ...all } }, 200, origin);
+    }
+    if (path === '/admin/settings' && (request.method === 'PUT' || request.method === 'POST')) {
+      let body: any = {};
+      try { body = await request.json(); } catch { /* empty body = no-op */ }
+      const src = (body && typeof body.settings === 'object' && body.settings) || body || {};
+      const updates: Record<string, string> = {};
+      for (const k of Object.keys(SETTING_DEFAULTS)) {
+        if (!(k in src)) continue;
+        const v = src[k];
+        updates[k] = typeof v === 'boolean' ? (v ? '1' : '0') : String(v ?? '').slice(0, 500);
+      }
+      await putSettings(env, updates);
+      return json({ success: true, data: { message: 'Settings saved', settings: { ...SETTING_DEFAULTS, ...(await getAllSettings(env)) } } }, 200, origin);
+    }
     if (path === '/admin/reset-stats' && request.method === 'POST') {
       const auth = request.headers.get('Authorization') || '';
       if (!auth.startsWith('Bearer ')) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
@@ -235,15 +268,31 @@ export default {
     }
     // Serve R2 files via Worker (for private bucket)
     if (path.startsWith('/r2/') && request.method === 'GET') {
-      const key = path.slice(4); // remove /r2/
-      const obj: any = await env.STORAGE.get(key);
-      if (!obj) return new Response('Not found', { status: 404, headers: corsHeaders(origin) });
-      const headers = new Headers();
-      headers.set('Content-Type', obj.httpMetadata?.contentType || 'application/octet-stream');
-      headers.set('Content-Length', String(obj.size));
-      headers.set('Cache-Control', 'public, max-age=31536000');
-      for (const [k,v] of Object.entries(corsHeaders(origin))) headers.set(k,v);
-      return new Response(obj.body, { headers });
+      try {
+        const key = decodeURIComponent(path.slice(4)); // remove /r2/
+        const obj: any = await env.STORAGE.get(key);
+        if (!obj) return new Response('Not found', { status: 404, headers: corsHeaders(origin) });
+        // Content-Type: stored metadata first, extension fallback (case-insensitive).
+        // NOTE: never set Content-Length manually on a streamed body — Workers rejects it.
+        const ext = (key.split('.').pop() || '').toLowerCase();
+        const types: Record<string, string> = {
+          png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+          svg: 'image/svg+xml', ico: 'image/x-icon', zip: 'application/zip', pdf: 'application/pdf',
+          json: 'application/json', txt: 'text/plain; charset=utf-8',
+          exe: 'application/vnd.microsoft.portable-executable', msi: 'application/x-msi',
+          deb: 'application/vnd.debian.binary-package', appimage: 'application/x-appimage', flatpak: 'application/vnd.flatpak',
+          apk: 'application/vnd.android.package-archive', ipa: 'application/octet-stream', dmg: 'application/x-apple-diskimage',
+        };
+        const stored = obj.httpMetadata?.contentType || '';
+        const ct = stored && stored !== 'application/octet-stream' ? stored : (types[ext] || stored || 'application/octet-stream');
+        const headers = new Headers(corsHeaders(origin));
+        headers.set('Content-Type', ct);
+        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+        headers.set('ETag', obj.httpEtag || obj.etag || '');
+        return new Response(obj.body, { headers });
+      } catch (e: any) {
+        return json({ success: false, error: { message: `R2 serve failed: ${e?.message || e}` } }, 500, origin);
+      }
     }
     // Download — record and return URL (packages of the latest PUBLISHED release win, legacy app_versions fallback)
     if (path.match(/^\/apps\/[^\/]+\/download$/) && request.method === 'GET') {
@@ -254,6 +303,9 @@ export default {
         if (platform === 'appimage') platform = 'linux_appimage';
         const app: any = await env.DB.prepare('SELECT id, current_version FROM applications WHERE slug=?').bind(slug).first();
         if (!app) return json({ success:false, error:{ message:'App not found' }},404,origin);
+        // Live admin toggles: downloads + maintenance
+        if (await getSetting(env, 'downloads_open', '1') === '0') return json({ success:false, error:{ code:'DOWNLOADS_CLOSED', message:'Downloads are temporarily disabled by the administrator.' }},503,origin);
+        if (!isAdminRequest(request) && await getSetting(env, 'maintenance_mode', '0') === '1') return json({ success:false, error:{ code:'MAINTENANCE', message:'RX Store is under maintenance. Please check back soon.' }},503,origin);
         const originUrl = new URL(request.url).origin;
 
         // 1. PWA apps: web/pwa/ios open the deployment URL, not a file
@@ -305,6 +357,12 @@ export default {
     }
 
     if (path.startsWith('/ai/') || path === '/ai') {
+      // Live admin toggle: AI can be switched off from Admin → Settings
+      if ((path === '/ai/chat' || path === '/ai/chat/stream' || path === '/ai/recommend') && request.method === 'POST') {
+        if (await getSetting(env, 'ai_enabled', '1') === '0') {
+          return json({ success: false, error: { code: 'AI_DISABLED', message: 'The AI assistant is currently disabled by the administrator.' } }, 503, origin);
+        }
+      }
       if (path === '/ai/providers' && request.method === 'GET') {
         const data = await aiRoutes.providers(normalizedRequest as any, env);
         return json({ success: true, data }, 200, origin);
@@ -326,6 +384,10 @@ export default {
     }
 
     if (path === '/apps' && request.method === 'GET') {
+      // Live admin toggle: maintenance mode hides the catalog from non-admins
+      if (!isAdminRequest(request) && await getSetting(env, 'maintenance_mode', '0') === '1') {
+        return json({ success: false, error: { code: 'MAINTENANCE', message: 'RX Store is under maintenance. Please check back soon.' } }, 503, origin);
+      }
       try {
         const data = await appsRoutes.list(normalizedRequest as any, env);
         if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
@@ -347,7 +409,7 @@ export default {
       try {
         if (path.endsWith('/reviews')) {
           const data = await appsRoutes.reviews(normalizedRequest as any, env);
-          if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
+          if ((data as any)?.error) return json({ success: false, error: { code: 'ERROR', message: String((data as any).error) } }, 400, origin);
           return json({ success: true, data }, 200, origin);
         }
         if (request.method === 'GET') {

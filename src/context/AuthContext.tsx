@@ -13,36 +13,32 @@ interface AuthContextType {
   updateProfile: (updates: Partial<User>) => void;
   notifications: Notification[];
   markNotificationRead: (id: string) => void;
+  markAllNotificationsRead: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const mockNotifications: Notification[] = [
+// Single honest onboarding notification — real events (installs, updates) are
+// appended as they happen; nothing here is fabricated.
+const seedNotifications = (): Notification[] => [
   {
-    id: 'n1',
-    type: 'update',
-    title: 'Clinical Rx Update Available',
-    message: 'Version 3.2.1 is now available with AI-powered drug interaction predictions.',
-    date: '2024-12-20',
-    read: false,
-  },
-  {
-    id: 'n2',
+    id: 'welcome',
     type: 'system',
     title: 'Welcome to RX Store',
-    message: 'Explore our marketplace and discover amazing applications for healthcare, education, and more.',
-    date: '2024-12-19',
+    message: 'Explore the marketplace — installs, updates and account alerts will appear here.',
+    date: new Date().toISOString().slice(0, 10),
     read: false,
   },
-  {
-    id: 'n3',
-    type: 'download',
-    title: 'Download Complete',
-    message: 'CureLink has been successfully downloaded and is ready to use.',
-    date: '2024-12-18',
-    read: true,
-  },
 ];
+
+const notifKey = (u: any) => `rx-store-notifs-${u?.id || 'guest'}`;
+const loadNotifications = (u: any): Notification[] => {
+  try {
+    const s = localStorage.getItem(notifKey(u));
+    if (s) { const arr = JSON.parse(s); if (Array.isArray(arr)) return arr; }
+  } catch { /* fall through */ }
+  return seedNotifications();
+};
 
 const mockUser: User = {
   id: 'user-1',
@@ -54,14 +50,16 @@ const mockUser: User = {
   joinDate: '2024-01-15',
   downloadedApps: [],
   subscriptions: [],
-  notifications: mockNotifications,
+  notifications: seedNotifications(),
 };
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const dispatchAuth = (u: any) => { try { window.dispatchEvent(new CustomEvent('rx-auth-change')); } catch {} };
   const [isLoading, setIsLoading] = useState(true);
-  const [notifications, setNotifications] = useState<Notification[]>(mockNotifications);
+  const [notifications, setNotifications] = useState<Notification[]>(() => {
+    try { return loadNotifications(JSON.parse(localStorage.getItem('rx-store-user') || 'null')); } catch { return seedNotifications(); }
+  });
 
   useEffect(() => {
     (async () => {
@@ -86,7 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               joinDate: me.joinDate || (me.created_at || '').slice(0,10) || new Date().toISOString().slice(0,10),
               downloadedApps: me.downloadedApps || [],
               subscriptions: me.subscriptions || [],
-              notifications: me.notifications || mockNotifications,
+              notifications: me.notifications || [],
             };
             setUser(merged);
             localStorage.setItem('rx-store-user', JSON.stringify(merged));
@@ -197,10 +195,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Load this user's notifications whenever the signed-in user changes
+  useEffect(() => {
+    setNotifications(loadNotifications(user));
+  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Persist read-state per user so the badge survives reloads
+  useEffect(() => {
+    try { localStorage.setItem(notifKey(user), JSON.stringify(notifications)); } catch { /* quota */ }
+  }, [notifications]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const markNotificationRead = (id: string) => {
     setNotifications((prev) =>
       prev.map((n) => (n.id === id ? { ...n, read: true } : n))
     );
+  };
+
+  const markAllNotificationsRead = () => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
   };
 
   return (
@@ -216,6 +228,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         updateProfile,
         notifications,
         markNotificationRead,
+        markAllNotificationsRead,
       }}
     >
       {children}

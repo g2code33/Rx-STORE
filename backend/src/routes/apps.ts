@@ -1,6 +1,8 @@
 /**
  * Applications Routes — D1 (SQLite) compatible
  */
+import { getSetting } from '../services/settings';
+
 export const appsRoutes = {
   async list(request: Request, env: any) {
     const url = new URL(request.url);
@@ -60,6 +62,8 @@ export const appsRoutes = {
     const app: any = await env.DB.prepare(`SELECT id FROM applications WHERE slug = ?`).bind(slug).first();
     if (!app) return { error: 'Application not found' };
     if (request.method === 'POST') {
+      // Live admin toggle: reviews can be paused from Admin → Settings
+      if (await getSetting(env, 'reviews_open', '1') === '0') return { error: 'Reviews are temporarily disabled by the administrator.' };
       let body: any;
       try { body = await request.json(); } catch { return { error: 'Invalid JSON' }; }
       const { rating, comment } = body || {};

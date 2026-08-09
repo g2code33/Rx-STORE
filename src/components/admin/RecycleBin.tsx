@@ -29,6 +29,21 @@ export default function RecycleBin() {
     } catch (e:any) { toast.error(e.message); }
   };
 
+  const [confirmPurge, setConfirmPurge] = useState<string | null>(null);
+  const [purging, setPurging] = useState(false);
+  const purge = async (slug: string) => {
+    setPurging(true);
+    try {
+      const res = await fetch(`${API_URL}/admin/apps/${slug}/purge`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error?.message || 'Failed');
+      toast.success(`Permanently deleted ${slug}${j.data?.r2_objects_removed ? ` (+${j.data.r2_objects_removed} R2 files)` : ''}`);
+      setConfirmPurge(null);
+      fetchRecycle();
+    } catch (e:any) { toast.error(e.message); }
+    finally { setPurging(false); }
+  };
+
   if (loading) return <div className="card p-8 text-center text-rx-gray-medium flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin"/> Loading recycle bin…</div>;
 
   return (
@@ -44,6 +59,26 @@ export default function RecycleBin() {
                 <p className="text-xs text-rx-gray-medium">Deleted: {a.deleted_at || a.updated_at}</p>
               </div>
               <button onClick={()=>restore(a.slug)} className="px-3 py-1.5 rounded-xl bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 text-green-400 text-sm flex items-center gap-1"><RefreshCw className="w-4 h-4"/> Restore</button>
+              {confirmPurge === a.slug ? (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={()=>purge(a.slug)}
+                    disabled={purging}
+                    className="px-3 py-1.5 rounded-xl bg-red-500 hover:bg-red-400 text-white text-sm font-semibold flex items-center gap-1 disabled:opacity-50"
+                  >
+                    {purging ? <Loader2 className="w-4 h-4 animate-spin"/> : <Trash2 className="w-4 h-4"/>} Delete forever?
+                  </button>
+                  <button onClick={()=>setConfirmPurge(null)} className="px-2.5 py-1.5 rounded-xl bg-white/5 border border-white/10 text-rx-gray-medium text-sm">Cancel</button>
+                </div>
+              ) : (
+                <button
+                  onClick={()=>setConfirmPurge(a.slug)}
+                  title="Permanently delete — cannot be undone"
+                  className="px-3 py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 text-sm flex items-center gap-1"
+                >
+                  <Trash2 className="w-4 h-4"/> Delete forever
+                </button>
+              )}
             </div>
           ))}
         </div>

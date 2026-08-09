@@ -1,8 +1,14 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { Github, Twitter, Linkedin, Mail, Heart } from 'lucide-react';
+import { getPublicSettings } from '../../services/api';
 
 export default function Footer() {
+  const [settings, setSettings] = React.useState<Record<string, string>>({});
+  React.useEffect(() => { getPublicSettings().then(setSettings); }, []);
+  const platformName = settings.platform_name || 'RX Store';
+  const supportEmail = settings.support_email || 'support@rxstore.com';
+
   return (
     <footer className="bg-rx-dark border-t border-white/5">
       <div className="section-container py-16">
@@ -10,12 +16,10 @@ export default function Footer() {
           {/* Brand */}
           <div className="lg:col-span-1">
             <Link to="/" className="flex items-center gap-2.5 mb-4">
-              <div className="w-10 h-10 bg-rx-yellow rounded-lg flex items-center justify-center font-bold text-rx-dark text-base">
-                Rx
-              </div>
+              <img src="/v1.png" alt={`${platformName} logo`} className="w-10 h-10 rounded-lg object-cover" />
               <div>
                 <span className="text-xl font-bold text-white">
-                  RX <span className="text-rx-yellow">Store</span>
+                  {platformName.split(' ')[0]} <span className="text-rx-yellow">{platformName.split(' ').slice(1).join(' ') || 'Store'}</span>
                 </span>
                 <span className="block text-[10px] text-rx-gray-medium -mt-0.5 tracking-wider">
                   BY CALCITONIN TECHNOLOGIES
@@ -36,7 +40,7 @@ export default function Footer() {
               <a href="#" className="w-9 h-9 rounded-lg bg-rx-dark-tertiary flex items-center justify-center text-rx-gray-medium hover:text-rx-yellow hover:bg-rx-dark-secondary transition-all">
                 <Linkedin className="w-4 h-4" />
               </a>
-              <a href="#" className="w-9 h-9 rounded-lg bg-rx-dark-tertiary flex items-center justify-center text-rx-gray-medium hover:text-rx-yellow hover:bg-rx-dark-secondary transition-all">
+              <a href={`mailto:${supportEmail}`} className="w-9 h-9 rounded-lg bg-rx-dark-tertiary flex items-center justify-center text-rx-gray-medium hover:text-rx-yellow hover:bg-rx-dark-secondary transition-all" title={supportEmail}>
                 <Mail className="w-4 h-4" />
               </a>
             </div>

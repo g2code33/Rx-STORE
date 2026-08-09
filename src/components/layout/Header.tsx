@@ -3,17 +3,25 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { Search, Menu, X, Bell, User, ChevronDown, LogOut, Settings, Shield, Download } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useApps } from '../../context/AppContext';
+import { getPublicSettings } from '../../services/api';
 
 export default function Header() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
-  const { user, logout, notifications } = useAuth();
+  const { user, logout, notifications, markNotificationRead, markAllNotificationsRead } = useAuth();
   const { searchQuery, setSearchQuery } = useApps();
   const navigate = useNavigate();
   const location = useLocation();
   const profileRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
+  const [announcement, setAnnouncement] = useState('');
+  const [announceDismissed, setAnnounceDismissed] = useState(false);
+
+  // Admin-controlled site announcement (Admin → Settings)
+  useEffect(() => {
+    getPublicSettings().then((s) => setAnnouncement((s.announcement || '').trim()));
+  }, []);
 
   useEffect(() => {
     const onClickOutside = (e: MouseEvent) => {
@@ -50,6 +58,18 @@ export default function Header() {
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 bg-rx-dark/80 backdrop-blur-xl border-b border-white/5">
+      {announcement && !announceDismissed && (
+        <div className="bg-rx-yellow text-rx-dark text-center text-xs font-medium py-1.5 px-8 relative">
+          <span>{announcement}</span>
+          <button
+            onClick={() => setAnnounceDismissed(true)}
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-black/10"
+            aria-label="Dismiss announcement"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
       <div className="section-container">
         <div className="flex items-center justify-between h-16 lg:h-18">
           {/* Logo — v1.png */}
@@ -115,14 +135,26 @@ export default function Header() {
 
                 {isNotifOpen && (
                   <div className="absolute right-0 mt-2 w-80 bg-rx-dark-secondary border border-white/10 rounded-2xl shadow-xl animate-slide-down overflow-hidden">
-                    <div className="p-4 border-b border-white/5">
+                    <div className="p-4 border-b border-white/5 flex items-center justify-between">
                       <h3 className="text-sm font-semibold">Notifications</h3>
+                      {unreadCount > 0 && (
+                        <button
+                          onClick={() => markAllNotificationsRead()}
+                          className="text-[11px] text-rx-yellow hover:underline"
+                        >
+                          Mark all read
+                        </button>
+                      )}
                     </div>
                     <div className="max-h-80 overflow-y-auto">
+                      {notifications.length === 0 && (
+                        <div className="p-6 text-center text-xs text-rx-gray-medium">No notifications yet.</div>
+                      )}
                       {notifications.map((notif) => (
-                        <div
+                        <button
                           key={notif.id}
-                          className={`p-4 border-b border-white/5 hover:bg-white/5 transition-colors ${
+                          onClick={() => markNotificationRead(notif.id)}
+                          className={`w-full text-left p-4 border-b border-white/5 hover:bg-white/5 transition-colors ${
                             !notif.read ? 'bg-rx-yellow/5' : ''
                           }`}
                         >
@@ -133,14 +165,15 @@ export default function Header() {
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium text-white">{notif.title}</p>
                               <p className="text-xs text-rx-gray-medium mt-0.5 line-clamp-2">{notif.message}</p>
+                              {notif.date && <p className="text-[10px] text-rx-gray-medium/60 mt-1">{notif.date}</p>}
                             </div>
                             {!notif.read && <div className="w-2 h-2 bg-rx-yellow rounded-full mt-2 flex-shrink-0"></div>}
                           </div>
-                        </div>
+                        </button>
                       ))}
                     </div>
                     <div className="p-3">
-                      <Link to="/profile" onClick={()=>setIsProfileOpen(false)} className="text-xs text-rx-yellow hover:underline text-center block">
+                      <Link to="/profile" onClick={()=>setIsNotifOpen(false)} className="text-xs text-rx-yellow hover:underline text-center block">
                         View all notifications
                       </Link>
                     </div>

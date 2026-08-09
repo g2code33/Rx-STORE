@@ -4,6 +4,38 @@ import { Toaster } from 'react-hot-toast';
 import Header from './components/layout/Header';
 import Footer from './components/layout/Footer';
 import { AIFloatingButton } from './components/ai/AIChat';
+import { getPublicSettings } from './services/api';
+import { useAuth } from './context/AuthContext';
+
+/** Full-screen block for visitors while Admin → Settings → Maintenance mode is on. */
+function MaintenanceGate({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  const [maint, setMaint] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    let stop = false;
+    const load = () => getPublicSettings(true).then((s) => {
+      if (!stop) setMaint(s.maintenance_mode === '1' ? (s.announcement || '') : null);
+    });
+    load();
+    const t = setInterval(load, 60_000); // auto-recover when admin turns it off
+    return () => { stop = true; clearInterval(t); };
+  }, []);
+  const isAdminRoute = window.location.pathname.startsWith('/admin');
+  if (maint !== null && user?.role !== 'admin' && !isAdminRoute) {
+    return (
+      <div className="min-h-screen bg-rx-dark flex items-center justify-center text-center px-6">
+        <div>
+          <img src="/v1.png" alt="RX Store" className="w-20 h-20 rounded-2xl object-cover mx-auto mb-6" />
+          <h1 className="text-2xl font-bold text-white">We'll be right back</h1>
+          <p className="text-rx-gray-medium mt-2 max-w-sm mx-auto">
+            {maint || 'RX Store is undergoing scheduled maintenance. Everything returns shortly.'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+  return <>{children}</>;
+}
 
 const Home = lazy(() => import('./pages/Home'));
 const Browse = lazy(() => import('./pages/Browse'));
@@ -38,6 +70,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-rx-dark text-white flex flex-col">
       <ScrollToTop />
+      <MaintenanceGate>
       <Toaster
         position="top-right"
         toastOptions={{
@@ -67,6 +100,7 @@ export default function App() {
       </main>
       <Footer />
       <AIFloatingButton />
+      </MaintenanceGate>
     </div>
   );
 }

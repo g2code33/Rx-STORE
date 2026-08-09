@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { Bot, Send, X, Sparkles, User, Loader2 } from 'lucide-react';
-import { api, isApiConfigured } from '../../services/api';
+import { Bot, Send, X, Sparkles, User, Loader2, Minus } from 'lucide-react';
+import { api, isApiConfigured, getPublicSettings } from '../../services/api';
 
 type Message = { role: 'user' | 'assistant'; content: string };
 
@@ -26,7 +26,7 @@ function mockReply(input: string): string {
   return MOCK_RESPONSES.default;
 }
 
-export function AIChatPanel({ onClose }: { onClose: () => void }) {
+export function AIChatPanel({ onClose, onMinimize }: { onClose: () => void; onMinimize: () => void }) {
   const [messages, setMessages] = useState<Message[]>([
     { role: 'assistant', content: MOCK_RESPONSES.default },
   ]);
@@ -34,6 +34,9 @@ export function AIChatPanel({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Stop any in-flight stream when the panel is truly closed (unmounted).
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' });
@@ -105,13 +108,24 @@ export function AIChatPanel({ onClose }: { onClose: () => void }) {
             </p>
           </div>
         </div>
-        <button
-          onClick={onClose}
-          className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-rx-gray-medium hover:text-white transition-colors"
-          aria-label="Close chat"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={onMinimize}
+            className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-rx-gray-medium hover:text-white transition-colors"
+            aria-label="Minimize chat"
+            title="Minimize — keeps the conversation running in the background"
+          >
+            <Minus className="w-4 h-4" />
+          </button>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-rx-gray-medium hover:text-white transition-colors"
+            aria-label="Close chat"
+            title="Close — ends the conversation"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* messages */}
@@ -192,21 +206,40 @@ export function AIChatPanel({ onClose }: { onClose: () => void }) {
 }
 
 export function AIFloatingButton() {
-  const [open, setOpen] = useState(false);
+  // open = panel visible · minimized = hidden but RUNNING (stream + history kept) · closed = unmounted
+  const [mode, setMode] = useState<'open' | 'minimized' | 'closed'>('closed');
+  const [enabled, setEnabled] = useState(true);
+  const [active, setActive] = useState(false); // has real conversation activity
+
+  // Live admin toggle (Admin → Settings → AI assistant): hide the bubble entirely
+  useEffect(() => {
+    getPublicSettings().then((s) => { if (s.ai_enabled === '0') setEnabled(false); });
+  }, []);
+  if (!enabled) return null;
+
+  const open = mode === 'open';
   return (
     <>
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setMode((m) => (m === 'open' ? 'minimized' : 'open'))}
         className={`fixed bottom-6 right-6 z-40 w-14 h-14 rounded-2xl shadow-lg flex items-center justify-center transition-all duration-200 ${
           open ? 'bg-white text-rx-dark rotate-90' : 'bg-rx-yellow text-rx-dark hover:shadow-glow hover:scale-105'
         }`}
-        aria-label={open ? 'Close assistant' : 'Open RX Assistant'}
+        aria-label={open ? 'Minimize assistant' : 'Open RX Assistant'}
+        title={open ? 'Minimize — keeps the conversation running' : 'Open RX Assistant'}
       >
         {open ? <X className="w-6 h-6" /> : <Bot className="w-6 h-6" />}
+        {/* Activity dot: conversation waiting in the background */}
+        {mode === 'minimized' && active && (
+          <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-green-400 border-2 border-rx-dark rounded-full" />
+        )}
       </button>
-      {open && (
-        <div className="fixed bottom-24 right-6 z-40 w-[min(92vw,380px)] animate-scale-in">
-          <AIChatPanel onClose={() => setOpen(false)} />
+      {mode !== 'closed' && (
+        <div className={`fixed bottom-24 right-6 z-40 w-[min(92vw,380px)] animate-scale-in ${open ? '' : 'hidden'}`}>
+          <AIChatPanel
+            onClose={() => setMode('closed')}
+            onMinimize={() => { setActive(true); setMode('minimized'); }}
+          />
         </div>
       )}
     </>

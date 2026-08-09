@@ -205,3 +205,24 @@ export const api = {
 };
 
 export { API_URL };
+
+// ---- Public site settings (Admin → Settings toggles) ----
+let settingsCache: { at: number; data: Record<string, string> } | null = null;
+
+/** Public-safe settings from GET /settings. Never throws; cached 30s. */
+export async function getPublicSettings(force = false): Promise<Record<string, string>> {
+  if (!isApiConfigured()) return {};
+  if (!force && settingsCache && Date.now() - settingsCache.at < 30_000) return settingsCache.data;
+  try {
+    const res = await fetch(`${API_URL}/settings`);
+    const j = await res.json();
+    const data = (j?.data && typeof j.data === 'object') ? j.data : {};
+    settingsCache = { at: Date.now(), data };
+    return data;
+  } catch {
+    return settingsCache?.data || {};
+  }
+}
+
+/** Call after an admin saves settings so storefront consumers re-fetch. */
+export function invalidatePublicSettings() { settingsCache = null; }

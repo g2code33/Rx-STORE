@@ -496,6 +496,31 @@ export const adminRoutes = {
     return { success: true, slug, restored: true };
   },
 
+  // Permanent delete — only for apps already in the recycle bin (deleted_at set).
+  // Removes dependent rows (FK cascade is not guaranteed on older prod DBs) and
+  // best-effort cleans R2 release binaries under apps/{slug}/.
+  async purgeApp(request: Request, env: any) {
+    const seg = new URL(request.url).pathname.split('/').filter(Boolean);
+    const slug = seg[seg.length - 2];
+    const app: any = await env.DB.prepare('SELECT id, slug, deleted_at FROM applications WHERE slug=?').bind(slug).first().catch(() => null);
+    if (!app) return { error: 'App not found' };
+    const cols = await tableColumns(env, 'applications');
+    if (cols.has('deleted_at') && !app.deleted_at) return { error: 'App is not in the recycle bin — delete it there first (it stays recoverable until then).' };
+    await env.DB.prepare('DELETE FROM downloads WHERE app_id=?').bind(app.id).run().catch(() => {});
+    await env.DB.prepare('DELETE FROM reviews WHERE app_id=?').bind(app.id).run().catch(() => {});
+    await env.DB.prepare('DELETE FROM packages WHERE application_id=?').bind(app.id).run().catch(() => {});
+    await env.DB.prepare('DELETE FROM releases WHERE application_id=?').bind(app.id).run().catch(() => {});
+    await env.DB.prepare('DELETE FROM app_versions WHERE app_id=?').bind(app.id).run().catch(() => {});
+    await env.DB.prepare('DELETE FROM download_statistics WHERE app_id=?').bind(app.id).run().catch(() => {});
+    await env.DB.prepare('DELETE FROM applications WHERE id=?').bind(app.id).run();
+    let removed = 0;
+    try {
+      const listed: any = await env.STORAGE.list({ prefix: `apps/${slug}/` });
+      for (const o of listed?.objects || []) { await env.STORAGE.delete(o.key).catch(() => {}); removed++; }
+    } catch { /* storage cleanup is best-effort */ }
+    return { success: true, slug, purged: true, r2_objects_removed: removed };
+  },
+
   async createApp(request: Request, env: any) {
     const data: any = await request.json().catch(()=>({}));
     const id = `app_${Date.now()}`;

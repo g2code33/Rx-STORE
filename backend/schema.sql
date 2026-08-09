@@ -282,3 +282,12 @@ INSERT OR IGNORE INTO applications (id, slug, name, description, category, devel
 ('code-rx-society','code-rx-society','Code Rx Society','Healthcare developer platform','technology','Calcitonin Technologies','💻','active','1.8.3',4.7,42000,'free','["web","windows","linux"]',1),
 ('tawomo','tawomo','TAWOMO','Healthcare workforce management','productivity','Calcitonin Technologies','👥','active','1.2.0',4.5,18000,'subscription','["web","android"]',0),
 ('curelink','curelink','CureLink','Patient-caregiver communication','healthcare','Calcitonin Technologies','🔗','active','2.1.0',4.6,56000,'subscription','["web","android","ios"]',0);
+
+-- ==================== SITE SETTINGS ====================
+-- Live admin toggles (Admin → Settings). Also created lazily by the Worker,
+-- so running this schema (or migration 0005) is optional.
+CREATE TABLE IF NOT EXISTS site_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL DEFAULT '',
+  updated_at TEXT DEFAULT (datetime('now'))
+);

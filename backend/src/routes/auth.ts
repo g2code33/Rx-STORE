@@ -3,6 +3,7 @@
  */
 import { hashPassword, verifyPassword, generateToken, generateRefreshToken } from '../services/auth';
 import { validateEmail, validatePassword } from '../utils/validation';
+import { getSetting } from '../services/settings';
 
 function normalizePhone(p: any): string | null {
   if (!p) return null;
@@ -14,6 +15,10 @@ function normalizePhone(p: any): string | null {
 
 export const authRoutes = {
   async register(request: Request, env: any) {
+    // Live admin toggle: registration can be closed from Admin → Settings
+    if (await getSetting(env, 'allow_registration', '1') === '0') {
+      return { code: 'FORBIDDEN', message: 'Registration is currently closed. Please contact support.' };
+    }
     let body: any;
     try { body = await request.json(); } catch { return { code: 'VALIDATION_ERROR', message: 'Invalid JSON body' }; }
     const { name, email, phone, password } = body || {};
