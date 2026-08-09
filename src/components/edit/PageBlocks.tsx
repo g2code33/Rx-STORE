@@ -1,7 +1,8 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Check } from 'lucide-react';
+import { Check, Megaphone } from 'lucide-react';
 import { useContent } from '../../context/ContentContext';
+import { IntroAd, trackAd, sanitizeAccent } from '../home/introAds';
 import Editable from './Editable';
 
 /**
@@ -12,7 +13,7 @@ import Editable from './Editable';
  * the blocks editor in the Inspector.
  */
 
-export type BlockType = 'cta' | 'text' | 'features' | 'image';
+export type BlockType = 'cta' | 'text' | 'features' | 'image' | 'adBanner';
 
 export interface PageBlock {
   id: string;
@@ -32,6 +33,8 @@ export interface PageBlock {
   imageAlt?: string;
   /** features — edited as lines "Title | Description | emoji" */
   items?: { icon?: string; title: string; description: string }[];
+  /** adBanner — which intro ad to show; '' rotates through them */
+  adId?: string;
 }
 
 export const BLOCK_TYPE_LABELS: Record<BlockType, string> = {
@@ -39,6 +42,7 @@ export const BLOCK_TYPE_LABELS: Record<BlockType, string> = {
   text: 'Text section',
   features: 'Feature grid',
   image: 'Image banner',
+  adBanner: 'Sponsored banner',
 };
 
 export function newBlock(type: BlockType): PageBlock {
@@ -56,13 +60,83 @@ export function newBlock(type: BlockType): PageBlock {
       ] };
     case 'image':
       return { ...base, title: '', imageUrl: '', imageAlt: 'Section image' };
+    case 'adBanner':
+      return { ...base, adId: '' };
   }
 }
 
 /** Internal links use the router; external open in a new tab. */
-function BlockLink({ to, className, style, children }: { to: string; className?: string; style?: React.CSSProperties; children: React.ReactNode }) {
-  if (/^https?:\/\//.test(to)) return <a href={to} target="_blank" rel="noreferrer" className={className} style={style}>{children}</a>;
-  return <Link to={to || '/'} className={className} style={style}>{children}</Link>;
+function BlockLink({ to, className, style, onClick, children }: { to: string; className?: string; style?: React.CSSProperties; onClick?: () => void; children: React.ReactNode }) {
+  if (/^https?:\/\//.test(to)) return <a href={to} target="_blank" rel="noreferrer" className={className} style={style} onClick={onClick}>{children}</a>;
+  return <Link to={to || '/'} className={className} style={style} onClick={onClick}>{children}</Link>;
+}
+
+/** Compact sponsored banner — reuses the intro-ad creatives (Builder → Ads). */
+function AdBannerView({ block }: { block: PageBlock }) {
+  const { getJSON, ready } = useContent();
+  const ads = getJSON<IntroAd[]>('intro.ads', []);
+  const active = (Array.isArray(ads) ? ads : []).filter((a) => a && a.enabled && a.title?.trim());
+  let ad: IntroAd | undefined;
+  if (block.adId) ad = active.find((a) => a.id === block.adId);
+  else if (active.length) {
+    // Stable per-block rotation — different banners on a page show different ads
+    let h = 0;
+    for (const ch of block.id) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    ad = active[h % active.length];
+  }
+  const accent = sanitizeAccent(ad?.accent);
+  const viewed = React.useRef(false);
+  React.useEffect(() => {
+    if (ready && ad && !viewed.current) { viewed.current = true; trackAd(ad.id, 'views'); }
+  }, [ready, ad?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!ad) {
+    return (
+      <div className="rounded-2xl border border-dashed border-white/15 bg-rx-dark-secondary/50 px-6 py-8 text-center text-sm text-rx-gray-medium">
+        📣 Sponsored banner — publish an ad in Builder → Ads and it appears here.
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative rounded-2xl border bg-rx-dark-secondary/70 backdrop-blur-sm overflow-hidden" style={{ borderColor: `${accent}40` }}>
+      <span className="absolute top-3 right-3 text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full" style={{ background: `${accent}1F`, color: accent }}>
+        Ad
+      </span>
+      <div className="flex items-center gap-4 sm:gap-5 p-4 sm:p-5">
+        {ad.imageUrl ? (
+          <img
+            src={ad.imageUrl}
+            alt={ad.title}
+            loading="lazy"
+            className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl object-cover flex-shrink-0 border border-white/10"
+            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+          />
+        ) : (
+          <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl flex items-center justify-center flex-shrink-0 border border-white/10" style={{ background: `${accent}14` }}>
+            <Megaphone className="w-6 h-6" style={{ color: accent }} />
+          </div>
+        )}
+        <div className="flex-1 min-w-0">
+          <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: accent }}>
+            Sponsored{ad.sponsor ? ` · ${ad.sponsor}` : ''}
+          </p>
+          <h3 className="text-base sm:text-lg font-bold text-white mt-0.5 truncate">{ad.title}</h3>
+          {ad.body && <p className="text-xs sm:text-sm text-rx-gray-medium mt-0.5 line-clamp-1">{ad.body}</p>}
+        </div>
+        {ad.buttonLabel && (
+          <BlockLink
+            to={ad.buttonTo || '/'}
+            className="flex-shrink-0 text-xs sm:text-sm font-bold rounded-xl px-4 py-2.5 transition-transform active:scale-95 hover:brightness-110"
+            style={{ background: accent, color: '#0F1419' }}
+            onClick={() => trackAd(ad.id, 'clicks')}
+          >
+            {ad.buttonLabel}
+          </BlockLink>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function BlockView({ block }: { block: PageBlock }) {
@@ -129,6 +203,8 @@ function BlockView({ block }: { block: PageBlock }) {
           {block.title && <figcaption className="mt-3 text-center text-sm text-rx-gray-medium">{block.title}</figcaption>}
         </figure>
       );
+    case 'adBanner':
+      return <AdBannerView block={block} />;
   }
 }
 

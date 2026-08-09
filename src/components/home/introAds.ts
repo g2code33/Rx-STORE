@@ -1,11 +1,13 @@
+import { API_URL, isApiConfigured } from '../../services/api';
+
 /**
  * Welcome-intro ads — the 3-second intro screen can carry one sponsored card
  * per fresh page load. Managed from the Live Builder toolbar → Ads.
  *
  * Rotation: a persistent counter advances on every full page load, so each
  * refresh shows the next enabled ad in list order (fair, deterministic).
- * Stats: views & clicks are tracked per ad on this device and surfaced in the
- * ad editor (labelled honestly as "this device" — no server analytics).
+ * Stats: views & clicks beaconed to the worker (server totals, all devices)
+ * plus a per-device mirror shown in the editor.
  */
 
 export interface IntroAd {
@@ -74,4 +76,28 @@ export function trackAd(id: string, field: keyof AdStat) {
     s[id] = cur;
     localStorage.setItem(STATS_KEY, JSON.stringify(s));
   } catch { /* non-critical */ }
+  // Server beacon — one tiny POST, fire-and-forget (keeps running on nav away)
+  if (isApiConfigured()) {
+    try {
+      fetch(`${API_URL}/ads/track`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, type: field === 'views' ? 'view' : 'click' }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch { /* offline — local mirror still counts */ }
+  }
+}
+
+/** Server-side totals for every ad (admin editor uses this). */
+export async function fetchAdServerStats(): Promise<Record<string, AdStat>> {
+  if (!isApiConfigured()) return {};
+  try {
+    const token = localStorage.getItem('rx-store-token') || '';
+    const res = await fetch(`${API_URL}/admin/ads/stats`, { headers: { Authorization: `Bearer ${token}` } });
+    const j = await res.json();
+    const out: Record<string, AdStat> = {};
+    for (const r of j?.data?.stats || []) out[r.ad_id] = { views: Number(r.views) || 0, clicks: Number(r.clicks) || 0 };
+    return out;
+  } catch { return {}; }
 }

@@ -16,6 +16,7 @@ const DEFAULT_PLATFORM_LINKS = [
 
 const DEFAULT_COMPANY_LINKS = [
   { label: 'About Calcitonin', to: '/about' },
+  { label: 'Advertise', to: '/advertise' },
   { label: 'Privacy Policy', to: '/privacy' },
   { label: 'Terms of Service', to: '/terms' },
   { label: 'Careers', to: '', soon: true },

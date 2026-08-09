@@ -14,6 +14,7 @@ import { adminRoutes } from './routes/admin';
 import { aiRoutes } from './routes/ai';
 import { getSetting, getAllSettings, putSettings, SETTING_DEFAULTS, PUBLIC_SETTING_KEYS } from './services/settings';
 import { getAllContent, putContent, getContentHistory, revertContent } from './services/content';
+import { trackAdEvent, getAdStats } from './services/ads';
 import { updatesRoutes } from './routes/updates';
 
 const router = new Router();
@@ -219,6 +220,17 @@ export default {
       const r = await revertContent(env, String(body?.key || ''), Number(body?.id) || 0);
       if (!r.ok) return json({ success: false, error: { code: 'NOT_FOUND', message: 'Revision not found' } }, 404, origin);
       return json({ success: true, data: { message: 'Reverted', key: body?.key, value: r.value, content: await getAllContent(env) } }, 200, origin);
+    }
+    // Intro Ads — public beacon counts a view/click; admin reads the totals
+    if (path === '/ads/track' && request.method === 'POST') {
+      let body: any = {};
+      try { body = await request.json(); } catch { /* empty */ }
+      const r = await trackAdEvent(env, String(body?.id || ''), String(body?.type || ''));
+      if (!r.ok) return json({ success: false, error: { code: 'BAD_REQUEST', message: r.error } }, 400, origin);
+      return json({ success: true, data: { message: 'tracked' } }, 200, origin);
+    }
+    if (path === '/admin/ads/stats' && request.method === 'GET') {
+      return json({ success: true, data: { stats: await getAdStats(env) } }, 200, origin);
     }
     if (path === '/admin/settings' && request.method === 'GET') {
       const all = await getAllSettings(env);

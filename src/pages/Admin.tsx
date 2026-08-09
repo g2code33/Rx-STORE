@@ -20,6 +20,7 @@ const BuilderBrowse = lazy(() => import('./Browse'));
 const BuilderAppDetail = lazy(() => import('./AppDetail'));
 const BuilderCategories = lazy(() => import('./Categories'));
 const BuilderCategoryPage = lazy(() => import('./CategoryPage'));
+const BuilderAdvertise = lazy(() => import('./Advertise'));
 
 /** Pages the Live Builder can edit + where their custom blocks are stored. */
 const BUILDER_PAGES = [
@@ -29,9 +30,10 @@ const BUILDER_PAGES = [
   { id: 'app', label: 'App page' },
   { id: 'categories', label: 'Categories' },
   { id: 'category', label: 'Category' },
+  { id: 'advertise', label: 'Advertise' },
 ] as const;
 type BuilderPageId = (typeof BUILDER_PAGES)[number]['id'];
-const PAGE_BLOCKS_KEY: Record<BuilderPageId, string> = { home: 'home', about: 'about', browse: 'browse', app: 'appDetail', categories: 'categories', category: 'categoryPage' };
+const PAGE_BLOCKS_KEY: Record<BuilderPageId, string> = { home: 'home', about: 'about', browse: 'browse', app: 'appDetail', categories: 'categories', category: 'categoryPage', advertise: 'advertise' };
 
 /** Relative time for activity rows ("3h ago") */
 function ago(t?: string) {
@@ -284,7 +286,8 @@ export default function Admin() {
                builderPage === 'browse' ? <BuilderBrowse /> :
                builderPage === 'app' ? <BuilderAppDetail previewSlug={(apps as any[])[0]?.slug} /> :
                builderPage === 'categories' ? <BuilderCategories /> :
-               <BuilderCategoryPage previewCategory={builderFirstCategory} />}
+               builderPage === 'category' ? <BuilderCategoryPage previewCategory={builderFirstCategory} /> :
+               <BuilderAdvertise />}
             </Suspense>
           </div>
           <Inspector />

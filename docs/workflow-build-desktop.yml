@@ -70,15 +70,17 @@ jobs:
 
       # Wine lets electron-builder embed the RX icon + version info into the
       # Windows .exe while building on Ubuntu (that's rcedit, needs `wine`).
-      # apt on hosted runners is flaky — retries, alternate packages, and a
-      # graceful fallback that still ships the installer (default exe icon).
+      # Ubuntu's wine64 package ships NO PATH binary (it lands in
+      # /usr/lib/wine/) — probe every known location, and if Wine truly isn't
+      # there, still ship the installer via the no-metadata fallback.
       - name: Install Wine (for the Windows installer icon)
         id: wine
         run: |
           sudo apt-get update -y -o Acquire::Retries=3 || sudo apt-get update -y || true
-          if sudo apt-get install -y --no-install-recommends --fix-missing wine64 \
-          || sudo apt-get install -y --no-install-recommends wine wine64 wine32; then
-            command -v wine >/dev/null 2>&1 || sudo ln -sf "$(command -v wine64)" /usr/local/bin/wine
+          sudo apt-get install -y --no-install-recommends wine64 || sudo apt-get install -y --no-install-recommends wine || true
+          WINEBIN="$(command -v wine || command -v wine64 || ls /usr/lib/wine/wine /usr/lib/wine/wine64 2>/dev/null | head -n 1 || true)"
+          if [ -n "$WINEBIN" ]; then
+            sudo ln -sf "$WINEBIN" /usr/local/bin/wine
             echo "wine_ok=1" >> "$GITHUB_OUTPUT"
             wine --version || true
           else

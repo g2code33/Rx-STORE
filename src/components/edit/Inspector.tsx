@@ -5,7 +5,7 @@ import { useContent } from '../../context/ContentContext';
 import { useEditMode } from './EditMode';
 import { StyleOverrides } from './Editable';
 import { newBlock, BLOCK_TYPE_LABELS, BlockType, PageBlock } from './PageBlocks';
-import { newIntroAd, IntroAd, readAdStats } from '../home/introAds';
+import { newIntroAd, IntroAd, readAdStats, fetchAdServerStats, AdStat } from '../home/introAds';
 import { API_URL } from '../../services/api';
 
 /**
@@ -37,9 +37,17 @@ export default function Inspector() {
   const [draft, setDraft] = useState<any>('');
   const [sty, setSty] = useState<StyleOverrides>({});
   const [uploading, setUploading] = useState(false);
+  // Server-side ad totals (all devices) — loaded when the Ads editor opens
+  const [serverAdStats, setServerAdStats] = useState<Record<string, AdStat>>({});
 
   const d = edit?.inspector;
   const styleKey = d ? `style.${d.id}` : '';
+
+  useEffect(() => {
+    if (d?.type === 'introAds' || d?.type === 'blocks') {
+      fetchAdServerStats().then(setServerAdStats);
+    }
+  }, [d?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load current values (pre-filled with exactly what the visitor sees)
   useEffect(() => {
@@ -114,6 +122,8 @@ export default function Inspector() {
   };
 
   const list: any[] = useMemo(() => (Array.isArray(draft) ? draft : []), [draft]);
+  // Intro-ad creatives (for the Sponsored banner block picker)
+  const introAdList: IntroAd[] = getEffectiveJSON('intro.ads', []);
   const setList = (next: any[]) => setDraft(next);
   const move = (i: number, dir: -1 | 1) => {
     const j = i + dir;
@@ -344,7 +354,7 @@ export default function Inspector() {
                           </select>
                           <ListBtns i={i} len={list.length} move={move} removeAt={removeAt} />
                         </div>
-                        {b.type !== 'image' && (
+                        {b.type !== 'image' && b.type !== 'adBanner' && (
                           <input className={`${inputCls} mb-2`} value={b.title || ''} onChange={(e) => setField(i, 'title', e.target.value)} placeholder={b.type === 'cta' ? 'Heading' : 'Title'} />
                         )}
                         {b.type === 'cta' && (
@@ -386,6 +396,19 @@ export default function Inspector() {
                             </div>
                             <input className={inputCls} value={b.imageAlt || ''} onChange={(e) => setField(i, 'imageAlt', e.target.value)} placeholder="Alt text / caption" />
                             <p className="text-[10px] text-rx-gray-medium mt-1">Tip: the same field doubles as the caption under the image.</p>
+                          </>
+                        )}
+                        {b.type === 'adBanner' && (
+                          <>
+                            <select className={selCls} value={b.adId || ''} onChange={(e) => setField(i, 'adId', e.target.value)}>
+                              <option value="">↻ Rotate through all enabled ads</option>
+                              {introAdList.map((ad) => (
+                                <option key={ad.id} value={ad.id}>{ad.enabled ? '' : '(paused) '}{ad.title}</option>
+                              ))}
+                            </select>
+                            <p className="text-[10px] text-rx-gray-medium mt-1.5">
+                              Creatives live in Builder toolbar → Ads. Views & clicks count into the same stats.
+                            </p>
                           </>
                         )}
                       </div>
@@ -444,7 +467,10 @@ export default function Inspector() {
                             <input className={inputCls} value={ad.buttonTo || ''} onChange={(e) => setField(i, 'buttonTo', e.target.value)} placeholder="https://… or /path" />
                           </div>
                           <p className="text-[10px] text-rx-gray-medium mt-1.5">
-                            {st ? `${st.views || 0} views · ${st.clicks || 0} clicks (this device)` : 'No views on this device yet'}
+                            {serverAdStats[ad.id]
+                              ? `${serverAdStats[ad.id].views} views · ${serverAdStats[ad.id].clicks} clicks — all devices`
+                              : 'No server stats yet (deploy the worker for totals)'}
+                            {st ? ` · ${st.views}/${st.clicks} this device` : ''}
                           </p>
                         </div>
                       );
