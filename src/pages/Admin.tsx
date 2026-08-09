@@ -71,6 +71,15 @@ export default function Admin() {
     { label: 'App Rating', value: '—', change: '', icon: Star, color: '#96CEB4' },
   ]);
   const [activity, setActivity] = useState<any[]>([]);
+  // Real Cloudflare R2 usage (from the worker's paginated bucket listing)
+  const [storage, setStorage] = React.useState<{ bytes: number | null; objects: number | null; quotaGb: number }>({ bytes: null, objects: null, quotaGb: 10 });
+  const fmtBytes = (b: number) => {
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 ** 2) return `${(b / 1024).toFixed(1)} KB`;
+    if (b < 1024 ** 3) return `${(b / 1024 ** 2).toFixed(1)} MB`;
+    return `${(b / 1024 ** 3).toFixed(2)} GB`;
+  };
+  const storagePct = storage.bytes != null ? (storage.bytes / (storage.quotaGb * 1024 ** 3)) * 100 : null;
   const publishAsNotice = (item: any) => {
     // Hand this activity to the Notifications composer as a ready-to-send draft
     sessionStorage.setItem('rx-notif-draft', JSON.stringify({
@@ -104,6 +113,11 @@ export default function Admin() {
           { label: 'App Rating', value: String(d.averageRating ? Number(d.averageRating).toFixed(1) : '0.0'), change: '', icon: Star, color: '#96CEB4' },
         ]);
         setActivity(Array.isArray(d.activity) ? d.activity : []);
+        setStorage({
+          bytes: typeof d.storageBytes === 'number' ? d.storageBytes : null,
+          objects: typeof d.storageObjects === 'number' ? d.storageObjects : null,
+          quotaGb: typeof d.storageQuotaGb === 'number' && d.storageQuotaGb > 0 ? d.storageQuotaGb : 10,
+        });
       }).catch(()=>{
         setStats([
           { label: 'Total Downloads', value: '0', change: '', icon: Download, color: '#FFD600' },
@@ -286,13 +300,25 @@ export default function Admin() {
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 {[
-                  { label: 'API Status', status: 'Operational', icon: Cloud, color: 'green' },
-                  { label: 'Database', status: 'Healthy', icon: Database, color: 'green' },
-                  { label: 'Storage', status: '78% Used', icon: Cloud, color: 'yellow' },
+                  { label: 'API Status', status: 'Operational', sub: 'Worker responding', icon: Cloud, color: 'green' },
+                  { label: 'Database', status: 'Healthy', sub: 'D1 connected', icon: Database, color: 'green' },
+                  {
+                    label: 'Storage',
+                    status: storage.bytes != null ? `${fmtBytes(storage.bytes)} used` : 'Measuring…',
+                    sub: storagePct != null
+                      ? `${storagePct < 0.1 ? storagePct.toFixed(2) : storagePct.toFixed(1)}% of ${storage.quotaGb} GB R2 · ${storage.objects ?? 0} objects`
+                      : 'listing your R2 bucket',
+                    icon: Cloud,
+                    color: storagePct != null ? (storagePct >= 95 ? 'red' : storagePct >= 80 ? 'yellow' : 'green') : 'green',
+                  },
                 ].map((item) => (
                   <div key={item.label} className="card p-4 flex items-center gap-3">
-                    <item.icon className={`w-5 h-5 text-${item.color}-400`} />
-                    <div><p className="text-sm font-medium text-white">{item.label}</p><p className={`text-xs text-${item.color}-400`}>{item.status}</p></div>
+                    <item.icon className={`w-5 h-5 flex-shrink-0 text-${item.color}-400`} />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-white">{item.label}</p>
+                      <p className={`text-xs text-${item.color}-400`}>{item.status}</p>
+                      <p className="text-[10px] text-rx-gray-medium truncate" title={item.sub}>{item.sub}</p>
+                    </div>
                   </div>
                 ))}
               </div>

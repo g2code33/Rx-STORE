@@ -13,6 +13,8 @@ export const SETTING_DEFAULTS: Record<string, string> = {
   allow_registration: '1',
   downloads_open: '1',
   reviews_open: '1',
+  ios_recommend_pwa: '1',
+  storage_quota_gb: '10',
 };
 
 /** Keys exposed to the public (no secrets, no admin-only flags). */
@@ -22,6 +24,7 @@ export const PUBLIC_SETTING_KEYS = [
   'announcement',
   'maintenance_mode',
   'ai_enabled',
+  'ios_recommend_pwa',
 ];
 
 let cache: { at: number; map: Record<string, string> } | null = null;

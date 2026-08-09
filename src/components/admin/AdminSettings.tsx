@@ -11,6 +11,7 @@ const TOGGLES: { key: string; label: string; desc: string; danger?: boolean }[] 
   { key: 'allow_registration', label: 'New user registration', desc: 'When off, the sign-up API rejects new accounts. Existing users can still sign in.' },
   { key: 'downloads_open', label: 'Downloads', desc: 'Master switch for installs. Turn off to stop all new downloads (e.g. while swapping binaries).' },
   { key: 'reviews_open', label: 'App reviews', desc: 'When off, users can read reviews but cannot post new ones.' },
+  { key: 'ios_recommend_pwa', label: 'Recommend PWA on iPhone/iPad', desc: 'When on, visitors on iPhone & iPad are offered Web/PWA install (Safari → Add to Home Screen) as the recommended download instead of a native iOS package. Switch anytime — takes effect instantly.' },
 ];
 
 function Toggle({ on, onChange, disabled }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {

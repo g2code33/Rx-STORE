@@ -3,6 +3,8 @@
  * Requires admin role authentication (checked in Worker fetch).
  */
 
+import { getSetting } from '../services/settings';
+
 // Live column list for a table (cached per request) — prod DBs evolve via ALTER
 // migrations, so writes must tolerate columns that don't exist yet
 async function tableColumns(env: any, table: string): Promise<Set<string>> {
@@ -20,6 +22,26 @@ async function tableColumns(env: any, table: string): Promise<Set<string>> {
 
 // --- Upload helpers (single + chunked paths share these) ---
 const ALLOWED_PLATFORMS = ['android','windows','linux','linux_deb','linux_appimage','macos','flatpak','web','ios'];
+
+// Real R2 usage: paginated object listing, summed — cached 60s to keep the
+// dashboard snappy (list is the only runtime way to measure bucket usage).
+let storageCache: { at: number; bytes: number; objects: number } | null = null;
+async function getStorageStats(env: any): Promise<{ bytes: number; objects: number } | null> {
+  if (storageCache && Date.now() - storageCache.at < 60_000) return { bytes: storageCache.bytes, objects: storageCache.objects };
+  let bytes = 0, objects = 0;
+  try {
+    let cursor: string | undefined = undefined;
+    do {
+      const page: any = await env.STORAGE.list({ cursor, limit: 1000 });
+      for (const o of page?.objects || []) { bytes += o?.size || 0; objects++; }
+      cursor = page?.truncated ? page?.cursor : undefined;
+    } while (cursor);
+    storageCache = { at: Date.now(), bytes, objects };
+    return { bytes, objects };
+  } catch {
+    return storageCache ? { bytes: storageCache.bytes, objects: storageCache.objects } : null;
+  }
+}
 
 function relIdFrom(request: Request): string {
   return new URL(request.url).pathname.split('/')[3] || '';
@@ -172,12 +194,17 @@ export const adminRoutes = {
       });
     }
     activity.sort((a, b) => String(b.time || '').localeCompare(String(a.time || '')));
+    const storage = await getStorageStats(env);
+    const quotaGb = parseInt(await getSetting(env, 'storage_quota_gb', '10'), 10) || 10;
     return {
       totalDownloads: (apps as any)?.total || 0,
       totalUsers: (users as any)?.count || 0,
       monthlyRevenue: (payments as any)?.total || 0,
       averageRating: (rating as any)?.avg || 0,
       activity: activity.slice(0, 10),
+      storageBytes: storage?.bytes ?? null,
+      storageObjects: storage?.objects ?? null,
+      storageQuotaGb: quotaGb,
     };
   },
 

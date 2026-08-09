@@ -1,5 +1,7 @@
+import React from 'react';
 import { X, Download, Monitor, Smartphone, Laptop, Globe, ExternalLink } from 'lucide-react';
 import { detectDevice, isPWADisplayStandalone } from '../../hooks/useDeviceDetect';
+import { getPublicSettings } from '../../services/api';
 
 type Props = {
   app: any;
@@ -19,7 +21,16 @@ const platforms = [
 ];
 
 export default function DownloadModal({ app, onClose, onDownload }: Props) {
-  const detection = detectDevice();
+  // Admin toggle (Admin → Settings → "Recommend PWA on iPhone/iPad") — when on,
+  // Apple devices get the Web/PWA install as the recommended option, not iOS.
+  const [iosPwa, setIosPwa] = React.useState(true); // default on until settings load
+  React.useEffect(() => {
+    getPublicSettings().then((s) => setIosPwa((s.ios_recommend_pwa ?? '1') === '1'));
+  }, []);
+  const rawDetection = detectDevice();
+  const detection = iosPwa && (rawDetection.device === 'iphone' || rawDetection.device === 'ipad')
+    ? { ...rawDetection, recommended: 'web' }
+    : rawDetection;
   const isStandalone = isPWADisplayStandalone();
   const available = (app.platforms || ['web']) as string[];
   // Try to get packages with deployment_url for PWA
@@ -46,7 +57,7 @@ export default function DownloadModal({ app, onClose, onDownload }: Props) {
             <p className="text-xs text-rx-gray-medium flex items-center gap-1">
               <span>{detection.emoji} {detection.label}</span>
               <span className="mx-1">•</span>
-              <span>Recommended: {detection.recommended}</span>
+              <span>Recommended: {platforms.find((p) => p.id === detection.recommended)?.label || detection.recommended}</span>
             </p>
           </div>
           <button onClick={onClose} className="p-2 rounded-lg hover:bg-white/10 text-rx-gray-medium"><X className="w-5 h-5"/></button>
