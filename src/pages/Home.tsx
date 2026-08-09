@@ -8,11 +8,15 @@ import AppCard from '../components/apps/AppCard';
 
 function StatsBar({ apps }: { apps: any[] }) {
   const [stats, setStats] = React.useState({ apps: apps.length || 0, downloads: 0, platforms: 5, rating: 0 });
+  const avgRating = (list: any[]) => {
+    const rated = list.filter((x) => (x.rating || 0) > 0);
+    return rated.length ? rated.reduce((s: number, x: any) => s + (x.rating || 0), 0) / rated.length : 0;
+  };
   React.useEffect(() => {
     const API = (import.meta as any).env?.VITE_API_URL;
     if (!API) {
       const totalDl = apps.reduce((s,a)=> s + (a.downloadCount||0), 0);
-      const avg = apps.length ? (apps.reduce((s,a)=> s + (a.rating||0),0)/apps.length) : 0;
+      const avg = avgRating(apps);
       setStats({ apps: apps.length, downloads: totalDl, platforms: 5, rating: Number(avg.toFixed(1)) });
       return;
     }
@@ -20,11 +24,11 @@ function StatsBar({ apps }: { apps: any[] }) {
       .then(r=>r.json()).then(j=>{
         const d=j.data||j;
         const totalDl = d.totalDownloads ?? apps.reduce((s,a)=> s + (a.downloadCount||0),0);
-        const avg = d.averageRating ?? (apps.length ? apps.reduce((s,a)=> s + (a.rating||0),0)/apps.length : 0);
+        const avg = d.averageRating ?? avgRating(apps);
         setStats({ apps: apps.length, downloads: totalDl, platforms: 5, rating: Number(Number(avg).toFixed(1)) });
       }).catch(()=>{
         const totalDl = apps.reduce((s,a)=> s + (a.downloadCount||0),0);
-        const avg = apps.length ? apps.reduce((s,a)=> s + (a.rating||0),0)/apps.length : 0;
+        const avg = avgRating(apps);
         setStats({ apps: apps.length, downloads: totalDl, platforms: 5, rating: Number(avg.toFixed(1)) });
       });
   }, [apps]);
