@@ -106,6 +106,12 @@ export const api = {
     async me() {
       return request<{ user: any }>('/users/me', { method: 'GET' });
     },
+    async updateProfile(updates: { name?: string; email?: string; preferences?: Record<string, boolean> }) {
+      return request<{ user: any }>('/users/me', {
+        method: 'PATCH',
+        body: JSON.stringify(updates),
+      });
+    },
     async forgotPassword(email: string) {
       return request<{ success: boolean; message: string; resetToken?: string }>('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }), auth: false });
     },

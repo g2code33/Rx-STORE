@@ -6,6 +6,13 @@ import { useApps } from '../context/AppContext';
 import { formatDate } from '../utils/helpers';
 import AppLogo from '../components/apps/AppLogo';
 import { useUpdateStatus, describeStatus, checkNow, installNow, isDesktopApp } from '../desktop/updater';
+import toast from 'react-hot-toast';
+
+const DEFAULT_PREFERENCES = {
+  emailNotifications: true,
+  autoUpdate: true,
+  wifiOnly: false,
+};
 
 /** Desktop-only self-update management: version, live status, manual check, restart-to-install. */
 function DesktopUpdatesCard() {
@@ -52,11 +59,44 @@ function DesktopUpdatesCard() {
 }
 
 export default function Profile() {
-  const { user, logout, notifications, markNotificationRead } = useAuth();
+  const { user, logout, updateProfile, notifications, markNotificationRead } = useAuth();
   const { getAppById, installedApps, installApp, uninstallApp } = useApps();
   const [activeTab, setActiveTab] = useState<'apps' | 'subscriptions' | 'notifications' | 'trash' | 'settings'>('apps');
+  const [profileForm, setProfileForm] = useState({ name: user?.name || '', email: user?.email || '' });
+  const [preferences, setPreferences] = useState(() => ({ ...DEFAULT_PREFERENCES, ...(user?.preferences || {}) }));
+  const [savingProfile, setSavingProfile] = useState(false);
+
+  React.useEffect(() => {
+    if (!user) return;
+    setProfileForm({ name: user.name || '', email: user.email || '' });
+    setPreferences({ ...DEFAULT_PREFERENCES, ...(user.preferences || {}) });
+  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!user) return <Navigate to="/login" replace />;
+
+  const saveProfile = async () => {
+    const name = profileForm.name.trim();
+    const email = profileForm.email.trim();
+    if (name.length < 2) { toast.error('Enter your full name'); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast.error('Enter a valid email address'); return; }
+    setSavingProfile(true);
+    try {
+      await updateProfile({ name, email, preferences });
+      toast.success('Profile saved');
+    } catch (e: any) { toast.error(e?.message || 'Could not save profile'); }
+    finally { setSavingProfile(false); }
+  };
+
+  const togglePreference = async (key: keyof typeof preferences) => {
+    const next = { ...preferences, [key]: !preferences[key] };
+    setPreferences(next);
+    try {
+      await updateProfile({ preferences: next });
+    } catch (e: any) {
+      setPreferences(preferences);
+      toast.error(e?.message || 'Could not save preference');
+    }
+  };
 
   const tabs = [
     { id: 'apps' as const, label: 'My Applications', icon: Download, count: (installedApps || []).length },
@@ -244,28 +284,31 @@ export default function Profile() {
               <h3 className="font-semibold text-white">Profile Information</h3>
               <div>
                 <label className="block text-sm text-rx-gray-medium mb-1.5">Full Name</label>
-                <input type="text" defaultValue={user.name} className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-rx-yellow/50 transition-all" />
+                <input type="text" value={profileForm.name} onChange={(e)=>setProfileForm({...profileForm, name:e.target.value})} className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-rx-yellow/50 transition-all" />
               </div>
               <div>
                 <label className="block text-sm text-rx-gray-medium mb-1.5">Email</label>
-                <input type="email" defaultValue={user.email} className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-rx-yellow/50 transition-all" />
+                <input type="email" value={profileForm.email} onChange={(e)=>setProfileForm({...profileForm, email:e.target.value})} className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-rx-yellow/50 transition-all" />
               </div>
-              <button className="btn-primary">Save Changes</button>
+              <button onClick={saveProfile} disabled={savingProfile} className="btn-primary disabled:opacity-50">{savingProfile ? 'Saving…' : 'Save Changes'}</button>
             </div>
             <div className="card p-6 space-y-4">
               <h3 className="font-semibold text-white">Preferences</h3>
               {[
-                { label: 'Email notifications', desc: 'Receive email updates about new apps', on: true },
-                { label: 'Auto-update applications', desc: 'Automatically update installed apps', on: true },
-                { label: 'Download over WiFi only', desc: 'Only download when connected to WiFi', on: false },
-              ].map((pref) => (
-                <div key={pref.label} className="flex items-center justify-between py-2">
+                { key: 'emailNotifications' as const, label: 'Email notifications', desc: 'Receive email updates about new apps' },
+                { key: 'autoUpdate' as const, label: 'Auto-update applications', desc: 'Automatically update installed apps' },
+                { key: 'wifiOnly' as const, label: 'Download over WiFi only', desc: 'Only download when connected to WiFi' },
+              ].map((pref) => {
+                const on = preferences[pref.key];
+                return (
+                <div key={pref.key} className="flex items-center justify-between py-2">
                   <div><p className="text-sm font-medium text-white">{pref.label}</p><p className="text-xs text-rx-gray-medium">{pref.desc}</p></div>
-                  <div className={`w-10 h-6 rounded-full relative cursor-pointer ${pref.on ? 'bg-rx-yellow' : 'bg-rx-dark-tertiary'}`}>
-                    <div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-all ${pref.on ? 'right-1' : 'left-1'}`} />
-                  </div>
+                  <button type="button" role="switch" aria-checked={on} aria-label={pref.label} onClick={()=>togglePreference(pref.key)} className={`w-10 h-6 rounded-full relative cursor-pointer transition-colors ${on ? 'bg-rx-yellow' : 'bg-rx-dark-tertiary'}`}>
+                    <span className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-all ${on ? 'right-1' : 'left-1'}`} />
+                  </button>
                 </div>
-              ))}
+                );
+              })}
             </div>
             <DesktopUpdatesCard />
           </div>

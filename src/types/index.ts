@@ -65,6 +65,11 @@ export interface User {
   downloadedApps: string[];
   subscriptions: Subscription[];
   notifications: Notification[];
+  preferences?: {
+    emailNotifications: boolean;
+    autoUpdate: boolean;
+    wifiOnly: boolean;
+  };
 }
 
 export interface Subscription {

@@ -9,16 +9,11 @@ import { IntroAd, pickAd, trackAd, sanitizeAccent, INTRO_DURATION_KEY, DEFAULT_I
 
 const FADE_MS = 700;
 
-// Once per FULL page load (module state resets on refresh) — so the intro
-// plays on every fresh open/refresh. Clicking Home anywhere (header nav,
-// logo, mobile tab) flips this back so the intro replays EVERY time too.
-let introShownThisLoad = false;
-let forceNextIntro = false;
+let logoIntroRequested = false;
 
-/** Call from any "Home" link/button — the 3-second clear replays, guaranteed. */
+/** The welcome/ad canvas is opt-in: only the brand logo calls this. */
 export function replayWelcomeIntro() {
-  introShownThisLoad = false;
-  forceNextIntro = true;
+  logoIntroRequested = true;
   try { window.dispatchEvent(new Event('rx-replay-intro')); } catch { /* SSR-safe */ }
 }
 
@@ -51,9 +46,10 @@ function AdImage({ src, alt, accent }: { src: string; alt: string; accent: strin
 }
 
 /**
- * Fresh-open welcome hero: fills the screen on every refresh AND on every
- * click of a Home control, then fades out — revealing the Applications grid
- * scrolled into view. On-screen time is admin-adjustable (Builder → Ads →
+ * The default welcome hero appears only when the header brand logo is tapped.
+ * Live sponsored creatives may open automatically on Home so paid placements
+ * are not skipped; with no live ad, Home opens directly at Applications.
+ * Every canvas fades out completely after its timer. On-screen time is admin-adjustable (Builder → Ads →
  * Intro duration, default 3s). When the admin publishes intro ads (Builder
  * toolbar → Ads), ONE sponsored card replaces the hero for that showing —
  * rotated per play, same timer, same Skip. Never in the builder.
@@ -61,11 +57,11 @@ function AdImage({ src, alt, accent }: { src: string; alt: string; accent: strin
 export default function WelcomeIntro() {
   const edit = useEditMode();
   const builderActive = !!edit;
+  // Normal Home visits start at the application catalog. The header logo is
+  // the single explicit trigger for this full-screen welcome/ad experience.
   const [enabled, setEnabled] = useState(() => {
-    if (typeof window === 'undefined' || window.location.pathname !== '/') return false;
-    if (introShownThisLoad && !forceNextIntro) return false;
-    introShownThisLoad = true;
-    forceNextIntro = false;
+    if (typeof window === 'undefined' || window.location.pathname !== '/' || !logoIntroRequested) return false;
+    logoIntroRequested = false;
     return true;
   });
   const [phase, setPhase] = useState<'show' | 'fade'>('show');
@@ -88,24 +84,26 @@ export default function WelcomeIntro() {
   }, [ready, contentWaitExpired]);
   const armed = ready || contentWaitExpired;
 
-  // Ad roll: once content has arrived, pick this showing's ad (round-robin).
+  // Ad roll: a live ad is important enough to open automatically on Home.
+  // With no live ad, normal visits remain at the app grid; only a logo tap
+  // enables the default welcome hero.
   const [ad, setAd] = useState<IntroAd | null>(null);
   const rolled = React.useRef(false);
   useEffect(() => {
-    if (!enabled || builderActive || rolled.current || !ready) return;
+    if (builderActive || rolled.current || !ready) return;
     rolled.current = true;
     const picked = pickAd(getJSON<IntroAd[]>('intro.ads', []));
     if (picked) {
       setAd(picked);
+      setEnabled(true);
       trackAd(picked.id, 'views');
     }
   }, [enabled, builderActive, ready, replayKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Home-click replay: any nav/logo/tab to '/' fires this — full reset + replay.
+  // Header-logo replay: full reset, fresh ad roll, then exactly one timed play.
   useEffect(() => {
     const on = () => {
-      introShownThisLoad = true;
-      forceNextIntro = false;
+      logoIntroRequested = false;
       rolled.current = false;
       setAd(null);
       setPhase('show');
