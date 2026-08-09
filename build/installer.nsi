@@ -30,10 +30,6 @@
 !include "LogicLib.nsh"
 !include "extractAppPackage.nsh"
 
-; Load every language electron-builder prepared (also emits $(installing),
-; $(decompressionFailed), $(appCannotBeClosed) … used by the extract macro).
-!insertmacro addLangs
-
 RequestExecutionLevel user ; per-user install — no UAC prompt
 InstallDir "$LocalAppData\Programs\${APP_FILENAME}"
 
@@ -103,3 +99,9 @@ Section "Uninstall"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}"
   ; User data in %APPDATA% is intentionally kept — settings survive upgrades.
 SectionEnd
+
+; Language files must come AFTER every MUI_[UN]PAGE_* macro — MUI2's
+; MUI_LANGUAGEEX warns on the reverse order, and electron-builder compiles
+; with -WX (warnings are fatal). addLangs loads every language the config
+; prepared plus the message strings ($(…) used by the extract macro).
+!insertmacro addLangs
