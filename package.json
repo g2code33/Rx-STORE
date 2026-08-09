@@ -81,12 +81,13 @@
       "build/**/*",
       "package.json"
     ],
-    "win": {
-      "target": [
-        "nsis"
-      ],
-      "artifactName": "RXStore-Setup-${version}.${ext}"
-    },
+  "win": {
+    "target": [
+      "nsis"
+    ],
+    "artifactName": "RXStore-Setup-${version}.${ext}",
+    "signAndEditExecutable": false
+  },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
