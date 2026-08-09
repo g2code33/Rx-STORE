@@ -11,31 +11,43 @@ const INTRO_MS = 3000;
 const FADE_MS = 700;
 
 // Once per FULL page load (module state resets on refresh) — so the intro
-// plays on every fresh open/refresh, but not on in-app navigation back Home.
+// plays on every fresh open/refresh. Clicking Home anywhere (header nav,
+// logo, mobile tab) flips this back so the intro replays EVERY time too.
 let introShownThisLoad = false;
+let forceNextIntro = false;
+
+/** Call from any "Home" link/button — the 3-second clear replays, guaranteed. */
+export function replayWelcomeIntro() {
+  introShownThisLoad = false;
+  forceNextIntro = true;
+  try { window.dispatchEvent(new Event('rx-replay-intro')); } catch { /* SSR-safe */ }
+}
 
 /**
- * Fresh-open welcome hero: fills the screen for 3 seconds on every refresh,
- * then fades out — revealing the Applications grid scrolled into view.
- * When the admin publishes intro ads (Builder toolbar → Ads), ONE sponsored
- * card replaces the hero for that load — rotated per refresh, same 3s timer,
- * same Skip. Never appears inside the builder.
+ * Fresh-open welcome hero: fills the screen for 3 seconds on every refresh
+ * AND on every click of a Home control, then fades out — revealing the
+ * Applications grid scrolled into view. When the admin publishes intro ads
+ * (Builder toolbar → Ads), ONE sponsored card replaces the hero for that
+ * showing — rotated per play, same 3s timer, same Skip. Never in the builder.
  */
 export default function WelcomeIntro() {
   const edit = useEditMode();
   const builderActive = !!edit;
-  const [enabled] = useState(() => {
+  const [enabled, setEnabled] = useState(() => {
     if (typeof window === 'undefined' || window.location.pathname !== '/') return false;
-    if (introShownThisLoad) return false;
+    if (introShownThisLoad && !forceNextIntro) return false;
     introShownThisLoad = true;
+    forceNextIntro = false;
     return true;
   });
   const [phase, setPhase] = useState<'show' | 'fade'>('show');
   const [gone, setGone] = useState(false);
+  // Bumped on every Home-click replay so timers + ad roll restart.
+  const [replayKey, setReplayKey] = useState(0);
   const { get, getJSON, ready } = useContent();
   const { apps } = useApps();
 
-  // Ad roll: once content has arrived, pick this refresh's ad (round-robin).
+  // Ad roll: once content has arrived, pick this showing's ad (round-robin).
   const [ad, setAd] = useState<IntroAd | null>(null);
   const rolled = React.useRef(false);
   useEffect(() => {
@@ -46,7 +58,24 @@ export default function WelcomeIntro() {
       setAd(picked);
       trackAd(picked.id, 'views');
     }
-  }, [enabled, builderActive, ready]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [enabled, builderActive, ready, replayKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Home-click replay: any nav/logo/tab to '/' fires this — full reset + replay.
+  useEffect(() => {
+    const on = () => {
+      introShownThisLoad = true;
+      forceNextIntro = false;
+      rolled.current = false;
+      setAd(null);
+      setPhase('show');
+      setGone(false);
+      setEnabled(true);
+      setReplayKey((k) => k + 1);
+      try { window.scrollTo(0, 0); } catch { /* ok */ }
+    };
+    window.addEventListener('rx-replay-intro', on);
+    return () => window.removeEventListener('rx-replay-intro', on);
+  }, []);
 
   const btn1 = getJSON('home.hero.btn1', { label: 'Explore Applications', to: '/browse' });
   const btn2 = getJSON('home.hero.btn2', { label: 'Learn More', to: '/about' });
@@ -69,7 +98,7 @@ export default function WelcomeIntro() {
       clearTimeout(remove);
       document.body.style.overflow = '';
     };
-  }, [enabled, builderActive, gone]);
+  }, [enabled, builderActive, gone, replayKey]);
 
   if (!enabled || builderActive || gone) return null;
 

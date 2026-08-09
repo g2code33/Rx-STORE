@@ -1,12 +1,13 @@
 import React, { useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Search, SlidersHorizontal, Grid3X3, List, X } from 'lucide-react';
+import { SlidersHorizontal, Grid3X3, List, X } from 'lucide-react';
 import { useApps } from '../context/AppContext';
 import { useCategories } from '../hooks/useCategories';
 import AppCard from '../components/apps/AppCard';
 import { useContent } from '../context/ContentContext';
 import Editable from '../components/edit/Editable';
 import PageBlocks from '../components/edit/PageBlocks';
+import SearchBox from '../components/search/SearchBox';
 
 export default function Browse() {
   const { apps, isLoading, searchQuery, setSearchQuery, selectedCategory, setSelectedCategory, selectedPlatform, setSelectedPlatform, getFilteredApps } = useApps();
@@ -15,14 +16,17 @@ export default function Browse() {
   const [viewMode, setViewMode] = React.useState<'grid' | 'list'>('grid');
   const [sortBy, setSortBy] = React.useState<'popular' | 'rating' | 'newest' | 'name'>('popular');
 
-  // Deep links from the footer: /browse?featured=1 → only featured, ?sort=newest
+  // Deep links: ?featured=1 → only featured, ?sort=newest, ?q=… → run that
+  // search (header search submits here — open Browse and search for you).
   const location = useLocation();
   const [featuredOnly, setFeaturedOnly] = React.useState(false);
   React.useEffect(() => {
-    const q = new URLSearchParams(location.search);
-    setFeaturedOnly(q.get('featured') === '1');
-    if (q.get('sort') === 'newest') setSortBy('newest');
-  }, [location.search]);
+    const p = new URLSearchParams(location.search);
+    setFeaturedOnly(p.get('featured') === '1');
+    if (p.get('sort') === 'newest') setSortBy('newest');
+    const q = p.get('q');
+    if (q !== null && q !== searchQuery) setSearchQuery(q);
+  }, [location.search]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const filteredApps = useMemo(() => {
     let result = getFilteredApps();
@@ -69,21 +73,7 @@ export default function Browse() {
 
       <div className="flex flex-col lg:flex-row gap-4 mb-8">
         <Editable id="browse.searchPlaceholder" label="Search placeholder" className="flex-1">
-          <div className="relative w-full">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-rx-gray-medium" />
-            <input
-              type="text"
-              placeholder={searchPlaceholder}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-rx-dark-secondary border border-white/10 rounded-xl pl-12 pr-4 py-3.5 text-white placeholder-rx-gray-medium focus:outline-none focus:border-rx-yellow/50 focus:ring-1 focus:ring-rx-yellow/25 transition-all"
-            />
-            {searchQuery && (
-              <button onClick={() => setSearchQuery('')} className="absolute right-4 top-1/2 -translate-y-1/2 text-rx-gray-medium hover:text-white">
-                <X className="w-4 h-4" />
-              </button>
-            )}
-          </div>
+          <SearchBox placeholder={searchPlaceholder} className="w-full" />
         </Editable>
 
         <div className="flex items-center gap-3">

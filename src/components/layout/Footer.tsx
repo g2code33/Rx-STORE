@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import { getPublicSettings } from '../../services/api';
 import { useContent } from '../../context/ContentContext';
 import Editable from '../edit/Editable';
+import { replayWelcomeIntro } from '../home/WelcomeIntro';
 
 const DEFAULT_PLATFORM_LINKS = [
   { label: 'Browse Apps', to: '/browse' },
@@ -44,7 +45,7 @@ export default function Footer() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-12">
           {/* Brand */}
           <div className="lg:col-span-1">
-            <Link to="/" className="flex items-center gap-2.5 mb-4">
+            <Link to="/" onClick={replayWelcomeIntro} className="flex items-center gap-2.5 mb-4">
               <img src="/v1.png" alt={`${platformName} logo`} className="w-10 h-10 rounded-lg object-cover" />
               <div>
                 <span className="text-xl font-bold text-white">

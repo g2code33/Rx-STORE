@@ -2,23 +2,18 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { Search, X, Bell, User, ChevronDown, LogOut, Settings, Shield, Download } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { useApps } from '../../context/AppContext';
 import { getPublicSettings } from '../../services/api';
 import { useContent } from '../../context/ContentContext';
 import Editable from '../edit/Editable';
-
-const DEFAULT_NAV = [
-  { label: 'Home', to: '/' },
-  { label: 'Browse', to: '/browse' },
-  { label: 'Categories', to: '/categories' },
-  { label: 'About', to: '/about' },
-];
+import SearchBox from '../search/SearchBox';
+import { DEFAULT_NAV, mergeNavLinks } from './nav';
+import { replayWelcomeIntro } from '../home/WelcomeIntro';
 
 export default function Header() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const { user, logout, notifications, markNotificationRead, markAllNotificationsRead } = useAuth();
-  const { searchQuery, setSearchQuery } = useApps();
   const navigate = useNavigate();
   const location = useLocation();
   const profileRef = useRef<HTMLDivElement>(null);
@@ -43,22 +38,17 @@ export default function Header() {
   useEffect(() => {
     setIsProfileOpen(false);
     setIsNotifOpen(false);
+    setMobileSearchOpen(false);
   }, [location.pathname]);
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (searchQuery.trim()) {
-      navigate(`/browse?q=${encodeURIComponent(searchQuery.trim())}`);
-    }
-  };
-
   const isActive = (path: string) => location.pathname === path;
 
-  // Admin-editable nav (Live Website Builder → header → Edit Nav Links)
+  // Admin-editable nav (Live Website Builder → header → Edit Nav Links) —
+  // Advertise is always present so visitors can see/book the sponsored slots.
   const { getJSON } = useContent();
-  const navLinks = getJSON<{ label: string; to: string }[]>('site.nav', DEFAULT_NAV);
+  const navLinks = mergeNavLinks(getJSON<{ label: string; to: string }[]>('site.nav', DEFAULT_NAV));
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 bg-rx-dark/80 backdrop-blur-xl border-b border-white/5">
@@ -76,8 +66,8 @@ export default function Header() {
       )}
       <div className="section-container">
         <div className="flex items-center justify-between h-16 lg:h-18">
-          {/* Logo — v1.png (name always visible, incl. phones) */}
-          <Link to="/" className="flex items-center gap-2 group flex-shrink-0">
+          {/* Logo — v1.png (name always visible, incl. phones). Clicking Home replays the 3s intro. */}
+          <Link to="/" onClick={replayWelcomeIntro} className="flex items-center gap-2 group flex-shrink-0">
             <img src="/v1.png" alt="RX Store" className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl object-cover group-hover:shadow-glow transition-shadow duration-300" />
             <div>
               <span className="text-base sm:text-lg font-bold text-white whitespace-nowrap">
@@ -96,6 +86,7 @@ export default function Header() {
                 <Link
                   key={link.to}
                   to={link.to}
+                  onClick={link.to === '/' ? replayWelcomeIntro : undefined}
                   className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
                     isActive(link.to)
                       ? 'text-rx-yellow bg-rx-yellow/10'
@@ -108,22 +99,20 @@ export default function Header() {
             </nav>
           </Editable>
 
-          {/* Search Bar */}
-          <form onSubmit={handleSearch} className="hidden md:flex items-center flex-1 max-w-md mx-6">
-            <div className="relative w-full">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-rx-gray-medium" />
-              <input
-                type="text"
-                placeholder="Search applications..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-rx-gray-medium focus:outline-none focus:border-rx-yellow/50 focus:ring-1 focus:ring-rx-yellow/25 transition-all"
-              />
-            </div>
-          </form>
+          {/* Search Bar — live predictions drop down right below it */}
+          <SearchBox size="sm" className="hidden md:block flex-1 max-w-md mx-6" />
 
           {/* Right Actions */}
           <div className="flex items-center gap-2">
+            {/* Mobile search toggle — opens the search row under the header */}
+            <button
+              onClick={() => { setMobileSearchOpen((v) => !v); setIsProfileOpen(false); setIsNotifOpen(false); }}
+              className={`md:hidden p-2.5 rounded-xl transition-all ${mobileSearchOpen ? 'text-rx-yellow bg-rx-yellow/10' : 'text-rx-gray-medium hover:text-white hover:bg-white/5'}`}
+              aria-label="Search"
+              aria-expanded={mobileSearchOpen}
+            >
+              <Search className="w-5 h-5" />
+            </button>
             {/* Notifications */}
             {user && (
               <div className="relative" ref={notifRef}>
@@ -251,6 +240,14 @@ export default function Header() {
         </div>
       </div>
 
+      {/* Mobile search row — slides open from the search toggle */}
+      {mobileSearchOpen && (
+        <div className="md:hidden border-t border-white/5">
+          <div className="section-container py-2.5">
+            <SearchBox size="sm" autoFocus onNavigate={() => setMobileSearchOpen(false)} />
+          </div>
+        </div>
+      )}
     </header>
   );
 }

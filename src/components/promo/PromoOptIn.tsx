@@ -3,14 +3,15 @@ import toast from 'react-hot-toast';
 import { Bell, X } from 'lucide-react';
 import { useContent } from '../../context/ContentContext';
 import { IntroAd, isAdLive } from '../home/introAds';
-import { notificationsUsable } from '../../promo';
+import { notificationsUsable, checkPromoNow, promoIsFresh, Promo } from '../../promo';
 
 const DISMISSED_KEY = 'rx-promo-dismissed';
 
 /**
  * One-time "deal alerts" opt-in card — appears once when there's at least one
- * live sponsored creative, the browser supports notifications, and the user
- * hasn't decided yet. Dismissal and opt-in are both remembered forever.
+ * live sponsored creative OR a freshly broadcast promo waiting, the browser
+ * supports notifications, and the user hasn't decided yet. Dismissal and
+ * opt-in are both remembered forever.
  */
 export default function PromoOptIn() {
   const { getJSON, ready } = useContent();
@@ -24,7 +25,9 @@ export default function PromoOptIn() {
   } catch { /* private mode */ }
 
   const ads = getJSON<IntroAd[]>('intro.ads', []);
-  if (!(Array.isArray(ads) && ads.some((a) => a?.enabled && a.title?.trim() && isAdLive(a)))) return null;
+  const hasLiveAd = Array.isArray(ads) && ads.some((a) => a?.enabled && a.title?.trim() && isAdLive(a));
+  const promo = getJSON<Promo | null>('intro.promo', null);
+  if (!hasLiveAd && !promoIsFresh(promo)) return null;
 
   const dismiss = () => {
     try { localStorage.setItem(DISMISSED_KEY, '1'); } catch { /* ok */ }
@@ -35,7 +38,11 @@ export default function PromoOptIn() {
     setBusy(true);
     try {
       const p = await Notification.requestPermission();
-      if (p === 'granted') toast.success('Deal alerts on — you\'ll hear about featured offers first.');
+      if (p === 'granted') {
+        toast.success("Deal alerts on — you'll hear about featured offers first.");
+        // Deliver the promo that may already be waiting — now, not 30 min later.
+        void checkPromoNow();
+      }
       dismiss();
     } finally {
       setBusy(false);

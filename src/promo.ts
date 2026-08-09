@@ -36,6 +36,13 @@ export function notificationsUsable(): boolean {
   return typeof window !== 'undefined' && 'Notification' in window && 'serviceWorker' in navigator;
 }
 
+/** True while a promo is recent enough to alert about (14-day burst window). */
+export function promoIsFresh(p: Pick<Promo, 'publishedAt'> | null | undefined, now = Date.now()): boolean {
+  if (!p?.publishedAt) return false;
+  const t = new Date(p.publishedAt).getTime();
+  return Number.isFinite(t) && now - t <= FRESH_MS && now >= t - 5 * 60 * 1000;
+}
+
 /** Compose+persist a promo (admin). Returns true when published. */
 export async function broadcastPromo(p: Omit<Promo, 'publishedAt'> & Partial<Pick<Promo, 'publishedAt'>>): Promise<boolean> {
   if (!isApiConfigured()) return false;
@@ -47,16 +54,25 @@ export async function broadcastPromo(p: Omit<Promo, 'publishedAt'> & Partial<Pic
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ key: 'intro.promo', value: promo }),
     });
-    return res.ok;
+    if (!res.ok) return false;
+    // Any opted-in browser with the site open (including the admin's) gets
+    // the alert almost immediately — no 30-minute wait for the next poll.
+    setTimeout(() => { void checkPromoNow(); }, 1200);
+    return true;
   } catch { return false; }
+}
+
+/** Run one delivery pass right now (opt-in/refresh/broadcast all funnel here). */
+export async function checkPromoNow(): Promise<void> {
+  try { await check(); } catch { /* never break the UI over a promo */ }
 }
 
 /** Start the client watcher — idempotent; never notifies without opt-in. */
 export function startPromoWatcher() {
   if (started || !notificationsUsable() || !isApiConfigured()) return;
   started = true;
-  check();
-  setInterval(check, 30 * 60 * 1000);
+  void checkPromoNow();
+  setInterval(() => void checkPromoNow(), 30 * 60 * 1000);
 }
 
 function parsePromo(raw: unknown): Promo | null {
@@ -79,11 +95,15 @@ async function check() {
   if (!promo) return;
   try {
     if (localStorage.getItem(SEEN_KEY) === promo.id) return;
-    localStorage.setItem(SEEN_KEY, promo.id); // one device, one alert — even if dismissed/hidden
   } catch { /* private mode: allow repeat, harmless */ }
+  // Not opted in? LEAVE IT UNSEEN — the moment the user enables deal alerts
+  // (PromoOptIn → checkPromoNow) the pending promo lands right away. Marking
+  // it seen here is what used to silently swallow every broadcast.
   if (Notification.permission !== 'granted') return;
-  if (Date.now() - new Date(promo.publishedAt).getTime() > FRESH_MS) return;
+  if (!promoIsFresh(promo)) return;
   await show(promo);
+  // One device, one alert — marked only once it was actually delivered.
+  try { localStorage.setItem(SEEN_KEY, promo.id); } catch { /* ok */ }
 }
 
 async function show(p: Promo) {

@@ -1,6 +1,7 @@
 import { Link, useLocation } from 'react-router-dom';
 import { Home, LayoutGrid, Layers, Info, User } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { replayWelcomeIntro } from '../home/WelcomeIntro';
 
 /** App-Store-style bottom navigation for phones (replaces the hamburger menu). */
 export default function MobileTabBar() {
@@ -31,6 +32,7 @@ export default function MobileTabBar() {
             <Link
               key={t.label}
               to={t.to}
+              onClick={t.to === '/' ? replayWelcomeIntro : undefined}
               className={`flex flex-col items-center gap-0.5 py-2 transition-colors ${
                 active ? 'text-rx-yellow' : 'text-rx-gray-medium hover:text-white'
               }`}
