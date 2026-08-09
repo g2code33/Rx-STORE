@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
-import { SlidersHorizontal, Grid3X3, List, X } from 'lucide-react';
+import { SlidersHorizontal, Grid3X3, List, X, CloudOff, RefreshCw } from 'lucide-react';
 import { useApps } from '../context/AppContext';
 import { useCategories } from '../hooks/useCategories';
 import AppCard from '../components/apps/AppCard';
@@ -10,7 +10,7 @@ import PageBlocks from '../components/edit/PageBlocks';
 import SearchBox from '../components/search/SearchBox';
 
 export default function Browse() {
-  const { apps, isLoading, searchQuery, setSearchQuery, selectedCategory, setSelectedCategory, selectedPlatform, setSelectedPlatform, getFilteredApps } = useApps();
+  const { apps, isLoading, error, refresh, searchQuery, setSearchQuery, selectedCategory, setSelectedCategory, selectedPlatform, setSelectedPlatform, getFilteredApps } = useApps();
   const categories = useCategories();
   const { get } = useContent();
   const [viewMode, setViewMode] = React.useState<'grid' | 'list'>('grid');
@@ -185,6 +185,15 @@ export default function Browse() {
           {Array.from({ length: 8 }).map((_, i) => (
             <div key={i} className="card p-5 h-44 animate-pulse bg-rx-dark-tertiary/40" />
           ))}
+        </div>
+      ) : error && apps.length === 0 && !hasFilters ? (
+        <div className="card max-w-xl mx-auto px-6 py-12 text-center border border-red-400/20">
+          <CloudOff className="w-12 h-12 mx-auto mb-4 text-red-400" />
+          <h3 className="text-xl font-semibold text-white mb-2">Unable to load applications</h3>
+          <p className="text-rx-gray-medium mb-6">{error}</p>
+          <button onClick={() => refresh()} className="btn-primary inline-flex items-center gap-2">
+            <RefreshCw className="w-4 h-4" /> Retry connection
+          </button>
         </div>
       ) : (
         <div className="text-center py-20">

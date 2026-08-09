@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Shield, Zap, Globe, Download, Star, Users, Cpu, Heart, GraduationCap, Gamepad2 } from 'lucide-react';
+import { ArrowRight, Shield, Zap, Globe, Download, Star, Users, Cpu, Heart, GraduationCap, Gamepad2, CloudOff, RefreshCw } from 'lucide-react';
 import { useApps } from '../context/AppContext';
 import AppCard from '../components/apps/AppCard';
 import { useContent } from '../context/ContentContext';
@@ -59,7 +59,7 @@ function CLink({ to, className, children }: { to: string; className?: string; ch
 }
 
 export default function Home() {
-  const { apps, isLoading } = useApps();
+  const { apps, isLoading, error, refresh } = useApps();
   const { get, getJSON } = useContent();
   const categories = useCategories();
   const [platform, setPlatform] = useState('all');
@@ -181,10 +181,21 @@ export default function Home() {
                 <AppCard key={app.id} app={app} />
               ))}
           {!isLoading && platformApps.length === 0 && (
-            <div className="col-span-full text-center py-12 text-rx-gray-medium">
-              <p className="text-3xl mb-2">📦</p>
-              <p>No apps for this platform yet — check back soon.</p>
-            </div>
+            error && apps.length === 0 ? (
+              <div className="col-span-full card max-w-xl mx-auto px-6 py-10 text-center border border-red-400/20">
+                <CloudOff className="w-11 h-11 mx-auto mb-4 text-red-400" />
+                <h3 className="text-lg font-semibold text-white mb-2">Unable to load applications</h3>
+                <p className="text-rx-gray-medium mb-5">{error}</p>
+                <button onClick={() => refresh()} className="btn-primary inline-flex items-center gap-2">
+                  <RefreshCw className="w-4 h-4" /> Retry connection
+                </button>
+              </div>
+            ) : (
+              <div className="col-span-full text-center py-12 text-rx-gray-medium">
+                <p className="text-3xl mb-2">📦</p>
+                <p>No apps for this platform yet — check back soon.</p>
+              </div>
+            )
           )}
         </div>
       </section>

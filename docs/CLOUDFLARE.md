@@ -81,7 +81,26 @@ npx wrangler pages deploy dist --project-name=rx-store-web --branch=main
 # Set env var in Pages dashboard: VITE_API_URL=https://rx-store-api.<subdomain>.workers.dev/v1
 ```
 
-## 7. Coexistence Verification
+## 7. Connect Native Release Builds
+
+Cloudflare Pages and the downloadable apps are built in different environments. Setting
+`VITE_API_URL` in Pages does **not** make it available to the Android, Windows, or Linux
+builds produced by GitHub Actions.
+
+In GitHub, open **Settings → Secrets and variables → Actions → Variables**, create the
+repository variable below, and use the same Worker URL configured in Pages:
+
+```text
+Name:  VITE_API_URL
+Value: https://rx-store-api.<your-workers-subdomain>.workers.dev/v1
+```
+
+The release workflow verifies that this value uses HTTPS and that `GET /health` succeeds
+before compiling. It then embeds the URL in the renderer copied into every native package.
+A missing or unreachable URL now stops the release rather than publishing an APK with an
+empty catalog.
+
+## 8. Coexistence Verification
 
 ```bash
 # Ensure existing apps still resolve
@@ -91,7 +110,7 @@ curl https://code-rx-society.pages.dev/  # should remain 200
 npx wrangler d1 list | grep -v rx-store  # pharmagame/code-rx DBs untouched
 ```
 
-## 8. Rollback
+## 9. Rollback
 
 Worker rollback (if needed):
 ```bash
@@ -99,7 +118,7 @@ npx wrangler rollback --config backend/wrangler.toml
 ```
 Pages rollback via Cloudflare dashboard → Deployments → Rollback.
 
-## 9. Cost Isolation
+## 10. Cost Isolation
 
 All `rx-store-*` resources bill to same account but are independently deletable:
 ```bash

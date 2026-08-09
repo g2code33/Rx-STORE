@@ -27,7 +27,9 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 export function AppProvider({ children }: { children: ReactNode }) {
   // Real data only — never seed from the mock dataset.
   const [apps, setApps] = useState<App[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  // Start in the loading state when a live API is configured. This prevents a
+  // misleading "no applications" flash while the native WebView starts up.
+  const [isLoading, setIsLoading] = useState(() => isApiConfigured());
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<AppCategory | null>(null);
@@ -44,7 +46,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   });
 
   const refresh = async () => {
-    if (!isApiConfigured()) return;
+    if (!isApiConfigured()) {
+      setError('RX Store is not connected to its application service. Please install a correctly configured build.');
+      setIsLoading(false);
+      return;
+    }
     setIsLoading(true);
     setError(null);
     try {
@@ -108,7 +114,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   });
 
   useEffect(() => {
-    if (isApiConfigured()) refresh();
+    refresh();
     const onRefresh = () => refresh();
     window.addEventListener('rx-refresh', onRefresh);
     (window as any).rxRefreshApps = refresh;

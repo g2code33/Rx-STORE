@@ -45,6 +45,13 @@ jobs:
   release:
     name: Build & publish (Ubuntu)
     runs-on: ubuntu-latest
+    # Vite replaces VITE_* values while compiling. Native packages cannot read
+    # Cloudflare Pages environment variables after they have been installed, so
+    # the API URL must be present in the renderer that is copied into the APK.
+    env:
+      # Accept either an Actions variable (preferred) or secret. Keeping the
+      # fallback supports repositories that already stored this value as a secret.
+      VITE_API_URL: ${{ vars.VITE_API_URL || secrets.VITE_API_URL }}
 
     steps:
       - name: Check out repository
@@ -61,6 +68,21 @@ jobs:
 
       - name: Type-check
         run: npm run typecheck
+
+      - name: Verify production API configuration
+        run: |
+          set -e
+          if [ -z "$VITE_API_URL" ]; then
+            echo "::error::Actions variable or secret VITE_API_URL is missing. Set it to the RX Store Worker URL (including /v1). Refusing to publish disconnected native apps."
+            exit 1
+          fi
+          case "$VITE_API_URL" in
+            https://*) ;;
+            *) echo "::error::VITE_API_URL must use HTTPS: $VITE_API_URL"; exit 1 ;;
+          esac
+          API_BASE="${VITE_API_URL%/}"
+          echo "Checking ${API_BASE}/health ..."
+          curl --fail --silent --show-error --retry 3 --connect-timeout 10 --max-time 30 "${API_BASE}/health" > /dev/null
 
       - name: Build renderer (web build)
         run: npm run build:web
