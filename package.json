@@ -19,7 +19,7 @@
     "typecheck": "tsc --noEmit",
     "preview": "vite preview --host 0.0.0.0 --port 5173",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "dist": "npm run build:web && npm run build:electron && electron-builder",
+    "dist": "npm run build:web && npm run build:electron && electron-builder --win --linux",
     "dist:win": "npm run build:web && npm run build:electron && electron-builder --win",
     "dist:linux": "npm run build:web && npm run build:electron && electron-builder --linux",
     "mobile:build": "npm run build:web && cap sync android",
