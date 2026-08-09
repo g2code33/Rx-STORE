@@ -88,10 +88,11 @@
     "artifactName": "RXStore-Setup-${version}.${ext}",
     "signAndEditExecutable": false
   },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
-    },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "script": "build/installer.nsi"
+  },
     "linux": {
       "target": [
         "AppImage",

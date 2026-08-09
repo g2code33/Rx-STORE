@@ -134,6 +134,9 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
+    // Windows: stable AppUserModelID → the taskbar icon groups with shortcuts
+    // and toasts/notifications carry the app's identity instead of Electron's.
+    app.setAppUserModelId('com.calcitonin.rxstore');
     initAppScheme();
     initIpc();
     initUpdater();
