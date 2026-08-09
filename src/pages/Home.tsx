@@ -6,7 +6,6 @@ import AppCard from '../components/apps/AppCard';
 import { useContent } from '../context/ContentContext';
 import Editable from '../components/edit/Editable';
 import { useCategories } from '../hooks/useCategories';
-import StatsBar, { DEFAULT_STATS } from '../components/home/StatsBar';
 import WelcomeIntro from '../components/home/WelcomeIntro';
 import PageBlocks from '../components/edit/PageBlocks';
 import PlatformIcon from '../icons/PlatformIcon';
@@ -74,9 +73,6 @@ export default function Home() {
     .slice(0, 6);
   const categoryCount = (id: string) => apps.filter((a) => a.category === id).length;
 
-  const btn1 = getJSON('home.hero.btn1', { label: 'Explore Applications', to: '/browse' });
-  const btn2 = getJSON('home.hero.btn2', { label: 'Learn More', to: '/about' });
-  const statsLabels = getJSON('home.statsLabels', DEFAULT_STATS);
   const platformCards = getJSON('home.platformCards', DEFAULT_PLATFORM_CARDS);
   const features = getJSON('home.features', DEFAULT_FEATURES);
   const ctaBtn1 = getJSON('home.cta.btn1', { label: 'Get Started Free', to: '/browse' });
@@ -84,64 +80,8 @@ export default function Home() {
 
   return (
     <div className="min-h-screen">
-      {/* 5-second welcome hero on fresh visits — then dissolves into the apps */}
+      {/* Header-logo-only 3-second welcome/ad canvas; normal Home opens at apps. */}
       <WelcomeIntro />
-      {/* Hero Section */}
-      <section className="relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-hero" />
-        <div className="absolute top-0 left-1/4 w-96 h-96 bg-rx-yellow/5 rounded-full blur-3xl animate-float" />
-        <div className="absolute bottom-0 right-1/4 w-80 h-80 bg-rx-yellow/3 rounded-full blur-3xl animate-float" style={{ animationDelay: '-3s' }} />
-        <div className="absolute inset-0 opacity-[0.02]" style={{
-          backgroundImage: 'linear-gradient(rgba(255,214,0,0.3) 1px, transparent 1px), linear-gradient(90deg, rgba(255,214,0,0.3) 1px, transparent 1px)',
-          backgroundSize: '60px 60px'
-        }} />
-
-        <div className="relative section-container pt-32 pb-20 lg:pt-40 lg:pb-28">
-          <div className="text-center max-w-4xl mx-auto">
-            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-rx-yellow/10 border border-rx-yellow/20 mb-8 animate-fade-in">
-              <div className="w-2 h-2 bg-rx-yellow rounded-full animate-pulse" />
-              <span className="text-xs font-medium text-rx-yellow">
-                <Editable id="home.hero.badge" label="Hero badge">{get('home.hero.badge', 'Platform v1.0 — Now Available')}</Editable>
-              </span>
-            </div>
-
-            <h1 className="text-4xl sm:text-5xl lg:text-7xl font-black text-white leading-tight animate-slide-up">
-              <Editable id="home.hero.l1" label="Hero line 1">{get('home.hero.l1', 'The Future of')}</Editable>
-              <br />
-              <span className="gradient-text">
-                <Editable id="home.hero.l2" label="Hero line 2 (gradient)">{get('home.hero.l2', 'Healthcare Apps')}</Editable>
-              </span>
-              <br />
-              <Editable id="home.hero.l3" label="Hero line 3">{get('home.hero.l3', 'Starts Here')}</Editable>
-            </h1>
-
-            <p className="mt-6 text-lg sm:text-xl text-rx-gray-medium max-w-2xl mx-auto leading-relaxed animate-slide-up text-balance" style={{ animationDelay: '0.1s' }}>
-              <Editable id="home.hero.subtitle" type="textarea" label="Hero subtitle">
-                {get('home.hero.subtitle', 'Discover, download, and manage premium applications for healthcare, education, productivity, and technology — all in one professional marketplace.')}
-              </Editable>
-            </p>
-
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mt-10 animate-slide-up" style={{ animationDelay: '0.2s' }}>
-              <Editable id="home.hero.btn1" type="link" label="Primary button">
-                <CLink to={btn1.to} className="btn-primary text-base flex items-center gap-2 group">
-                  {btn1.label}
-                  <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-                </CLink>
-              </Editable>
-              <Editable id="home.hero.btn2" type="link" label="Secondary button">
-                <CLink to={btn2.to} className="btn-secondary text-base">{btn2.label}</CLink>
-              </Editable>
-            </div>
-
-            <Editable id="home.statsLabels" type="statsLabels" label="Hero stat labels" group>
-              <StatsBar apps={apps} labels={statsLabels} />
-            </Editable>
-          </div>
-        </div>
-
-        <div className="absolute bottom-0 left-0 right-0 h-24 bg-gradient-to-t from-rx-dark to-transparent" />
-      </section>
-
       {/* Ecosystem Apps — visible immediately, with platform quick-filters */}
       {/* Alias anchor: builder-saved buttons pointing at /#docs land here */}
       <span id="docs" aria-hidden className="block scroll-mt-20" />

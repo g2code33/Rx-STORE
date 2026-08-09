@@ -562,6 +562,32 @@ export default {
       } catch (e: any) { return json({ success: false, error: { message: e.message } }, 500, origin); }
     }
 
+    if (path === '/users/me' && request.method === 'PATCH') {
+      const auth = request.headers.get('Authorization') || '';
+      const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+      if (!token) return json({ success:false, error:{ code:'UNAUTHORIZED', message:'Sign in required' }},401,origin);
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1] || ''));
+        const userId = payload.userId;
+        const body: any = await normalizedRequest.json();
+        const name = body.name === undefined ? null : String(body.name).trim();
+        const email = body.email === undefined ? null : String(body.email).trim().toLowerCase();
+        if (name !== null && name.length < 2) return json({ success:false, error:{ code:'VALIDATION_ERROR', message:'Full name is required' }},400,origin);
+        if (email !== null && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ success:false, error:{ code:'VALIDATION_ERROR', message:'Enter a valid email address' }},400,origin);
+        if (email !== null) {
+          const duplicate: any = await env.DB.prepare('SELECT id FROM users WHERE email=? AND id!=?').bind(email, userId).first();
+          if (duplicate) return json({ success:false, error:{ code:'CONFLICT', message:'That email is already registered' }},409,origin);
+        }
+        const preferences = body.preferences === undefined ? null : JSON.stringify(body.preferences || {});
+        await env.DB.prepare(`UPDATE users SET name=COALESCE(?,name), email=COALESCE(?,email), preferences=COALESCE(?,preferences), updated_at=datetime('now') WHERE id=?`)
+          .bind(name, email, preferences, userId).run();
+        const user: any = await env.DB.prepare('SELECT id,name,email,phone,avatar_url,role,preferences,created_at FROM users WHERE id=?').bind(userId).first();
+        if (!user) return json({ success:false, error:{ code:'NOT_FOUND', message:'User not found' }},404,origin);
+        let parsedPreferences = {};
+        try { parsedPreferences = JSON.parse(user.preferences || '{}'); } catch {}
+        return json({ success:true, data:{ user:{ id:user.id, name:user.name, email:user.email, phone:user.phone, avatar:user.avatar_url||'👤', role:user.role, joinDate:(user.created_at||'').slice(0,10), preferences:parsedPreferences }}},200,origin);
+      } catch (e:any) { return json({ success:false, error:{ message:e.message || 'Unable to save profile' }},400,origin); }
+    }
     if (path === '/users/me' && request.method === 'GET') {
       const auth = request.headers.get('Authorization') || '';
       const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
@@ -569,9 +595,11 @@ export default {
       try {
         const payload = JSON.parse(atob(token.split('.')[1] || ''));
         const userId = payload.userId;
-        const user: any = await env.DB.prepare('SELECT id, name, email, avatar_url, role, created_at FROM users WHERE id = ?').bind(userId).first();
+        const user: any = await env.DB.prepare('SELECT id, name, email, phone, avatar_url, role, preferences, created_at FROM users WHERE id = ?').bind(userId).first();
         if (!user) return json({ success:false, error:{ code:'NOT_FOUND', message:'User not found' }},404,origin);
-        return json({ success:true, data:{ user:{ id:user.id, name:user.name, email:user.email, avatar:user.avatar_url||'👤', role:user.role, joinDate:(user.created_at||'').slice(0,10) }}},200,origin);
+        let preferences = {};
+        try { preferences = JSON.parse(user.preferences || '{}'); } catch {}
+        return json({ success:true, data:{ user:{ id:user.id, name:user.name, email:user.email, phone:user.phone, avatar:user.avatar_url||'👤', role:user.role, joinDate:(user.created_at||'').slice(0,10), preferences }}},200,origin);
       } catch (e:any) { return json({ success:false, error:{ message:e.message }},401,origin); }
     }
     if (path === '/health') return json({ status: 'ok', version: '1.0.0', timestamp: new Date().toISOString() },200,origin);

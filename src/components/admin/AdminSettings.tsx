@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { RefreshCw, Trash2, Shield, Database, Loader2, Lock, Save, Megaphone, ToggleLeft } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { API_URL, invalidatePublicSettings } from '../../services/api';
+import PasswordInput from '../common/PasswordInput';
 
 type Settings = Record<string, string>;
 
@@ -222,7 +223,7 @@ export default function AdminSettings() {
           <div className="bg-rx-dark-secondary border border-white/10 rounded-2xl w-full max-w-md p-6">
             <h3 className="font-bold text-white flex items-center gap-2"><Lock className="w-4 h-4"/> Enter reset password</h3>
             <p className="text-xs text-rx-gray-medium mt-1">This action requires your admin password to prevent accidents.</p>
-            <input type="password" value={pwd} onChange={e=>setPwd(e.target.value)} placeholder="••••••••" autoFocus className="mt-4 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-rx-yellow/50" />
+            <PasswordInput value={pwd} onChange={e=>setPwd(e.target.value)} placeholder="••••••••" autoFocus className="mt-4" inputClassName="w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-rx-yellow/50" />
             <div className="flex gap-2 justify-end mt-4">
               <button onClick={()=>{setShowResetModal(null); setPwd('');}} className="px-4 py-2 rounded-xl bg-white/5 text-white border border-white/10 text-sm">Cancel</button>
               <button onClick={showResetModal==='stats' ? doResetStats : doResetApps} disabled={!!loading} className="px-4 py-2 rounded-xl bg-rx-yellow text-rx-dark font-bold text-sm flex items-center gap-1 disabled:opacity-50">

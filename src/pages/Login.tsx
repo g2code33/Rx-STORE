@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Mail, Lock, User, ArrowRight, Github, Phone, KeyRound } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
+import PasswordInput from '../components/common/PasswordInput';
 
 export default function Login() {
   const [searchParams] = useSearchParams();
@@ -105,11 +106,15 @@ export default function Login() {
             )}
             <div>
               <label className="block text-sm font-medium text-rx-gray-medium mb-2">Password</label>
-              <div className="relative">
-                <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-rx-gray-medium" />
-                <input type="password" value={formData.password} onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  placeholder="••••••••" className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl pl-11 pr-4 py-3 text-white placeholder-rx-gray-medium focus:outline-none focus:border-rx-yellow/50 focus:ring-1 focus:ring-rx-yellow/25 transition-all" required minLength={8} />
-              </div>
+              <PasswordInput
+                leftIcon={<Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-rx-gray-medium" />}
+                value={formData.password}
+                onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                placeholder="••••••••"
+                inputClassName="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl pl-11 py-3 text-white placeholder-rx-gray-medium focus:outline-none focus:border-rx-yellow/50 focus:ring-1 focus:ring-rx-yellow/25 transition-all"
+                required
+                minLength={8}
+              />
             </div>
             {mode === 'login' && (
               <div className="flex items-center justify-between">
@@ -142,7 +147,7 @@ export default function Login() {
                 <form onSubmit={handleReset} className="mt-3 space-y-2">
                   <p className="text-xs text-green-400">Token received (demo). Enter new password:</p>
                   <input type="text" value={resetToken} readOnly className="w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-xs text-rx-gray-medium" />
-                  <input type="password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="New password (8+ chars)" className="w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white" required minLength={8} />
+                  <PasswordInput value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="New password (8+ chars)" inputClassName="w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white" required minLength={8} />
                   <div className="flex gap-2">
                     <button type="submit" className="btn-primary text-sm flex-1">Reset Password</button>
                     <button type="button" onClick={()=>{setForgotOpen(false); setResetToken('');}} className="px-3 py-2 text-sm text-rx-gray-medium">Close</button>

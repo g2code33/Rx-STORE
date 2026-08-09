@@ -7,10 +7,10 @@ interface AuthContextType {
   isLoading: boolean;
   login: (email: string, password: string) => Promise<boolean>;
   register: (name: string, email: string, password: string, phone?: string) => Promise<boolean>;
-  forgotPassword: (email: string) => Promise<string>;
+  forgotPassword: (email: string) => Promise<{ message: string; resetToken?: string }>;
   resetPassword: (token: string, password: string) => Promise<void>;
   logout: () => void;
-  updateProfile: (updates: Partial<User>) => void;
+  updateProfile: (updates: Partial<User>) => Promise<void>;
   notifications: Notification[];
   markNotificationRead: (id: string) => void;
   markAllNotificationsRead: () => void;
@@ -40,19 +40,6 @@ const loadNotifications = (u: any): Notification[] => {
   return seedNotifications();
 };
 
-const mockUser: User = {
-  id: 'user-1',
-  name: 'Dr. Alex Morgan',
-  email: 'alex.morgan@healthcare.com',
-  phone: '+233000000000',
-  avatar: '👨‍⚕️',
-  role: 'user',
-  joinDate: '2024-01-15',
-  downloadedApps: [],
-  subscriptions: [],
-  notifications: seedNotifications(),
-};
-
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const dispatchAuth = (u: any) => { try { window.dispatchEvent(new CustomEvent('rx-auth-change')); } catch {} };
@@ -63,35 +50,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     (async () => {
-      const savedUser = localStorage.getItem('rx-store-user');
-      if (savedUser) {
-        try { setUser(JSON.parse(savedUser)); } catch { /* ignore */ }
-      }
-      // If API configured and token exists, validate session
-      if (isApiConfigured() && localStorage.getItem('rx-store-token')) {
+      const token = localStorage.getItem('rx-store-token');
+      // A cached profile is display data, not proof of authentication. Only
+      // restore it after the server validates the token; this prevents stale
+      // demo/guest identities (such as the old Alex account) from signing in.
+      if (isApiConfigured() && token) {
         try {
           const res: any = await api.auth.me();
           const me = res.user || res;
-          if (me && me.id) {
-            // Merge with existing to keep subscriptions etc. if backend returns minimal
-            const merged: any = {
-              id: me.id,
-              name: me.name,
-              email: me.email,
-              phone: me.phone,
-              avatar: me.avatar || me.avatar_url || '👤',
-              role: me.role || 'user',
-              joinDate: me.joinDate || (me.created_at || '').slice(0,10) || new Date().toISOString().slice(0,10),
-              downloadedApps: me.downloadedApps || [],
-              subscriptions: me.subscriptions || [],
-              notifications: me.notifications || [],
-            };
-            setUser(merged);
-            localStorage.setItem('rx-store-user', JSON.stringify(merged));
-          }
+          if (!me?.id) throw new Error('Invalid session');
+          const merged: User = {
+            id: me.id,
+            name: me.name,
+            email: me.email,
+            phone: me.phone,
+            avatar: me.avatar || me.avatar_url || '👤',
+            role: me.role || 'user',
+            joinDate: me.joinDate || (me.created_at || '').slice(0,10) || new Date().toISOString().slice(0,10),
+            downloadedApps: me.downloadedApps || [],
+            subscriptions: me.subscriptions || [],
+            notifications: me.notifications || [],
+            preferences: me.preferences,
+          };
+          setUser(merged);
+          localStorage.setItem('rx-store-user', JSON.stringify(merged));
         } catch {
-          // token invalid — keep local user
+          clearToken();
+          localStorage.removeItem('rx-store-user');
+          setUser(null);
+          dispatchAuth(null);
         }
+      } else {
+        localStorage.removeItem('rx-store-user');
+        setUser(null);
+        dispatchAuth(null);
       }
       setIsLoading(false);
     })();
@@ -99,79 +91,56 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = async (email: string, password: string): Promise<boolean> => {
     setIsLoading(true);
-    if (isApiConfigured()) {
-      try {
-        const { user: apiUser } = await api.auth.login(email, password);
-        setUser(apiUser);
-        localStorage.setItem('rx-store-user', JSON.stringify(apiUser));
-        dispatchAuth(apiUser);
-        setIsLoading(false);
-        return true;
-      } catch (e: any) {
-        setIsLoading(false);
-        // Don't fallback to mock when API is live — show real error (wrong password etc.)
-        const msg = e.message || 'Login failed';
-        // Only fallback to mock if it's a network/config error, not auth error
-        if (msg.includes('Invalid credentials') || msg.includes('not found') || msg.includes('401') || msg.includes('403')) {
-          throw e;
-        }
-        // Network error — allow mock fallback for offline demo
-        if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('API not configured')) {
-          await new Promise((resolve) => setTimeout(resolve, 600));
-          const demoUser = { ...mockUser, email, downloadedApps: [], subscriptions: [] };
-          setUser(demoUser);
-          localStorage.setItem('rx-store-user', JSON.stringify(demoUser));
-          dispatchAuth(demoUser);
-          return true;
-        }
-        throw e;
+    try {
+      if (!isApiConfigured()) throw new Error('RX Store cannot reach the account service. Please try again shortly.');
+      const { user: apiUser } = await api.auth.login(email, password);
+      setUser(apiUser);
+      localStorage.setItem('rx-store-user', JSON.stringify(apiUser));
+      dispatchAuth(apiUser);
+      return true;
+    } catch (e: any) {
+      clearToken();
+      localStorage.removeItem('rx-store-user');
+      setUser(null);
+      const msg = String(e?.message || 'Sign in failed');
+      if (/invalid|credential|not found|401|403/i.test(msg)) {
+        throw new Error('Incorrect email/phone or password. If you do not have an account, choose Sign Up first.');
       }
+      if (/fetch|network|account service|api not configured/i.test(msg)) {
+        throw new Error('RX Store cannot reach the account service. Check your connection and try again.');
+      }
+      throw e;
+    } finally {
+      setIsLoading(false);
     }
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    const demoUser = { ...mockUser, email };
-    setUser(demoUser);
-    localStorage.setItem('rx-store-user', JSON.stringify(demoUser));
-    setIsLoading(false);
-    return true;
   };
 
   const register = async (name: string, email: string, password: string, phone?: string): Promise<boolean> => {
     setIsLoading(true);
-    if (isApiConfigured()) {
-      try {
-        const { user: apiUser } = await api.auth.register(name, email, password, phone);
-        setUser(apiUser);
-        localStorage.setItem('rx-store-user', JSON.stringify(apiUser));
-        dispatchAuth(apiUser);
-        setIsLoading(false);
-        return true;
-      } catch (e: any) {
-        setIsLoading(false);
-        const msg = e.message || '';
-        if (msg.includes('already registered') || msg.includes('Invalid email') || msg.includes('Password') || msg.includes('phone')) throw e;
-        if (msg.includes('Failed to fetch') || msg.includes('API not configured')) {
-          await new Promise((resolve) => setTimeout(resolve, 600));
-          const newUser = { ...mockUser, name, email, phone, downloadedApps: [], subscriptions: [] };
-          setUser(newUser);
-          localStorage.setItem('rx-store-user', JSON.stringify(newUser));
-          dispatchAuth(newUser);
-          return true;
-        }
-        throw e;
+    try {
+      if (!isApiConfigured()) throw new Error('RX Store cannot reach the account service. Please try again shortly.');
+      const { user: apiUser } = await api.auth.register(name, email, password, phone);
+      setUser(apiUser);
+      localStorage.setItem('rx-store-user', JSON.stringify(apiUser));
+      dispatchAuth(apiUser);
+      return true;
+    } catch (e: any) {
+      clearToken();
+      localStorage.removeItem('rx-store-user');
+      setUser(null);
+      const msg = String(e?.message || 'Registration failed');
+      if (/fetch|network|account service|api not configured/i.test(msg)) {
+        throw new Error('RX Store cannot reach the account service. Check your connection and try again.');
       }
+      throw e;
+    } finally {
+      setIsLoading(false);
     }
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    const newUser = { ...mockUser, name, email, phone, downloadedApps: [], subscriptions: [] };
-    setUser(newUser);
-    localStorage.setItem('rx-store-user', JSON.stringify(newUser));
-    dispatchAuth(newUser);
-    setIsLoading(false);
-    return true;
   };
 
-  const forgotPassword = async (email: string): Promise<string> => {
+  const forgotPassword = async (email: string): Promise<{ message: string; resetToken?: string }> => {
     const res: any = await api.auth.forgotPassword(email);
-    return res.message || 'Reset email sent';
+    return { message: res.message || 'Reset email sent', resetToken: res.resetToken };
   };
   const resetPassword = async (token: string, password: string): Promise<void> => {
     await api.auth.resetPassword(token, password);
@@ -186,13 +155,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try { localStorage.removeItem('rx-store-installed'); } catch {}
   };
 
-  const updateProfile = (updates: Partial<User>) => {
-    if (user) {
-      const updatedUser = { ...user, ...updates };
-      setUser(updatedUser);
-      localStorage.setItem('rx-store-user', JSON.stringify(updatedUser));
-      dispatchAuth(updatedUser);
-    }
+  const updateProfile = async (updates: Partial<User>) => {
+    if (!user) throw new Error('Sign in required');
+    if (!isApiConfigured()) throw new Error('Account service unavailable');
+    const res: any = await api.auth.updateProfile({
+      name: updates.name,
+      email: updates.email,
+      preferences: updates.preferences,
+    });
+    const serverUser = res.user || res;
+    const updatedUser = { ...user, ...updates, ...serverUser };
+    setUser(updatedUser);
+    localStorage.setItem('rx-store-user', JSON.stringify(updatedUser));
+    dispatchAuth(updatedUser);
   };
 
   // Load this user's notifications whenever the signed-in user changes

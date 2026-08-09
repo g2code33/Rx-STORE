@@ -3,6 +3,7 @@ import { Package, Upload, Check, Clock, Shield, RefreshCw, Archive, Ban, Play, L
 import toast from 'react-hot-toast';
 import { API_URL } from '../../services/api';
 import { useApps } from '../../context/AppContext';
+import ConfirmModal from '../common/ConfirmModal';
 
 type Release = {
   id: string;
@@ -28,6 +29,7 @@ export default function ReleasesManager() {
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ version: '', releaseType: 'patch' as string, channel: 'stable' as string, notes: '', minSupported: '' });
   const [creating, setCreating] = useState(false);
+  const [rollbackId, setRollbackId] = useState('');
 
   const token = localStorage.getItem('rx-store-token') || '';
 
@@ -81,10 +83,8 @@ export default function ReleasesManager() {
     } catch (e:any) { toast.error(e.message); }
   };
 
-  const rollback = async (id: string) => {
-    const pwd = prompt('Enter rollback password (iseedeAdpeople#233):');
-    if (pwd !== 'iseedeAdpeople#233') { if (pwd!==null) toast.error('Wrong password'); return; }
-    if (!confirm('Rollback this release to previous stable?')) return;
+  const rollback = async (id: string, pwd: string) => {
+    setRollbackId('');
     try {
       const res = await fetch(`${API_URL}/admin/releases/${id}/rollback`, { method: 'POST', headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${token}` }, body: JSON.stringify({ password: pwd }) });
       const j = await res.json();
@@ -155,7 +155,7 @@ export default function ReleasesManager() {
                 </div>
                 <div className="flex items-center gap-1">
                   {r.status==='draft' && <button onClick={()=>publish(r.id)} className="px-3 py-1.5 rounded-lg bg-green-500 text-white text-xs font-bold flex items-center gap-1"><Play className="w-3 h-3"/> Publish</button>}
-                  {r.status==='published' && <button onClick={()=>rollback(r.id)} className="px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/20 text-xs flex items-center gap-1"><RefreshCw className="w-3 h-3"/> Roll Back</button>}
+                  {r.status==='published' && <button onClick={()=>setRollbackId(r.id)} className="px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/20 text-xs flex items-center gap-1"><RefreshCw className="w-3 h-3"/> Roll Back</button>}
                   <span className={`px-2 py-1 rounded text-xs ${r.status==='published' ? 'bg-green-500/20 text-green-400' : 'bg-white/5 text-rx-gray-medium'}`}>{r.status==='published' ? 'Current' : r.channel}</span>
                 </div>
               </div>
@@ -168,6 +168,17 @@ export default function ReleasesManager() {
         <h3 className="font-semibold text-white text-sm flex items-center gap-2"><FileText className="w-4 h-4"/> Next: Upload Packages</h3>
         <p className="text-xs text-rx-gray-medium mt-1">After creating a draft, go to <b className="text-white">Uploads</b> → select same app + version → upload per-platform (Windows EXE, Linux DEB/AppImage, Android APK). Then return here to <b>Publish</b> — it verifies checksums + R2 files before going live.</p>
       </div>
+      {rollbackId && (
+        <ConfirmModal
+          title="Roll back release"
+          message="Enter the admin password to restore the previous stable release."
+          confirmText="Roll Back"
+          variant="danger"
+          requirePassword
+          onCancel={()=>setRollbackId('')}
+          onConfirm={(password)=>rollback(rollbackId, password || '')}
+        />
+      )}
     </div>
   );
 }

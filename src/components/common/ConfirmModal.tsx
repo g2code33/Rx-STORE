@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { X, AlertTriangle, Lock } from 'lucide-react';
+import PasswordInput from './PasswordInput';
 
 type Props = {
   title: string;
@@ -38,7 +39,7 @@ export default function ConfirmModal({ title, message, confirmText = 'Confirm', 
           </div>
           {requirePassword && (
             <div className="mt-4">
-              <input type="password" value={pwd} onChange={e=>{ setPwd(e.target.value); setError(''); }} placeholder={passwordPlaceholder} autoFocus className="w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-rx-yellow/50" />
+              <PasswordInput value={pwd} onChange={e=>{ setPwd(e.target.value); setError(''); }} placeholder={passwordPlaceholder} autoFocus inputClassName="w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-rx-yellow/50" />
               {error && <p className="text-xs text-red-400 mt-1">{error}</p>}
             </div>
           )}

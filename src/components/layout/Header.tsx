@@ -10,6 +10,8 @@ import { DEFAULT_NAV, mergeNavLinks } from './nav';
 import { replayWelcomeIntro } from '../home/WelcomeIntro';
 import { useSiteIcon } from '../../icons/PlatformIcon';
 import { isImageIcon } from '../../icons/platformIcons';
+import { Capacitor } from '@capacitor/core';
+import { checkNow, isDesktopApp } from '../../desktop/updater';
 
 export default function Header() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
@@ -66,6 +68,7 @@ export default function Header() {
   const { getJSON } = useContent();
   const navLinks = mergeNavLinks(getJSON<{ label: string; to: string }[]>('site.nav', DEFAULT_NAV));
   const brandLogo = useSiteIcon('brand.logo', '/v1.png');
+  const installedNativeApp = isDesktopApp() || Capacitor.isNativePlatform();
 
   return (
     <header ref={headerRef} className="fixed top-0 left-0 right-0 z-50 bg-rx-dark/80 backdrop-blur-xl border-b border-white/5">
@@ -83,7 +86,7 @@ export default function Header() {
       )}
       <div className="section-container">
         <div className="flex items-center justify-between h-16 lg:h-18">
-          {/* Logo — v1.png by default, overridable in Admin → Icons. Clicking Home replays the 3s intro. */}
+          {/* Logo — the only control that opens the timed welcome/ad canvas. */}
           <Link to="/" onClick={replayWelcomeIntro} className="flex items-center gap-2 group flex-shrink-0">
             {isImageIcon(brandLogo) ? (
               <img src={brandLogo} alt="RX Store" className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl object-cover group-hover:shadow-glow transition-shadow duration-300" />
@@ -107,7 +110,6 @@ export default function Header() {
                 <Link
                   key={link.to}
                   to={link.to}
-                  onClick={link.to === '/' ? replayWelcomeIntro : undefined}
                   className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
                     isActive(link.to)
                       ? 'text-rx-yellow bg-rx-yellow/10'
@@ -125,13 +127,16 @@ export default function Header() {
 
           {/* Right Actions */}
           <div className="flex items-center gap-2">
-            {/* Get the app — device-aware downloads live on /get-app */}
+            {/* Installed shells check/update; browsers are offered the download page. */}
             <Link
               to="/get-app"
-              title="Download the RX Store app"
+              onClick={(e) => {
+                if (isDesktopApp()) { e.preventDefault(); checkNow(); }
+              }}
+              title={installedNativeApp ? 'Check for an RX Store update' : 'Download the RX Store app'}
               className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-rx-yellow/10 text-rx-yellow border border-rx-yellow/25 hover:bg-rx-yellow/20 transition-all"
             >
-              <Download className="w-3.5 h-3.5" /> Get App
+              <Download className="w-3.5 h-3.5" /> {installedNativeApp ? 'Update App' : 'Get App'}
             </Link>
             {/* Mobile search toggle — opens the search row under the header */}
             <button
