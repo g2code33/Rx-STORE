@@ -1,10 +1,55 @@
 import React, { useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
-import { Download, CreditCard, Bell, Settings, LogOut, X, Trash2, RefreshCw } from 'lucide-react';
+import { Download, CreditCard, Bell, Settings, LogOut, X, Trash2, RefreshCw, Rocket } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useApps } from '../context/AppContext';
 import { formatDate } from '../utils/helpers';
 import AppLogo from '../components/apps/AppLogo';
+import { useUpdateStatus, describeStatus, checkNow, installNow, isDesktopApp } from '../desktop/updater';
+
+/** Desktop-only self-update management: version, live status, manual check, restart-to-install. */
+function DesktopUpdatesCard() {
+  const s = useUpdateStatus();
+  if (!isDesktopApp()) return null;
+  const d = describeStatus(s);
+  const dot: Record<string, string> = { gray: 'bg-rx-gray-medium', yellow: 'bg-rx-yellow', green: 'bg-green-400', red: 'bg-red-400' };
+  return (
+    <div className="card p-6 space-y-4">
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-rx-yellow/15 flex items-center justify-center flex-shrink-0">
+          <Rocket className="w-5 h-5 text-rx-yellow" />
+        </div>
+        <div>
+          <h3 className="font-semibold text-white">Desktop App &amp; Updates</h3>
+          <p className="text-xs text-rx-gray-medium">
+            RX Store desktop {s.currentVersion ? `v${s.currentVersion}` : ''} · auto-checks every hour
+          </p>
+        </div>
+      </div>
+      <div className="flex items-start gap-2 text-sm text-rx-gray-medium">
+        <span className={`w-2 h-2 rounded-full flex-shrink-0 mt-1.5 ${dot[d.tone]}${d.busy ? ' animate-pulse' : ''}`} />
+        <span className={d.tone === 'red' ? 'text-red-300' : d.tone === 'green' ? 'text-green-300' : ''}>{d.text}</span>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button onClick={() => checkNow()} disabled={d.busy} className="btn-primary !py-2 !px-4 text-sm flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+          <RefreshCw className={`w-4 h-4 ${d.busy ? 'animate-spin' : ''}`} />
+          {s.phase === 'checking' ? 'Checking…' : 'Check for updates'}
+        </button>
+        {s.phase === 'downloaded' && (
+          <button
+            onClick={() => installNow()}
+            className="px-4 py-2 text-sm font-semibold rounded-xl bg-green-500/20 text-green-300 border border-green-500/30 hover:bg-green-500/30 transition-all"
+          >
+            Restart &amp; update
+          </button>
+        )}
+      </div>
+      <p className="text-xs text-rx-gray-medium">
+        New versions download silently and install when you're ready. Windows, Linux and the web all stay on the same release.
+      </p>
+    </div>
+  );
+}
 
 export default function Profile() {
   const { user, logout, notifications, markNotificationRead } = useAuth();
@@ -222,6 +267,7 @@ export default function Profile() {
                 </div>
               ))}
             </div>
+            <DesktopUpdatesCard />
           </div>
         </div>
       )}

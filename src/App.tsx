@@ -5,6 +5,7 @@ import Header from './components/layout/Header';
 import Footer from './components/layout/Footer';
 import MobileTabBar from './components/layout/MobileTabBar';
 import { AIFloatingButton } from './components/ai/AIChat';
+import UpdateBanner from './components/desktop/UpdateBanner';
 import { getPublicSettings } from './services/api';
 import { useAuth } from './context/AuthContext';
 import { EditModeContext, getBuilderCtx, subscribeBuilder } from './components/edit/EditMode';
@@ -135,6 +136,7 @@ export default function App() {
       </main>
       <Footer />
       <AIFloatingButton />
+      <UpdateBanner />
       <MobileTabBar />
       </BuilderScope>
       </MaintenanceGate>

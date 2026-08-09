@@ -3,6 +3,11 @@
   "private": true,
   "version": "1.0.0",
   "description": "RX Store - Professional Digital Marketplace by Calcitonin Technologies",
+  "author": {
+    "name": "Calcitonin Technologies",
+    "email": "support@rxstore.com"
+  },
+  "maintainer": "Calcitonin Technologies <support@rxstore.com>",
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {
@@ -91,14 +96,10 @@
         "AppImage",
         "deb"
       ],
-      "category": "Utility",
-      "executableName": "rx-store",
-      "artifactName": "RX-Store-${version}.${ext}",
-      "desktop": {
-        "Name": "RX Store",
-        "Comment": "Professional Digital Marketplace by Calcitonin Technologies"
-      }
-    },
+    "category": "Utility",
+    "executableName": "rx-store",
+    "artifactName": "RX-Store-${version}.${ext}"
+  },
     "deb": {
       "afterInstall": "build/after-install.sh"
     },
