@@ -1,0 +1,18 @@
+{
+  "name": "RX Store — by Calcitonin Technologies",
+  "short_name": "RX Store",
+  "description": "Professional digital marketplace for healthcare, education, productivity, and technology applications.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0A0F1A",
+  "theme_color": "#FFD600",
+  "categories": ["shopping", "productivity", "medical"],
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

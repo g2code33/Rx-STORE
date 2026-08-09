@@ -67,6 +67,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return null;
   };
 
+  // Normalize platform ids: fixes the stored "andriod" typo and dedupes
+  const normPlatforms = (v: any): string[] => {
+    const arr = (asArray(v) || []).map((p: any) => String(p).toLowerCase().trim());
+    const fixed = arr.map((p) => (p === 'andriod' ? 'android' : p));
+    return [...new Set(fixed)];
+  };
+
   const normalizeApp = (a: any): App => ({
     id: a.id,
     slug: a.slug,
@@ -82,20 +89,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     version: a.version || a.current_version || '1.0.0',
     size: a.size || (a.size_mb ? `${a.size_mb} MB` : '—'),
     developer: a.developer || 'Calcitonin Technologies',
-    rating: a.rating ?? 4.5,
+    rating: a.rating ?? 0,
     reviewCount: a.reviewCount ?? a.review_count ?? 0,
     downloadCount: a.downloadCount ?? a.download_count ?? 0,
     price: (a.price as any) || a.price_type || 'free',
     priceAmount: a.priceAmount ?? a.price_amount,
-    platforms: (asArray(a.platforms) || []) as any,
+    platforms: normPlatforms(a.platforms) as any,
     releaseDate: a.releaseDate || a.release_date || a.created_at || '',
     lastUpdated: a.lastUpdated || a.last_updated || a.updated_at || '',
     releaseNotes: asArray(a.releaseNotes) || asArray(a.release_notes) || ['Latest stable release'],
     features: asArray(a.features)?.length ? asArray(a.features)! : ['Secure & Verified', 'Cross-platform', 'Auto-updates'],
     status: a.status || 'active',
-    isFeatured: a.is_featured ?? a.isFeatured,
-    isNew: a.is_new ?? a.isNew,
-    isTrending: a.is_trending ?? a.isTrending,
+    // D1 stores these as 0/1 integers — coerce to booleans or `{0 && <span>}` leaks a "0" into the UI
+    isFeatured: !!(a.isFeatured ?? a.is_featured),
+    isNew: !!(a.isNew ?? a.is_new),
+    isTrending: !!(a.isTrending ?? a.is_trending),
   });
 
   useEffect(() => {

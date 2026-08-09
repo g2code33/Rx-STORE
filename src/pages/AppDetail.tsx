@@ -18,6 +18,20 @@ export default function AppDetail() {
   const [newComment, setNewComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [showDownload, setShowDownload] = useState(false);
+  const [lightbox, setLightbox] = useState<number | null>(null);
+
+  // Screenshot lightbox keyboard nav (Esc close, arrows move)
+  React.useEffect(() => {
+    if (lightbox === null) return;
+    const n = (app?.screenshots?.length || 0);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLightbox(null);
+      if (e.key === 'ArrowRight') setLightbox((i) => (i === null ? null : (i + 1) % Math.max(n, 1)));
+      if (e.key === 'ArrowLeft') setLightbox((i) => (i === null ? null : (i - 1 + Math.max(n, 1)) % Math.max(n, 1)));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lightbox, app?.screenshots?.length]);
 
   // Hooks first: `app` arrives a render later (context loads async), so no early return before this point.
   const isInstalled = app ? installedApps.includes(app.id) : false;
@@ -146,7 +160,7 @@ export default function AppDetail() {
             <ArrowLeft className="w-4 h-4" /> Back to Browse
           </Link>
           <div className="flex flex-col lg:flex-row gap-8 items-start">
-            <div className="w-24 h-24 lg:w-32 lg:h-32 rounded-3xl bg-white/20 backdrop-blur-xl flex items-center justify-center text-5xl lg:text-6xl shadow-2xl flex-shrink-0 overflow-hidden">
+            <div className="w-32 h-32 lg:w-44 lg:h-44 rounded-3xl bg-white/20 backdrop-blur-xl flex items-center justify-center text-6xl lg:text-7xl shadow-2xl flex-shrink-0 overflow-hidden">
               {app.icon?.startsWith('http') || app.icon?.startsWith('/') ? <img src={app.icon} alt={app.name} className="w-full h-full object-cover rounded-3xl" /> : app.icon}
             </div>
             <div className="flex-1">
@@ -242,7 +256,17 @@ export default function AppDetail() {
                   {(app.screenshots && (app.screenshots as any[]).length > 0) ? (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       {(app.screenshots as any[]).map((url: string, i: number) => (
-                        <img key={i} src={url} alt={`Screenshot ${i+1}`} className="aspect-video rounded-xl object-cover border border-white/10" />
+                        <button
+                          key={i}
+                          onClick={() => setLightbox(i)}
+                          className="relative group/shot focus:outline-none focus:ring-2 focus:ring-rx-yellow/60 rounded-xl"
+                          title="Click to view full size"
+                        >
+                          <img src={url} alt={`Screenshot ${i+1}`} className="aspect-video w-full rounded-xl object-cover border border-white/10 group-hover/shot:border-rx-yellow/40 transition-colors" />
+                          <span className="absolute inset-0 rounded-xl bg-black/0 group-hover/shot:bg-black/25 transition-colors flex items-center justify-center opacity-0 group-hover/shot:opacity-100">
+                            <span className="text-xs font-semibold text-white bg-black/60 px-3 py-1.5 rounded-full">⤢ View full</span>
+                          </span>
+                        </button>
                       ))}
                     </div>
                   ) : (
@@ -420,6 +444,49 @@ export default function AppDetail() {
           </div>
         </div>
       </div>
+
+      {/* Full-size screenshot viewer (lightbox) */}
+      {lightbox !== null && app.screenshots?.[lightbox] && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 sm:p-8"
+          onClick={() => setLightbox(null)}
+        >
+          <button
+            className="absolute top-4 right-4 w-10 h-10 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-white"
+            onClick={() => setLightbox(null)}
+            aria-label="Close viewer"
+          >
+            ✕
+          </button>
+          {(app.screenshots as any[]).length > 1 && (
+            <>
+              <button
+                className="absolute left-3 sm:left-6 top-1/2 -translate-y-1/2 w-10 h-10 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-white text-lg"
+                onClick={(e) => { e.stopPropagation(); setLightbox((lightbox - 1 + (app.screenshots as any[]).length) % (app.screenshots as any[]).length); }}
+                aria-label="Previous screenshot"
+              >
+                ‹
+              </button>
+              <button
+                className="absolute right-3 sm:right-6 top-1/2 -translate-y-1/2 w-10 h-10 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-white text-lg"
+                onClick={(e) => { e.stopPropagation(); setLightbox((lightbox + 1) % (app.screenshots as any[]).length); }}
+                aria-label="Next screenshot"
+              >
+                ›
+              </button>
+            </>
+          )}
+          <img
+            src={(app.screenshots as any[])[lightbox]}
+            alt={`Screenshot ${lightbox + 1} full size`}
+            className="max-w-full max-h-full rounded-xl object-contain shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <span className="absolute bottom-4 left-1/2 -translate-x-1/2 text-xs text-white/60">
+            {lightbox + 1} / {(app.screenshots as any[]).length} — click outside or Esc to close
+          </span>
+        </div>
+      )}
     </div>
   );
 }

@@ -46,8 +46,19 @@ function StatsBar({ apps }: { apps: any[] }) {
   );
 }
 
+const HOME_PLATFORM_FILTERS = [
+  { id: 'all', label: 'All', icon: '✨' },
+  { id: 'android', label: 'Android', icon: '🤖' },
+  { id: 'ios', label: 'iOS', icon: '🍎' },
+  { id: 'windows', label: 'Windows', icon: '🪟' },
+  { id: 'linux', label: 'Linux', icon: '🐧' },
+  { id: 'web', label: 'Web', icon: '🌐' },
+];
+
 export default function Home() {
   const { apps, isLoading } = useApps();
+  const [platform, setPlatform] = useState('all');
+  const platformApps = platform === 'all' ? apps : apps.filter((a: any) => (a.platforms || []).includes(platform));
   // Real trending: admin-flagged apps first, then by actual download count.
   const trending = [...apps]
     .sort((a, b) =>
@@ -114,9 +125,9 @@ export default function Home() {
         <div className="absolute bottom-0 left-0 right-0 h-24 bg-gradient-to-t from-rx-dark to-transparent" />
       </section>
 
-      {/* Ecosystem Apps */}
-      <section className="section-container py-20">
-        <div className="text-center mb-12">
+      {/* Ecosystem Apps — visible immediately, with platform quick-filters */}
+      <section className="section-container py-14">
+        <div className="text-center mb-8">
           <h2 className="text-3xl sm:text-4xl font-bold text-white">
             Our <span className="gradient-text">Applications</span>
           </h2>
@@ -125,14 +136,37 @@ export default function Home() {
           </p>
         </div>
 
+        {/* Platform quick-filter */}
+        <div className="flex items-center justify-center gap-2 flex-wrap mb-10">
+          {HOME_PLATFORM_FILTERS.map((f) => (
+            <button
+              key={f.id}
+              onClick={() => setPlatform(f.id)}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium border transition-all ${
+                platform === f.id
+                  ? 'bg-rx-yellow text-rx-dark border-rx-yellow shadow-glow'
+                  : 'bg-rx-dark-tertiary/60 text-rx-gray-medium border-white/10 hover:text-white hover:border-rx-yellow/40'
+              }`}
+            >
+              <span>{f.icon}</span> {f.label}
+            </button>
+          ))}
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
           {isLoading && apps.length === 0
             ? Array.from({ length: 8 }).map((_, i) => (
                 <div key={i} className="card p-5 h-44 animate-pulse bg-rx-dark-tertiary/40" />
               ))
-            : apps.slice(0, 8).map((app) => (
+            : platformApps.slice(0, 8).map((app) => (
                 <AppCard key={app.id} app={app} />
               ))}
+          {!isLoading && platformApps.length === 0 && (
+            <div className="col-span-full text-center py-12 text-rx-gray-medium">
+              <p className="text-3xl mb-2">📦</p>
+              <p>No apps for this platform yet — check back soon.</p>
+            </div>
+          )}
         </div>
       </section>
 

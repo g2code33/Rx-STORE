@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { Search, Menu, X, Bell, User, ChevronDown, LogOut, Settings, Shield, Download } from 'lucide-react';
+import { Search, X, Bell, User, ChevronDown, LogOut, Settings, Shield, Download } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useApps } from '../../context/AppContext';
 import { getPublicSettings } from '../../services/api';
 
 export default function Header() {
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const { user, logout, notifications, markNotificationRead, markAllNotificationsRead } = useAuth();
@@ -35,7 +34,6 @@ export default function Header() {
   useEffect(() => {
     setIsProfileOpen(false);
     setIsNotifOpen(false);
-    setIsMenuOpen(false);
   }, [location.pathname]);
 
   const unreadCount = notifications.filter((n) => !n.read).length;
@@ -72,14 +70,14 @@ export default function Header() {
       )}
       <div className="section-container">
         <div className="flex items-center justify-between h-16 lg:h-18">
-          {/* Logo — v1.png */}
-          <Link to="/" className="flex items-center gap-2.5 group">
-            <img src="/v1.png" alt="RX Store" className="w-11 h-11 rounded-xl object-cover group-hover:shadow-glow transition-shadow duration-300" />
-            <div className="hidden sm:block">
-              <span className="text-lg font-bold text-white">
+          {/* Logo — v1.png (name always visible, incl. phones) */}
+          <Link to="/" className="flex items-center gap-2 group flex-shrink-0">
+            <img src="/v1.png" alt="RX Store" className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl object-cover group-hover:shadow-glow transition-shadow duration-300" />
+            <div>
+              <span className="text-base sm:text-lg font-bold text-white whitespace-nowrap">
                 RX <span className="text-rx-yellow">Store</span>
               </span>
-              <span className="block text-[10px] text-rx-gray-medium -mt-0.5 tracking-wider">
+              <span className="hidden sm:block text-[10px] text-rx-gray-medium -mt-0.5 tracking-wider">
                 BY CALCITONIN TECHNOLOGIES
               </span>
             </div>
@@ -237,52 +235,10 @@ export default function Header() {
               </div>
             )}
 
-            {/* Mobile Menu Toggle */}
-            <button
-              onClick={() => setIsMenuOpen(!isMenuOpen)}
-              className="lg:hidden p-2.5 rounded-xl text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all"
-            >
-              {isMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-            </button>
           </div>
         </div>
       </div>
 
-      {/* Mobile Menu */}
-      {isMenuOpen && (
-        <div className="lg:hidden border-t border-white/5 bg-rx-dark/95 backdrop-blur-xl animate-slide-down">
-          <div className="section-container py-4 space-y-1">
-            {/* Mobile Search */}
-            <form onSubmit={handleSearch} className="mb-4 md:hidden">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-rx-gray-medium" />
-                <input
-                  type="text"
-                  placeholder="Search applications..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-rx-gray-medium focus:outline-none focus:border-rx-yellow/50"
-                />
-              </div>
-            </form>
-
-            {navLinks.map((link) => (
-              <Link
-                key={link.path}
-                to={link.path}
-                onClick={() => setIsMenuOpen(false)}
-                className={`block px-4 py-3 rounded-xl text-sm font-medium transition-all ${
-                  isActive(link.path)
-                    ? 'text-rx-yellow bg-rx-yellow/10'
-                    : 'text-rx-gray-medium hover:text-white hover:bg-white/5'
-                }`}
-              >
-                {link.label}
-              </Link>
-            ))}
-          </div>
-        </div>
-      )}
     </header>
   );
 }

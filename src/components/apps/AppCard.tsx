@@ -75,17 +75,19 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
       to={`/app/${app.slug}`}
       className="card-hover overflow-hidden group flex flex-col"
     >
-      {/* Card Header / Icon Area */}
-      <div className={`relative h-40 bg-gradient-to-br ${app.gradient} p-6 flex items-center justify-center`}>
-        {isLogoUrl ? <img src={app.icon} alt={app.name} className="w-20 h-20 rounded-2xl object-cover transform group-hover:scale-110 transition-transform duration-500" /> : <div className="text-6xl transform group-hover:scale-110 transition-transform duration-500">{app.icon}</div>}
-        {/* Badges */}
+      {/* Card Header / Icon Area — enlarged logo */}
+      <div className={`relative h-44 bg-gradient-to-br ${app.gradient} p-6 flex items-center justify-center`}>
+        {isLogoUrl
+          ? <img src={app.icon} alt={app.name} className="w-28 h-28 rounded-3xl object-cover shadow-2xl transform group-hover:scale-110 transition-transform duration-500" />
+          : <div className="text-7xl transform group-hover:scale-110 transition-transform duration-500 drop-shadow-xl">{app.icon}</div>}
+        {/* Badges (booleans coerced upstream — never renders stray 0s) */}
         <div className="absolute top-3 left-3 flex gap-2">
-          {app.isFeatured && (
+          {!!app.isFeatured && (
             <span className="px-2 py-0.5 bg-rx-yellow/90 text-rx-dark text-[10px] font-bold rounded-md uppercase">
               Featured
             </span>
           )}
-          {app.isNew && (
+          {!!app.isNew && (
             <span className="px-2 py-0.5 bg-white/90 text-rx-dark text-[10px] font-bold rounded-md uppercase">
               New
             </span>
@@ -118,10 +120,14 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
         {/* Stats + Install */}
         <div className="flex items-center justify-between mt-auto gap-2">
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1">
-              <Star className={`w-4 h-4 ${getRatingColor(app.rating)} fill-current`} />
-              <span className="text-sm font-medium text-white">{app.rating}</span>
-            </div>
+            {app.rating > 0 ? (
+              <div className="flex items-center gap-1">
+                <Star className={`w-4 h-4 ${getRatingColor(app.rating)} fill-current`} />
+                <span className="text-sm font-medium text-white">{app.rating}</span>
+              </div>
+            ) : (
+              <span className="text-xs text-rx-gray-medium">New</span>
+            )}
             <div className="flex items-center gap-1 text-rx-gray-medium">
               <Download className="w-3.5 h-3.5" />
               <span className="text-xs">{formatDownloadCount(app.downloadCount)}</span>
@@ -135,7 +141,11 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
               onClick={(e) => { e.preventDefault(); e.stopPropagation(); const token=localStorage.getItem('rx-store-token'); if(!token){ window.location.href='/login'; return; } setShowDl(true); }}
               className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-all ${app.price === 'free' ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-rx-yellow text-rx-dark hover:bg-rx-yellow-light'}`}
             >
-              {app.price === 'free' ? 'Install' : `Get $${app.priceAmount || ''}`}
+              {app.price === 'free'
+                ? 'Install'
+                : app.priceAmount
+                  ? `Get $${app.priceAmount}${app.price === 'subscription' ? '/mo' : ''}`
+                  : app.price === 'subscription' ? 'Subscribe' : 'Get'}
             </button>
           )}
         </div>

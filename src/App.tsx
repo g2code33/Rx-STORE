@@ -3,6 +3,7 @@ import { Routes, Route, useLocation } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import Header from './components/layout/Header';
 import Footer from './components/layout/Footer';
+import MobileTabBar from './components/layout/MobileTabBar';
 import { AIFloatingButton } from './components/ai/AIChat';
 import { getPublicSettings } from './services/api';
 import { useAuth } from './context/AuthContext';
@@ -83,7 +84,7 @@ export default function App() {
         }}
       />
       <Header />
-      <main className="flex-1 pt-16">
+      <main className="flex-1 pt-16 pb-16 lg:pb-0">
         <Suspense fallback={<LoadingFallback />}>
           <Routes>
             <Route path="/" element={<Home />} />
@@ -100,6 +101,7 @@ export default function App() {
       </main>
       <Footer />
       <AIFloatingButton />
+      <MobileTabBar />
       </MaintenanceGate>
     </div>
   );
