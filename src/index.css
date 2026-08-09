@@ -111,3 +111,48 @@
     100% { background-position: 0% 50%; }
   }
 }
+
+/* ===== Live Website Builder ===== */
+:root {
+  --rx-yellow: 255 214 0;
+  --rx-yellow-light: 255 224 51;
+  --rx-yellow-dark: 230 194 0;
+  --rx-dark: 15 20 25;
+  --rx-dark-secondary: 26 35 50;
+  --rx-dark-tertiary: 36 48 68;
+}
+
+/* Editable element markers — admin-only, never rendered for visitors */
+.rx-ed {
+  position: relative;
+  outline: 1.5px dashed transparent;
+  outline-offset: 2px;
+  border-radius: 4px;
+  transition: outline-color 0.15s ease;
+  cursor: pointer;
+}
+.rx-ed:hover {
+  outline-color: rgba(255, 214, 0, 0.55);
+}
+.rx-ed-btn {
+  position: absolute;
+  top: -10px;
+  right: -6px;
+  z-index: 30;
+  display: none;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #0F1419;
+  background: #FFD600;
+  border-radius: 999px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.rx-ed:hover .rx-ed-btn { display: inline-flex; }
+.rx-ed-group { outline-style: solid; outline-width: 1.5px; outline-color: rgba(255, 214, 0, 0.18); }
+.rx-ed-group:hover { outline-color: rgba(255, 214, 0, 0.55); }

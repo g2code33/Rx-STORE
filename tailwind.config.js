@@ -5,12 +5,13 @@ export default {
     extend: {
       colors: {
         rx: {
-          yellow: '#FFD600',
-          'yellow-light': '#FFE033',
-          'yellow-dark': '#E6C200',
-          dark: '#0F1419',
-          'dark-secondary': '#1A2332',
-          'dark-tertiary': '#243044',
+          // CSS-variable driven so the Live Website Builder can re-theme at runtime
+          yellow: 'rgb(var(--rx-yellow, 255 214 0) / <alpha-value>)',
+          'yellow-light': 'rgb(var(--rx-yellow-light, 255 224 51) / <alpha-value>)',
+          'yellow-dark': 'rgb(var(--rx-yellow-dark, 230 194 0) / <alpha-value>)',
+          dark: 'rgb(var(--rx-dark, 15 20 25) / <alpha-value>)',
+          'dark-secondary': 'rgb(var(--rx-dark-secondary, 26 35 50) / <alpha-value>)',
+          'dark-tertiary': 'rgb(var(--rx-dark-tertiary, 36 48 68) / <alpha-value>)',
           'gray-light': '#F5F7FA',
           'gray-medium': '#8899AA',
           'gray-dark': '#4A5568',

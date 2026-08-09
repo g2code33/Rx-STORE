@@ -4,6 +4,15 @@ import { Search, X, Bell, User, ChevronDown, LogOut, Settings, Shield, Download 
 import { useAuth } from '../../context/AuthContext';
 import { useApps } from '../../context/AppContext';
 import { getPublicSettings } from '../../services/api';
+import { useContent } from '../../context/ContentContext';
+import Editable from '../edit/Editable';
+
+const DEFAULT_NAV = [
+  { label: 'Home', to: '/' },
+  { label: 'Browse', to: '/browse' },
+  { label: 'Categories', to: '/categories' },
+  { label: 'About', to: '/about' },
+];
 
 export default function Header() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
@@ -47,12 +56,9 @@ export default function Header() {
 
   const isActive = (path: string) => location.pathname === path;
 
-  const navLinks = [
-    { path: '/', label: 'Home' },
-    { path: '/browse', label: 'Browse' },
-    { path: '/categories', label: 'Categories' },
-    { path: '/about', label: 'About' },
-  ];
+  // Admin-editable nav (Live Website Builder → header → Edit Nav Links)
+  const { getJSON } = useContent();
+  const navLinks = getJSON<{ label: string; to: string }[]>('site.nav', DEFAULT_NAV);
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 bg-rx-dark/80 backdrop-blur-xl border-b border-white/5">
@@ -84,21 +90,23 @@ export default function Header() {
           </Link>
 
           {/* Desktop Nav */}
-          <nav className="hidden lg:flex items-center gap-1">
-            {navLinks.map((link) => (
-              <Link
-                key={link.path}
-                to={link.path}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
-                  isActive(link.path)
-                    ? 'text-rx-yellow bg-rx-yellow/10'
-                    : 'text-rx-gray-medium hover:text-white hover:bg-white/5'
-                }`}
-              >
-                {link.label}
-              </Link>
-            ))}
-          </nav>
+          <Editable id="site.nav" type="linkList" label="Nav links" group>
+            <nav className="hidden lg:flex items-center gap-1">
+              {navLinks.map((link) => (
+                <Link
+                  key={link.to}
+                  to={link.to}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+                    isActive(link.to)
+                      ? 'text-rx-yellow bg-rx-yellow/10'
+                      : 'text-rx-gray-medium hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  {link.label}
+                </Link>
+              ))}
+            </nav>
+          </Editable>
 
           {/* Search Bar */}
           <form onSubmit={handleSearch} className="hidden md:flex items-center flex-1 max-w-md mx-6">

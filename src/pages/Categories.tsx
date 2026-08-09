@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { Heart, GraduationCap, Zap, Cpu, Gamepad2, Users, ArrowRight } from 'lucide-react';
-import { categories } from '../data/apps';
+import { useCategories } from '../hooks/useCategories';
 import { useApps } from '../context/AppContext';
 
 const iconMap: Record<string, React.ComponentType<{ className?: string; style?: React.CSSProperties }>> = {
@@ -10,6 +10,7 @@ const iconMap: Record<string, React.ComponentType<{ className?: string; style?: 
 
 export default function Categories() {
   const { getAppsByCategory } = useApps();
+  const categories = useCategories();
   return (
     <div className="section-container py-8 lg:py-12">
       <div className="mb-10">

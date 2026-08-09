@@ -1,7 +1,7 @@
 import React from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Heart, GraduationCap, Zap, Cpu, Gamepad2, Users } from 'lucide-react';
-import { categories } from '../data/apps';
+import { useCategories } from '../hooks/useCategories';
 import { useApps } from '../context/AppContext';
 import { AppCategory } from '../types';
 import AppCard from '../components/apps/AppCard';
@@ -13,6 +13,7 @@ const iconMap: Record<string, React.ComponentType<{ className?: string; style?: 
 export default function CategoryPage() {
   const { category } = useParams<{ category: string }>();
   const { getAppsByCategory } = useApps();
+  const categories = useCategories();
   const categoryInfo = categories.find((c) => c.id === category);
   const categoryApps = category ? getAppsByCategory(category as AppCategory) : [];
 

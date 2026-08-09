@@ -1,4 +1,4 @@
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useSyncExternalStore } from 'react';
 import { Routes, Route, useLocation } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import Header from './components/layout/Header';
@@ -7,6 +7,16 @@ import MobileTabBar from './components/layout/MobileTabBar';
 import { AIFloatingButton } from './components/ai/AIChat';
 import { getPublicSettings } from './services/api';
 import { useAuth } from './context/AuthContext';
+import { EditModeContext, getBuilderCtx, subscribeBuilder } from './components/edit/EditMode';
+
+/**
+ * Provides the Live Website Builder ctx to the whole app. Null for everyone
+ * except an admin actively inside the builder — visitors never see edit chrome.
+ */
+function BuilderScope({ children }: { children: React.ReactNode }) {
+  const ctx = useSyncExternalStore(subscribeBuilder, getBuilderCtx);
+  return <EditModeContext.Provider value={ctx}>{children}</EditModeContext.Provider>;
+}
 
 /** Full-screen block for visitors while Admin → Settings → Maintenance mode is on. */
 function MaintenanceGate({ children }: { children: React.ReactNode }) {
@@ -72,6 +82,7 @@ export default function App() {
     <div className="min-h-screen bg-rx-dark text-white flex flex-col">
       <ScrollToTop />
       <MaintenanceGate>
+      <BuilderScope>
       <Toaster
         position="top-right"
         toastOptions={{
@@ -102,6 +113,7 @@ export default function App() {
       <Footer />
       <AIFloatingButton />
       <MobileTabBar />
+      </BuilderScope>
       </MaintenanceGate>
     </div>
   );

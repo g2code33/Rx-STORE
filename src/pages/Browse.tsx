@@ -2,11 +2,12 @@ import React, { useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Search, SlidersHorizontal, Grid3X3, List, X } from 'lucide-react';
 import { useApps } from '../context/AppContext';
-import { categories } from '../data/apps';
+import { useCategories } from '../hooks/useCategories';
 import AppCard from '../components/apps/AppCard';
 
 export default function Browse() {
   const { apps, isLoading, searchQuery, setSearchQuery, selectedCategory, setSelectedCategory, selectedPlatform, setSelectedPlatform, getFilteredApps } = useApps();
+  const categories = useCategories();
   const [viewMode, setViewMode] = React.useState<'grid' | 'list'>('grid');
   const [sortBy, setSortBy] = React.useState<'popular' | 'rating' | 'newest' | 'name'>('popular');
 

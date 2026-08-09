@@ -1,12 +1,19 @@
-import React, { useState } from 'react';
+import React, { useState, Suspense, lazy } from 'react';
 import { Link } from 'react-router-dom';
 import {
   LayoutDashboard, Package, Users, BarChart3, DollarSign, Upload,
-  Download, Star, Settings, Shield, Plus, Edit, Trash2, Activity, Database, Cloud, Bot, Key, Globe, FileText, Bell, Megaphone
+  Download, Star, Settings, Shield, Plus, Edit, Trash2, Activity, Database, Cloud, Bot, Key, Globe, FileText, Bell, Megaphone,
+  Monitor, Eye, Paintbrush, Loader2, Rocket, MousePointerClick
 } from 'lucide-react';
 import { useApps } from '../context/AppContext';
 import { formatDownloadCount } from '../utils/helpers';
 import NotificationComposer from '../components/admin/NotificationComposer';
+import { useContent } from '../context/ContentContext';
+import { EditCtxType, EditDescriptor, setBuilderCtx } from '../components/edit/EditMode';
+import Inspector from '../components/edit/Inspector';
+
+const BuilderHome = lazy(() => import('./Home'));
+const BuilderAbout = lazy(() => import('./About'));
 
 /** Relative time for activity rows ("3h ago") */
 function ago(t?: string) {
@@ -35,6 +42,27 @@ export default function Admin() {
   const [activeSection, setActiveSection] = useState('dashboard');
   const [editingApp, setEditingApp] = useState<any>(null);
   const isAdmin = user?.role === 'admin';
+
+  // ---- View 2: Live Website Builder state ----
+  const [view, setView] = useState<'panel' | 'builder'>('panel');
+  const [builderPage, setBuilderPage] = useState<'home' | 'about'>('home');
+  const [interact, setInteract] = useState(false);
+  const [inspector, setInspector] = useState<EditDescriptor | null>(null);
+  const { pending, publishAll } = useContent();
+
+  const editCtx: EditCtxType = {
+    editMode: view === 'builder' && !interact,
+    interact,
+    inspector,
+    openInspector: (d) => { setInteract(false); setInspector(d); },
+    closeInspector: () => setInspector(null),
+    onEditApp: (app) => { setEditingApp(app); setView('panel'); setActiveSection('applications'); },
+  };
+
+  // Publish builder ctx app-wide (Header/Footer get edit chrome too); clear on
+  // leave/unmount so visitors & normal browsing never see it.
+  React.useEffect(() => { setBuilderCtx(view === 'builder' ? editCtx : null); });
+  React.useEffect(() => () => setBuilderCtx(null), []);
 
   const [stats, setStats] = React.useState([
     { label: 'Total Downloads', value: '—', change: '', icon: Download, color: '#FFD600' },
@@ -101,6 +129,75 @@ export default function Admin() {
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 
+  // ==================== VIEW 2 — LIVE WEBSITE BUILDER ====================
+  // Renders the REAL public components with an admin-only edit layer on top.
+  if (view === 'builder') {
+    return (
+        <div className="-mt-16 pt-16 min-h-screen bg-rx-dark">
+          {/* Builder toolbar */}
+          <div className="sticky top-16 z-50 bg-rx-dark/95 backdrop-blur-xl border-b border-rx-yellow/20">
+            <div className="section-container py-2.5 flex items-center gap-2 flex-wrap">
+              {/* View switch */}
+              <div className="flex rounded-xl overflow-hidden border border-white/10">
+                <button onClick={() => setView('panel')} className="px-3.5 py-1.5 text-xs font-semibold text-rx-gray-medium hover:text-white flex items-center gap-1.5">
+                  <LayoutDashboard className="w-3.5 h-3.5" /> Controller
+                </button>
+                <button className="px-3.5 py-1.5 text-xs font-semibold bg-rx-yellow text-rx-dark flex items-center gap-1.5">
+                  <Monitor className="w-3.5 h-3.5" /> Live Builder
+                </button>
+              </div>
+
+              {/* Page picker */}
+              <div className="flex rounded-xl overflow-hidden border border-white/10">
+                {([['home', 'Home'], ['about', 'About']] as const).map(([id, label]) => (
+                  <button key={id} onClick={() => setBuilderPage(id)} className={`px-3 py-1.5 text-xs font-semibold ${builderPage === id ? 'bg-white/10 text-white' : 'text-rx-gray-medium hover:text-white'}`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Edit vs preview */}
+              <button
+                onClick={() => { setInteract(!interact); setInspector(null); }}
+                className={`px-3.5 py-1.5 text-xs font-semibold rounded-xl border flex items-center gap-1.5 ${interact ? 'border-white/10 text-rx-gray-medium hover:text-white' : 'border-rx-yellow/40 bg-rx-yellow/10 text-rx-yellow'}`}
+                title={interact ? 'Preview mode — click to start editing' : 'Editing mode — hover anything to edit it'}
+              >
+                {interact ? <Eye className="w-3.5 h-3.5" /> : <MousePointerClick className="w-3.5 h-3.5" />}
+                {interact ? 'Preview' : 'Editing'}
+              </button>
+
+              {/* Design tokens */}
+              <button
+                onClick={() => { setInteract(false); setInspector({ id: 'design', type: 'design', label: 'Site-wide design' }); }}
+                className="px-3.5 py-1.5 text-xs font-semibold rounded-xl border border-white/10 text-rx-gray-medium hover:text-rx-yellow flex items-center gap-1.5"
+              >
+                <Paintbrush className="w-3.5 h-3.5" /> Design
+              </button>
+
+              <div className="flex-1" />
+
+              {/* Pending / publish all */}
+              {pending.length > 0 ? (
+                <button onClick={publishAll} className="px-3.5 py-1.5 text-xs font-bold rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-300 flex items-center gap-1.5 hover:bg-amber-500/25">
+                  <Rocket className="w-3.5 h-3.5" /> Publish All ({pending.length})
+                </button>
+              ) : (
+                <span className="text-[11px] text-green-400/80 flex items-center gap-1">✓ Everything published</span>
+              )}
+              {!interact && <span className="hidden md:inline text-[11px] text-rx-gray-medium">Hover anything on the page → ✏️ to edit it. App cards open the full app editor.</span>}
+            </div>
+          </div>
+
+          {/* The REAL public page, with the edit layer live */}
+          <Suspense fallback={<div className="py-24 text-center text-rx-gray-medium flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Loading page…</div>}>
+            {builderPage === 'home' ? <BuilderHome /> : <BuilderAbout />}
+          </Suspense>
+          <Inspector />
+        </div>
+    );
+  }
+  // ==================== VIEW 1 — CONTROLLER (classic panel) ====================
+
   return (
     <div className="section-container py-8">
       <div className="flex flex-col lg:flex-row gap-8">
@@ -120,6 +217,15 @@ export default function Admin() {
                 </button>
               ))}
             </nav>
+            <div className="mt-4 pt-4 border-t border-white/5">
+              <button
+                onClick={() => setView('builder')}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold bg-rx-yellow text-rx-dark hover:bg-rx-yellow-light transition-all"
+              >
+                <Monitor className="w-4 h-4" /> Live Website Builder
+              </button>
+              <p className="text-[10px] text-rx-gray-medium mt-1.5 px-1">Edit the real site in place — every text, image, list & color.</p>
+            </div>
           </div>
         </aside>
 

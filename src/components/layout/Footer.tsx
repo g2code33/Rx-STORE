@@ -3,12 +3,39 @@ import { Link } from 'react-router-dom';
 import { Github, Twitter, Linkedin, Mail, Heart } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { getPublicSettings } from '../../services/api';
+import { useContent } from '../../context/ContentContext';
+import Editable from '../edit/Editable';
+
+const DEFAULT_PLATFORM_LINKS = [
+  { label: 'Browse Apps', to: '/browse' },
+  { label: 'Categories', to: '/categories' },
+  { label: 'Featured', to: '/browse?featured=1' },
+  { label: 'New Releases', to: '/browse?sort=newest' },
+  { label: 'Updates', to: '/profile' },
+];
+
+const DEFAULT_COMPANY_LINKS = [
+  { label: 'About Calcitonin', to: '/about' },
+  { label: 'Careers', to: '/about' },
+  { label: 'Press Kit', to: '/about' },
+  { label: 'Privacy Policy', to: '/about' },
+  { label: 'Terms of Service', to: '/about' },
+];
+
+/** Internal paths render as router Links; external URLs as anchors. */
+function FooterLink({ to, className, children }: { to: string; className?: string; children: React.ReactNode }) {
+  if (/^https?:\/\//.test(to)) return <a href={to} target="_blank" rel="noreferrer" className={className}>{children}</a>;
+  return <Link to={to || '/'} className={className}>{children}</Link>;
+}
 
 export default function Footer() {
   const [settings, setSettings] = React.useState<Record<string, string>>({});
   React.useEffect(() => { getPublicSettings().then(setSettings); }, []);
+  const { get, getJSON } = useContent();
   const platformName = settings.platform_name || 'RX Store';
   const supportEmail = settings.support_email || 'support@rxstore.com';
+  const platformLinks = getJSON('footer.platformLinks', DEFAULT_PLATFORM_LINKS);
+  const companyLinks = getJSON('footer.companyLinks', DEFAULT_COMPANY_LINKS);
 
   return (
     <footer className="bg-rx-dark border-t border-white/5">
@@ -28,8 +55,9 @@ export default function Footer() {
               </div>
             </Link>
             <p className="text-sm text-rx-gray-medium leading-relaxed mb-6">
-              Professional digital marketplace for healthcare, education, productivity, and technology applications. 
-              Discover, download, and manage all your essential tools.
+              <Editable id="footer.blurb" type="textarea" label="Footer blurb">
+                {get('footer.blurb', 'Professional digital marketplace for healthcare, education, productivity, and technology applications. Discover, download, and manage all your essential tools.')}
+              </Editable>
             </p>
             <div className="flex items-center gap-3">
               <a href="#" className="w-9 h-9 rounded-lg bg-rx-dark-tertiary flex items-center justify-center text-rx-gray-medium hover:text-rx-yellow hover:bg-rx-dark-secondary transition-all">
@@ -50,21 +78,17 @@ export default function Footer() {
           {/* Platform */}
           <div>
             <h3 className="text-sm font-semibold text-white mb-4 uppercase tracking-wider">Platform</h3>
-            <ul className="space-y-3">
-              {([
-                { label: 'Browse Apps', to: '/browse' },
-                { label: 'Categories', to: '/categories' },
-                { label: 'Featured', to: '/browse?featured=1' },
-                { label: 'New Releases', to: '/browse?sort=newest' },
-                { label: 'Updates', to: '/profile' },
-              ]).map((item) => (
-                <li key={item.label}>
-                  <Link to={item.to} className="text-sm text-rx-gray-medium hover:text-rx-yellow transition-colors">
-                    {item.label}
-                  </Link>
-                </li>
-              ))}
-            </ul>
+            <Editable id="footer.platformLinks" type="linkList" label="Platform links" group>
+              <ul className="space-y-3">
+                {platformLinks.map((item: { label: string; to: string }) => (
+                  <li key={item.label}>
+                    <FooterLink to={item.to} className="text-sm text-rx-gray-medium hover:text-rx-yellow transition-colors">
+                      {item.label}
+                    </FooterLink>
+                  </li>
+                ))}
+              </ul>
+            </Editable>
           </div>
 
           {/* Developers — not launched yet */}
@@ -89,25 +113,30 @@ export default function Footer() {
           {/* Company */}
           <div>
             <h3 className="text-sm font-semibold text-white mb-4 uppercase tracking-wider">Company</h3>
-            <ul className="space-y-3">
-              {['About Calcitonin', 'Careers', 'Press Kit', 'Privacy Policy', 'Terms of Service'].map((item) => (
-                <li key={item}>
-                  <a href="#" className="text-sm text-rx-gray-medium hover:text-rx-yellow transition-colors">
-                    {item}
-                  </a>
-                </li>
-              ))}
-            </ul>
+            <Editable id="footer.companyLinks" type="linkList" label="Company links" group>
+              <ul className="space-y-3">
+                {companyLinks.map((item: { label: string; to: string }) => (
+                  <li key={item.label}>
+                    <FooterLink to={item.to} className="text-sm text-rx-gray-medium hover:text-rx-yellow transition-colors">
+                      {item.label}
+                    </FooterLink>
+                  </li>
+                ))}
+              </ul>
+            </Editable>
           </div>
         </div>
 
         {/* Bottom */}
         <div className="mt-12 pt-8 border-t border-white/5 flex flex-col sm:flex-row items-center justify-between gap-4">
           <p className="text-xs text-rx-gray-medium">
-            © {new Date().getFullYear()} Calcitonin Technologies. All rights reserved.
+            <Editable id="footer.copyright" label="Copyright line">
+              {get('footer.copyright', '© {year} Calcitonin Technologies. All rights reserved.').replace('{year}', String(new Date().getFullYear()))}
+            </Editable>
           </p>
           <p className="text-xs text-rx-gray-medium flex items-center gap-1">
-            Made with <Heart className="w-3 h-3 text-rx-yellow fill-rx-yellow" /> for Healthcare Innovation
+            Made with <Heart className="w-3 h-3 text-rx-yellow fill-rx-yellow" />{' '}
+            <Editable id="footer.madeWith" label="Made-with line">{get('footer.madeWith', 'for Healthcare Innovation')}</Editable>
           </p>
         </div>
       </div>

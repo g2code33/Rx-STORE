@@ -13,6 +13,7 @@ import { paymentsRoutes } from './routes/payments';
 import { adminRoutes } from './routes/admin';
 import { aiRoutes } from './routes/ai';
 import { getSetting, getAllSettings, putSettings, SETTING_DEFAULTS, PUBLIC_SETTING_KEYS } from './services/settings';
+import { getAllContent, putContent } from './services/content';
 import { updatesRoutes } from './routes/updates';
 
 const router = new Router();
@@ -193,6 +194,18 @@ export default {
       const out: Record<string, string> = {};
       for (const k of PUBLIC_SETTING_KEYS) out[k] = all[k] ?? (SETTING_DEFAULTS as any)[k] ?? '';
       return json({ success: true, data: out }, 200, origin);
+    }
+    // Site Content (Live Website Builder) — public read, admin write
+    if (path === '/content' && request.method === 'GET') {
+      return json({ success: true, data: await getAllContent(env) }, 200, origin);
+    }
+    if (path === '/admin/content' && (request.method === 'PUT' || request.method === 'POST')) {
+      let body: any = {};
+      try { body = await request.json(); } catch { /* empty */ }
+      const src = (body && typeof body.content === 'object' && body.content)
+        || (typeof body?.key === 'string' ? { [body.key]: body.value } : body) || {};
+      const result = await putContent(env, src);
+      return json({ success: true, data: { message: `Saved ${result.saved.length} item(s)`, ...result, content: await getAllContent(env) } }, 200, origin);
     }
     if (path === '/admin/settings' && request.method === 'GET') {
       const all = await getAllSettings(env);

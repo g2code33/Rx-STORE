@@ -5,6 +5,7 @@ import { Star, Download, ArrowRight } from 'lucide-react';
 import { App } from '../../types';
 import { formatDownloadCount, getRatingColor } from '../../utils/helpers';
 import { useApps } from '../../context/AppContext';
+import { useEditMode } from '../edit/EditMode';
 
 interface AppCardProps {
   app: App;
@@ -22,6 +23,7 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
   const [showDl, setShowDl] = useState(false);
   const isInstalled = installedApps.includes(app.id);
   const isLogoUrl = app.icon?.startsWith('http') || app.icon?.startsWith('/') || app.icon?.startsWith('data:');
+  const edit = useEditMode(); // Live Website Builder: pencil opens the full AppEditor
 
   if (variant === 'horizontal') {
     return (
@@ -97,6 +99,15 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
           <div className="absolute top-3 right-3">
             <span className="badge-beta">Beta</span>
           </div>
+        )}
+        {edit?.editMode && (
+          <button
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); edit.onEditApp?.(app); }}
+            title={`Edit ${app.name}`}
+            className="absolute bottom-3 right-3 z-20 px-2.5 py-1.5 rounded-lg bg-rx-yellow text-rx-dark text-[10px] font-bold shadow-lg hover:bg-rx-yellow-light transition-colors"
+          >
+            ✏️ Edit app
+          </button>
         )}
         {/* Glow effect */}
         <div className="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
