@@ -5,7 +5,7 @@ import { categories } from '../data/apps';
 import AppCard from '../components/apps/AppCard';
 
 export default function Browse() {
-  const { apps, searchQuery, setSearchQuery, selectedCategory, setSelectedCategory, selectedPlatform, setSelectedPlatform, getFilteredApps } = useApps();
+  const { apps, isLoading, searchQuery, setSearchQuery, selectedCategory, setSelectedCategory, selectedPlatform, setSelectedPlatform, getFilteredApps } = useApps();
   const [viewMode, setViewMode] = React.useState<'grid' | 'list'>('grid');
   const [sortBy, setSortBy] = React.useState<'popular' | 'rating' | 'newest' | 'name'>('popular');
 
@@ -155,6 +155,12 @@ export default function Browse() {
             ))}
           </div>
         )
+      ) : isLoading && apps.length === 0 ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} className="card p-5 h-44 animate-pulse bg-rx-dark-tertiary/40" />
+          ))}
+        </div>
       ) : (
         <div className="text-center py-20">
           <div className="text-5xl mb-4">🔍</div>

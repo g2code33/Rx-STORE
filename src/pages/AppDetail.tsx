@@ -9,7 +9,7 @@ import toast from 'react-hot-toast';
 
 export default function AppDetail() {
   const { slug } = useParams<{ slug: string }>();
-  const { getAppBySlug, installedApps, installApp, uninstallApp } = useApps();
+  const { getAppBySlug, installedApps, installApp, uninstallApp, isLoading } = useApps();
   const { user } = useAuth();
   const app = getAppBySlug(slug || '');
   const [activeTab, setActiveTab] = useState<'overview' | 'reviews' | 'versions' | 'docs'>('overview');
@@ -19,22 +19,12 @@ export default function AppDetail() {
   const [submitting, setSubmitting] = useState(false);
   const [showDownload, setShowDownload] = useState(false);
 
-  if (!app) {
-    return (
-      <div className="section-container py-20 text-center">
-        <div className="text-6xl mb-4">🔍</div>
-        <h2 className="text-2xl font-bold text-white mb-2">Application Not Found</h2>
-        <p className="text-rx-gray-medium mb-6">The application you're looking for doesn't exist.</p>
-        <Link to="/browse" className="btn-primary">Browse Applications</Link>
-      </div>
-    );
-  }
-
-  const isInstalled = installedApps.includes(app.id);
+  // Hooks first: `app` arrives a render later (context loads async), so no early return before this point.
+  const isInstalled = app ? installedApps.includes(app.id) : false;
   const [liveReviews, setLiveReviews] = React.useState<any[] | null>(null);
   React.useEffect(() => {
     const API = (import.meta as any).env?.VITE_API_URL;
-    if (!API || !app.slug) return;
+    if (!API || !app?.slug) return;
     fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/reviews`)
       .then(r=>r.json()).then(j=>{
         const arr = j?.data || j?.results || j;
@@ -53,9 +43,29 @@ export default function AppDetail() {
           setLiveReviews(mapped);
         }
       }).catch(()=>{});
-  }, [app.slug]);
+  }, [app?.slug]);
   // Live reviews only — null (still loading) or empty both render "No reviews yet", never fabricated ones.
   const appReviews = liveReviews || [];
+
+  if (isLoading && !app) {
+    return (
+      <div className="section-container py-20 text-center">
+        <div className="w-10 h-10 border-2 border-rx-yellow border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+        <p className="text-rx-gray-medium">Loading application…</p>
+      </div>
+    );
+  }
+
+  if (!app) {
+    return (
+      <div className="section-container py-20 text-center">
+        <div className="text-6xl mb-4">🔍</div>
+        <h2 className="text-2xl font-bold text-white mb-2">Application Not Found</h2>
+        <p className="text-rx-gray-medium mb-6">The application you're looking for doesn't exist.</p>
+        <Link to="/browse" className="btn-primary">Browse Applications</Link>
+      </div>
+    );
+  }
 
   const handleInstall = async () => {
     if (!user) { toast.error('Please sign in to install applications'); return; }

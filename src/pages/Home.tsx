@@ -47,7 +47,7 @@ function StatsBar({ apps }: { apps: any[] }) {
 }
 
 export default function Home() {
-  const { apps } = useApps();
+  const { apps, isLoading } = useApps();
   // Real trending: admin-flagged apps first, then by actual download count.
   const trending = [...apps]
     .sort((a, b) =>
@@ -126,9 +126,13 @@ export default function Home() {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-          {apps.slice(0, 8).map((app) => (
-            <AppCard key={app.id} app={app} />
-          ))}
+          {isLoading && apps.length === 0
+            ? Array.from({ length: 8 }).map((_, i) => (
+                <div key={i} className="card p-5 h-44 animate-pulse bg-rx-dark-tertiary/40" />
+              ))
+            : apps.slice(0, 8).map((app) => (
+                <AppCard key={app.id} app={app} />
+              ))}
         </div>
       </section>
 
