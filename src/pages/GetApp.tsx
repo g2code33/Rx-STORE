@@ -1,9 +1,10 @@
-import { useMemo, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Link } from 'react-router-dom';
-import { Download, MonitorSmartphone, Share, PlusSquare, Smartphone, CheckCircle2, Globe, ArrowRight } from 'lucide-react';
+import { Download, MonitorSmartphone, Share, PlusSquare, Smartphone, CheckCircle2, Globe, ArrowRight, Store, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { detectDevice, downloadsFor, deviceLabel, DOWNLOAD_OPTIONS, type DownloadOption } from '../platform/downloads';
+import { detectDevice, downloadsFor, deviceLabel, DOWNLOAD_OPTIONS, SELF_APP_SLUG, type DownloadOption } from '../platform/downloads';
 import { capturePwaInstallPrompt, subscribePwaInstall, pwaInstallAvailable, promptPwaInstall } from '../platform/pwaInstall';
+import { startStoreDownload, fetchSelfListing, type SelfListing } from '../platform/storeDownload';
 import { useContent } from '../context/ContentContext';
 import Editable from '../components/edit/Editable';
 
@@ -14,14 +15,16 @@ function useDevice() {
   );
 }
 
-function DownloadBtn({ opt, big = false }: { opt: DownloadOption; big?: boolean }) {
+function DownloadBtn({ opt, big = false, busy, onGo }: { opt: DownloadOption; big?: boolean; busy: boolean; onGo: (opt: DownloadOption) => void }) {
   return (
-    <a
-      href={opt.url}
-      className={`btn-primary flex items-center justify-center gap-2 ${big ? 'text-base px-8 py-3.5' : 'text-sm !px-5 !py-2.5'}`}
+    <button
+      onClick={() => onGo(opt)}
+      disabled={busy}
+      className={`btn-primary flex items-center justify-center gap-2 disabled:opacity-60 ${big ? 'text-base px-8 py-3.5 w-full sm:w-auto' : 'text-sm !px-5 !py-2.5'}`}
     >
-      <Download className={big ? 'w-5 h-5' : 'w-4 h-4'} /> {opt.platform} {opt.ext} · {opt.size}
-    </a>
+      {busy ? <Loader2 className={`${big ? 'w-5 h-5' : 'w-4 h-4'} animate-spin`} /> : <Download className={big ? 'w-5 h-5' : 'w-4 h-4'} />}
+      {opt.platform} {opt.ext} · {opt.size}
+    </button>
   );
 }
 
@@ -38,7 +41,7 @@ function IosPwaGuide() {
       <ol className="mt-4 space-y-3 text-sm">
         <li className="flex items-start gap-3">
           <span className="w-6 h-6 rounded-full bg-rx-yellow text-rx-dark font-bold flex items-center justify-center flex-shrink-0 text-xs">1</span>
-          <span className="text-white/90">Open <span className="text-rx-yellow font-semibold">rx-store-web.pages.dev</span> in <span className="font-semibold">Safari</span> (must be Safari, not Chrome).</span>
+          <span className="text-white/90">Open this site in <span className="font-semibold">Safari</span> (must be Safari, not Chrome).</span>
         </li>
         <li className="flex items-start gap-3">
           <span className="w-6 h-6 rounded-full bg-rx-yellow text-rx-dark font-bold flex items-center justify-center flex-shrink-0 text-xs">2</span>
@@ -62,12 +65,29 @@ export default function GetApp() {
   const primary = downloadsFor(device);
   const { get } = useContent();
   const pwaAvailable = useSyncExternalStore(subscribePwaInstall, pwaInstallAvailable);
+  const [busyId, setBusyId] = useState<string>('');
+  const [listing, setListing] = useState<SelfListing | null>(null);
+
+  useEffect(() => {
+    let stop = false;
+    fetchSelfListing().then((l) => { if (!stop) setListing(l); });
+    return () => { stop = true; };
+  }, []);
+
+  const go = async (opt: DownloadOption) => {
+    if (busyId) return;
+    setBusyId(opt.id);
+    await startStoreDownload(opt);
+    setBusyId('');
+  };
 
   const installPwa = async () => {
     capturePwaInstallPrompt();
     const ok = await promptPwaInstall();
     toast[ok ? 'success' : 'error'](ok ? 'Installed ✓ — find RX Store in your apps' : 'Install was cancelled');
   };
+
+  const platformCards: DownloadOption[] = [DOWNLOAD_OPTIONS.windows, DOWNLOAD_OPTIONS.linux_deb, DOWNLOAD_OPTIONS.android];
 
   return (
     <div className="section-container py-10 lg:py-16">
@@ -79,6 +99,11 @@ export default function GetApp() {
         </h1>
         <p className="text-rx-gray-medium mt-3">
           <Editable id="getapp.sub" type="textarea" label="Get-App subtitle">{get('getapp.sub', 'The fastest way to browse, install and manage your applications — native on every platform, with auto-updates.')}</Editable>
+        </p>
+        <p className="mt-3 inline-flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-rx-gray-medium">
+          <Store className="w-3.5 h-3.5 text-rx-yellow" />
+          Served by the RX Store itself — same pipeline as every app here
+          {listing && <span className="text-green-400 font-semibold">· v{listing.version} live ✓</span>}
         </p>
       </div>
 
@@ -103,11 +128,16 @@ export default function GetApp() {
             )}
           </div>
           <div className="flex flex-col gap-2 w-full sm:w-auto">
-            {primary.map((opt) => <DownloadBtn key={opt.id} opt={opt} big />)}
+            {primary.map((opt) => <DownloadBtn key={opt.id} opt={opt} big busy={busyId === opt.id} onGo={go} />)}
             {device === 'mac' && pwaAvailable && (
               <button onClick={installPwa} className="btn-primary text-base px-8 py-3.5 flex items-center gap-2 justify-center">
                 <Download className="w-5 h-5" /> Install web app
               </button>
+            )}
+            {primary.length > 0 && (
+              <Link to={`/app/${SELF_APP_SLUG}`} className="text-xs text-center text-rx-gray-medium hover:text-rx-yellow transition-colors underline-offset-2 hover:underline">
+                Open the store listing instead
+              </Link>
             )}
           </div>
         </div>
@@ -116,29 +146,32 @@ export default function GetApp() {
       {/* Every platform */}
       <h2 className="text-2xl font-bold text-white mb-6">All platforms</h2>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-10">
-        {(['windows', 'deb', 'android'] as const).map((id) => {
-          const opt = DOWNLOAD_OPTIONS[id];
-          const isPrimary = primary.some((p) => p.id === id);
+        {platformCards.map((opt) => {
+          const isPrimary = primary.some((p) => p.id === opt.id);
           return (
-            <div key={id} className={`card p-6 ${isPrimary ? 'border-rx-yellow/40' : ''}`}>
+            <div key={opt.id} className={`card p-6 ${isPrimary ? 'border-rx-yellow/40' : ''}`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <span className="text-3xl">{opt.icon}</span>
                   <div>
                     <h3 className="font-bold text-white">{opt.platform}</h3>
-                    <p className="text-xs text-rx-gray-medium">{opt.file} · {opt.size}</p>
+                    <p className="text-xs text-rx-gray-medium">{opt.ext} · {opt.size}{listing ? ` · v${listing.version}` : ''}</p>
                   </div>
                 </div>
                 {isPrimary && <span className="text-[10px] font-bold uppercase tracking-wider bg-rx-yellow/15 text-rx-yellow px-2 py-1 rounded-full flex-shrink-0">Your device</span>}
               </div>
               <p className="text-xs text-rx-gray-medium mt-3 leading-relaxed">{opt.note}</p>
               <div className="mt-4">
-                <DownloadBtn opt={opt} />
+                <DownloadBtn opt={opt} busy={busyId === opt.id} onGo={go} />
               </div>
-              {id === 'deb' && (
-                <a href={DOWNLOAD_OPTIONS.appimage.url} className="mt-2 inline-flex items-center gap-1.5 text-xs text-rx-yellow hover:underline">
-                  {DOWNLOAD_OPTIONS.appimage.icon} Prefer no installer? Get the AppImage instead <ArrowRight className="w-3 h-3" />
-                </a>
+              {opt.id === 'linux_deb' && (
+                <button
+                  onClick={() => go(DOWNLOAD_OPTIONS.linux_appimage)}
+                  disabled={busyId === DOWNLOAD_OPTIONS.linux_appimage.id}
+                  className="mt-2 inline-flex items-center gap-1.5 text-xs text-rx-yellow hover:underline disabled:opacity-60"
+                >
+                  {DOWNLOAD_OPTIONS.linux_appimage.icon} Prefer no installer? Get the AppImage instead <ArrowRight className="w-3 h-3" />
+                </button>
               )}
             </div>
           );
@@ -186,9 +219,10 @@ export default function GetApp() {
       )}
 
       <p className="text-center text-xs text-rx-gray-medium mt-12">
-        All downloads come from the official{' '}
-        <a href="https://github.com/g2code33/Rx-STORE/releases/latest" target="_blank" rel="noreferrer" className="text-rx-yellow hover:underline">GitHub Releases</a>
-        {' '}page · v1.0.0 · every build auto-updates itself. <Link to="/browse" className="text-rx-yellow hover:underline">Back to browsing</Link>
+        Every installer is hosted on the RX Store's own storage and served through{' '}
+        <Link to={`/app/${SELF_APP_SLUG}`} className="text-rx-yellow hover:underline">the RX Store listing</Link>
+        {' '}— exactly like any app you'd download here. Each build auto-updates itself after install.{' '}
+        <Link to="/browse" className="text-rx-yellow hover:underline">Back to browsing</Link>
       </p>
     </div>
   );

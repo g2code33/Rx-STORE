@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Download, X } from 'lucide-react';
+import { Download, X, Loader2 } from 'lucide-react';
 import { detectDevice, downloadsFor, bannerPitch } from '../../platform/downloads';
+import { startStoreDownload } from '../../platform/storeDownload';
 
 const DISMISSED_KEY = 'rx-getapp-banner-dismissed';
 
@@ -21,6 +22,14 @@ export default function GetAppBanner() {
     []
   );
   const primary = downloadsFor(device);
+  const [downloading, setDownloading] = useState(false);
+
+  const startPrimary = async () => {
+    if (downloading || primary.length === 0) return;
+    setDownloading(true);
+    await startStoreDownload(primary[0]);
+    setDownloading(false);
+  };
 
   if (dismissed) return null;
   if (location.pathname === '/get-app') return null; // already on the download page
@@ -44,13 +53,14 @@ export default function GetAppBanner() {
         </p>
 
         {primary.length > 0 ? (
-          <a
-            href={primary[0].url}
-            className="flex-shrink-0 inline-flex items-center gap-1.5 bg-rx-yellow text-rx-dark text-xs font-bold px-3.5 py-1.5 rounded-lg hover:bg-rx-yellow-light transition-colors"
+          <button
+            onClick={startPrimary}
+            disabled={downloading}
+            className="flex-shrink-0 inline-flex items-center gap-1.5 bg-rx-yellow text-rx-dark text-xs font-bold px-3.5 py-1.5 rounded-lg hover:bg-rx-yellow-light transition-colors disabled:opacity-60"
           >
-            <Download className="w-3.5 h-3.5" />
+            {downloading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
             <span className="whitespace-nowrap">{primary[0].ext} · {primary[0].size}</span>
-          </a>
+          </button>
         ) : (
           <Link
             to={device === 'ios' ? '/get-app#ios' : '/get-app'}

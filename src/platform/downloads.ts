@@ -2,72 +2,79 @@
  * Device-aware "Get the RX Store app" — detection + download registry.
  * Pure module, harness-testable.
  *
- * Downloads point at GitHub Releases' /releases/latest/download/<asset> —
- * they always serve the CURRENT release. Asset file names carry the version,
- * so bump APP_DOWNLOAD_VERSION + the map below together with a new release.
+ * Downloads are served by THE STORE ITSELF — the same pipeline every other app
+ * uses: GET /apps/rx-store/download?platform=… returns an R2 URL on our own
+ * worker (uploaded by the admin through the Releases flow). No GitHub links.
  */
 
 export type DeviceKind = 'windows' | 'android' | 'ios' | 'linux' | 'mac' | 'unknown';
 
+export const SELF_APP_SLUG = 'rx-store';
+
+/** Platform ids understood by the store's download endpoint. */
+export type StorePlatform = 'windows' | 'linux_deb' | 'linux_appimage' | 'android';
+
 export interface DownloadOption {
-  id: 'windows' | 'deb' | 'appimage' | 'android';
+  id: StorePlatform;
   /** Human platform name ("Windows", "Ubuntu / Debian") */
   platform: string;
-  file: string;
+  /** Store ?platform= id */
+  platformId: StorePlatform;
   ext: string;
   size: string;
-  url: string;
   icon: string;
   /** Short install hint shown under the button */
   note: string;
 }
 
-export const APP_DOWNLOAD_VERSION = '1.0.0';
-
-const REL = `https://github.com/g2code33/Rx-STORE/releases/latest/download`;
-
-export const DOWNLOAD_OPTIONS: Record<DownloadOption['id'], DownloadOption> = {
+export const DOWNLOAD_OPTIONS: Record<StorePlatform, DownloadOption> = {
   windows: {
     id: 'windows',
     platform: 'Windows',
-    file: `RXStore-Setup-${APP_DOWNLOAD_VERSION}.exe`,
+    platformId: 'windows',
     ext: '.exe',
-    size: '105 MB',
-    url: `${REL}/RXStore-Setup-${APP_DOWNLOAD_VERSION}.exe`,
+    size: '~105 MB',
     icon: '🪟',
     note: 'Windows 10/11 · per-user install, auto-updates. SmartScreen: click "More info → Run anyway" (new app, building reputation).',
   },
-  deb: {
-    id: 'deb',
+  linux_deb: {
+    id: 'linux_deb',
     platform: 'Ubuntu / Debian',
-    file: `RX-Store-${APP_DOWNLOAD_VERSION}.deb`,
+    platformId: 'linux_deb',
     ext: '.deb',
-    size: '104 MB',
-    url: `${REL}/RX-Store-${APP_DOWNLOAD_VERSION}.deb`,
+    size: '~104 MB',
     icon: '🐧',
-    note: 'Install: sudo dpkg -i ' + `RX-Store-${APP_DOWNLOAD_VERSION}.deb` + ' (then the RX Store launcher appears in your apps).',
+    note: 'Install: sudo dpkg -i <file>.deb — then the RX Store launcher appears in your apps.',
   },
-  appimage: {
-    id: 'appimage',
+  linux_appimage: {
+    id: 'linux_appimage',
     platform: 'Other Linux',
-    file: `RX-Store-${APP_DOWNLOAD_VERSION}.AppImage`,
+    platformId: 'linux_appimage',
     ext: '.AppImage',
-    size: '135 MB',
-    url: `${REL}/RX-Store-${APP_DOWNLOAD_VERSION}.AppImage`,
+    size: '~135 MB',
     icon: '📦',
     note: 'chmod +x the file and run it — no install, no root. Auto-updates itself like the rest.',
   },
   android: {
     id: 'android',
     platform: 'Android',
-    file: `rx-store-${APP_DOWNLOAD_VERSION}.apk`,
+    platformId: 'android',
     ext: '.apk',
-    size: '5.7 MB',
-    url: `${REL}/rx-store-${APP_DOWNLOAD_VERSION}.apk`,
+    size: '~6 MB',
     icon: '🤖',
     note: 'Android 8+ · tap the file and allow "Install unknown apps" for your browser when asked — one-time step.',
   },
 };
+
+/** The store's own download path for a platform (prefix with the API origin). */
+export function storeDownloadPath(platformId: StorePlatform, slug: string = SELF_APP_SLUG): string {
+  return `/apps/${slug}/download?platform=${platformId}`;
+}
+
+/** Public listing path — used to check the admin has published it + show version. */
+export function selfListingPath(slug: string = SELF_APP_SLUG): string {
+  return `/apps/${slug}`;
+}
 
 /**
  * Detect the visitor's device from the user agent (+ touch points for iPadOS,
@@ -91,11 +98,11 @@ export function detectDevice(userAgent: string, opts?: { maxTouchPoints?: number
 export function downloadsFor(device: DeviceKind): DownloadOption[] {
   switch (device) {
     case 'windows': return [DOWNLOAD_OPTIONS.windows];
-    case 'linux': return [DOWNLOAD_OPTIONS.deb, DOWNLOAD_OPTIONS.appimage];
+    case 'linux': return [DOWNLOAD_OPTIONS.linux_deb, DOWNLOAD_OPTIONS.linux_appimage];
     case 'android': return [DOWNLOAD_OPTIONS.android];
     case 'ios':
     case 'mac': return []; // PWA path — no native build yet
-    default: return [DOWNLOAD_OPTIONS.windows, DOWNLOAD_OPTIONS.deb, DOWNLOAD_OPTIONS.appimage, DOWNLOAD_OPTIONS.android];
+    default: return [DOWNLOAD_OPTIONS.windows, DOWNLOAD_OPTIONS.linux_deb, DOWNLOAD_OPTIONS.linux_appimage, DOWNLOAD_OPTIONS.android];
   }
 }
 
