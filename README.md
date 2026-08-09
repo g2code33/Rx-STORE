@@ -1,7 +1,7 @@
 # RX Store
 
 <p align="center">
-  <img src="public/favicon.svg" alt="RX Store Logo" width="80" />
+  <img src="public/v1.png" alt="RX Store Logo" width="80" />
 </p>
 
 <p align="center">
