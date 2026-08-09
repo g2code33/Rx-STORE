@@ -4,6 +4,7 @@ import { Download, CreditCard, Bell, Settings, LogOut, X, Trash2, RefreshCw } fr
 import { useAuth } from '../context/AuthContext';
 import { useApps } from '../context/AppContext';
 import { formatDate } from '../utils/helpers';
+import AppLogo from '../components/apps/AppLogo';
 
 export default function Profile() {
   const { user, logout, notifications, markNotificationRead } = useAuth();
@@ -63,7 +64,7 @@ export default function Profile() {
                 if (!app) return null;
                 return (
                   <div key={appId} className="card p-5 flex items-center gap-4 group">
-                    <div className={`w-14 h-14 rounded-2xl bg-gradient-to-br ${app.gradient} flex items-center justify-center text-2xl flex-shrink-0`}>{app.icon}</div>
+                    <AppLogo app={app} size="w-14 h-14" />
                     <div className="flex-1 min-w-0">
                       <Link to={`/app/${app.slug}`} className="font-semibold text-white hover:text-rx-yellow transition-colors truncate block">{app.name}</Link>
                       <p className="text-xs text-rx-gray-medium">v{app.version} · {app.size}</p>
@@ -104,7 +105,7 @@ export default function Profile() {
                   if (!app) return null;
                   return (
                     <div key={appId} className="card p-5 flex items-center gap-4">
-                      <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${app.gradient} flex items-center justify-center text-xl`}>{app.icon}</div>
+                      <AppLogo app={app} size="w-12 h-12" text="text-xl" rounded="rounded-xl" />
                       <div className="flex-1">
                         <p className="font-semibold text-white">{app.name}</p>
                         <p className="text-xs text-rx-gray-medium">Deleted</p>
@@ -137,7 +138,7 @@ export default function Profile() {
                 return (
                   <div key={sub.id} className="card p-5">
                     <div className="flex items-center gap-4">
-                      {app && <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${app.gradient} flex items-center justify-center text-xl`}>{app.icon}</div>}
+                      {app && <AppLogo app={app} size="w-12 h-12" text="text-xl" rounded="rounded-xl" />}
                       <div className="flex-1">
                         <h4 className="font-semibold text-white">{app?.name || sub.appId}</h4>
                         <p className="text-sm text-rx-gray-medium">{sub.plan} Plan</p>

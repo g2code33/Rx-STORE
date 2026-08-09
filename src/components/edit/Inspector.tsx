@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { X, Save, Loader2, Check, Trash2, ArrowUp, ArrowDown, Plus, UploadCloud, RotateCcw, Paintbrush, Monitor, Tablet, Smartphone } from 'lucide-react';
+import { X, Save, Loader2, Check, Trash2, ArrowUp, ArrowDown, Plus, UploadCloud, RotateCcw, Paintbrush, Monitor, Tablet, Smartphone, History } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useContent } from '../../context/ContentContext';
 import { useEditMode } from './EditMode';
@@ -30,7 +30,7 @@ function Row({ children }: { children: React.ReactNode }) { return <div classNam
 
 export default function Inspector() {
   const edit = useEditMode();
-  const { getEffective, getEffectiveJSON, save, saving, savedAt, pending } = useContent();
+  const { getEffective, getEffectiveJSON, save, applyLocal, saving, savedAt, pending } = useContent();
   const [tab, setTab] = useState<Tab>('content');
   const [draft, setDraft] = useState<any>('');
   const [sty, setSty] = useState<StyleOverrides>({});
@@ -77,6 +77,16 @@ export default function Inspector() {
   // Style helpers — '' / undefined / false removes the key (back to default)
   const setStyField = (k: keyof StyleOverrides, v: any) =>
     setSty((s) => { const n: any = { ...s }; if (v === '' || v === undefined || v === false) delete n[k]; else n[k] = v; return n; });
+
+  // Load a raw stored string back into the active editor (used by History restore)
+  const loadValueIntoEditor = (raw: string) => {
+    if (tab === 'content') {
+      if (d?.type === 'text' || d?.type === 'textarea' || d?.type === 'color') setDraft(raw);
+      else { try { setDraft(JSON.parse(raw)); } catch { setDraft(d?.type === 'link' ? { label: '', to: '' } : d?.type === 'image' ? { url: '', alt: '', pos: 'center' } : []); } }
+    } else {
+      try { setSty(JSON.parse(raw) || {}); } catch { setSty({}); }
+    }
+  };
 
   const uploadImage = async (file: File) => {
     setUploading(true);
@@ -160,6 +170,11 @@ export default function Inspector() {
                 <span className="text-rx-gray-medium">Pre-filled with the live text. Saves publish immediately.</span>
               )}
             </p>
+
+            {/* Revision history — every save is versioned server-side (last 30) */}
+            {d.type !== 'design' && activeKey && (
+              <HistoryPanel keyName={activeKey} onReverted={loadValueIntoEditor} applyLocal={applyLocal} />
+            )}
 
             {/* ================= CONTENT TAB ================= */}
             {tab === 'content' && (
@@ -498,6 +513,78 @@ export default function Inspector() {
         )}
       </aside>
     </div>
+  );
+}
+
+/** Version history for the active element — auto-recorded on every save. */
+function HistoryPanel({ keyName, onReverted, applyLocal }: { keyName: string; onReverted: (value: string) => void; applyLocal: (id: string, value: string) => void }) {
+  const [revs, setRevs] = useState<any[] | null>(null);
+  const [busy, setBusy] = useState(0);
+
+  useEffect(() => { setRevs(null); }, [keyName]);
+
+  const load = () => {
+    if (!API_URL) { setRevs([]); return; }
+    fetch(`${API_URL}/admin/content/history?key=${encodeURIComponent(keyName)}`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem('rx-store-token') || ''}` },
+    })
+      .then((r) => r.json())
+      .then((j) => setRevs(Array.isArray(j?.data?.revisions) ? j.data.revisions : []))
+      .catch(() => setRevs([]));
+  };
+
+  const restore = async (r: any) => {
+    setBusy(r.id);
+    try {
+      const res = await fetch(`${API_URL}/admin/content/revert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('rx-store-token') || ''}` },
+        body: JSON.stringify({ key: keyName, id: r.id }),
+      });
+      const j = await res.json();
+      if (!res.ok || !j?.success) throw new Error(j?.error?.message || 'Restore failed');
+      applyLocal(keyName, r.value ?? '');
+      onReverted(r.value ?? '');
+      toast.success('Restored an earlier version ✓ (live now)');
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setBusy(0);
+    }
+  };
+
+  return (
+    <details className="mb-4 rounded-xl border border-white/10 bg-rx-dark/40 overflow-hidden" onToggle={(e: any) => { if (e.target.open) load(); }}>
+      <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-rx-gray-medium hover:text-white list-none flex items-center gap-2">
+        <History className="w-3.5 h-3.5 text-rx-yellow" /> Version history
+        <span className="text-[10px] text-rx-gray-medium/60 font-normal">— last 30 saves · undo to any</span>
+      </summary>
+      <div className="max-h-44 overflow-y-auto px-1.5 pb-1.5 border-t border-white/5">
+        {revs === null && (
+          <p className="px-2 py-3 text-xs text-rx-gray-medium flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> Loading versions…</p>
+        )}
+        {revs !== null && revs.length === 0 && (
+          <p className="px-2 py-3 text-xs text-rx-gray-medium">No versions yet — every Save & publish records one automatically.</p>
+        )}
+        {revs?.map((r, i) => (
+          <div key={r.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/5">
+            <div className="flex-1 min-w-0">
+              <p className="text-[11px] text-white truncate">{r.value ? String(r.value) : <i className="text-rx-gray-medium">(empty / reset)</i>}</p>
+              <p className="text-[10px] text-rx-gray-medium">{r.created_at}{i === 0 ? ' · current' : ''}</p>
+            </div>
+            {i !== 0 && (
+              <button
+                disabled={busy === r.id}
+                onClick={() => restore(r)}
+                className="px-2 py-1 rounded-lg bg-rx-yellow/15 text-rx-yellow text-[10px] font-bold hover:bg-rx-yellow/25 disabled:opacity-50 flex-shrink-0"
+              >
+                {busy === r.id ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Restore'}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 

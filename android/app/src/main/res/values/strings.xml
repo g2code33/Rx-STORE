@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">RX Store</string>
+    <string name="title_activity_main">RX Store</string>
+    <string name="package_name">com.calcitonin.rxstore</string>
+    <string name="custom_url_scheme">com.calcitonin.rxstore</string>
+</resources>

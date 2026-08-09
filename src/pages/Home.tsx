@@ -130,6 +130,8 @@ export default function Home() {
       </section>
 
       {/* Ecosystem Apps — visible immediately, with platform quick-filters */}
+      {/* Alias anchor: builder-saved buttons pointing at /#docs land here */}
+      <span id="docs" aria-hidden className="block scroll-mt-20" />
       <section id="apps-section" className="section-container py-14 scroll-mt-16">
         <div className="text-center mb-8">
           <h2 className="text-3xl sm:text-4xl font-bold text-white">

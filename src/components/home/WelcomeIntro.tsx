@@ -6,21 +6,27 @@ import { useApps } from '../../context/AppContext';
 import { useEditMode } from '../edit/EditMode';
 import StatsBar, { DEFAULT_STATS } from './StatsBar';
 
-const INTRO_MS = 5000;
+const INTRO_MS = 3000;
 const FADE_MS = 700;
+
+// Once per FULL page load (module state resets on refresh) — so the intro
+// plays on every fresh open/refresh, but not on in-app navigation back Home.
+let introShownThisLoad = false;
 
 /**
  * Fresh-open welcome hero: the exact hero (same content ids, so builder edits
- * apply) fills the screen for 5 seconds once per browsing session, then fades
- * out — revealing the Applications grid scrolled into view. A Skip control and
- * a thin progress bar keep it honest, and it never appears inside the builder.
+ * apply) fills the screen for 3 seconds on every refresh, then fades out —
+ * revealing the Applications grid scrolled into view. A Skip control and a
+ * thin progress bar keep it honest, and it never appears inside the builder.
+ * (Ad space candidate later.)
  */
 export default function WelcomeIntro() {
   const edit = useEditMode();
   const builderActive = !!edit;
   const [enabled] = useState(() => {
     if (typeof window === 'undefined' || window.location.pathname !== '/') return false;
-    if (sessionStorage.getItem('rx-intro-seen')) return false;
+    if (introShownThisLoad) return false;
+    introShownThisLoad = true;
     return true;
   });
   const [phase, setPhase] = useState<'show' | 'fade'>('show');
@@ -34,7 +40,6 @@ export default function WelcomeIntro() {
 
   useEffect(() => {
     if (!enabled || builderActive || gone) return;
-    sessionStorage.setItem('rx-intro-seen', '1');
     document.body.style.overflow = 'hidden';
     const fade = setTimeout(() => {
       setPhase('fade');

@@ -13,7 +13,7 @@ import { paymentsRoutes } from './routes/payments';
 import { adminRoutes } from './routes/admin';
 import { aiRoutes } from './routes/ai';
 import { getSetting, getAllSettings, putSettings, SETTING_DEFAULTS, PUBLIC_SETTING_KEYS } from './services/settings';
-import { getAllContent, putContent } from './services/content';
+import { getAllContent, putContent, getContentHistory, revertContent } from './services/content';
 import { updatesRoutes } from './routes/updates';
 
 const router = new Router();
@@ -206,6 +206,19 @@ export default {
         || (typeof body?.key === 'string' ? { [body.key]: body.value } : body) || {};
       const result = await putContent(env, src);
       return json({ success: true, data: { message: `Saved ${result.saved.length} item(s)`, ...result, content: await getAllContent(env) } }, 200, origin);
+    }
+    // Revision history for one key (Live Website Builder → History)
+    if (path === '/admin/content/history' && request.method === 'GET') {
+      const key = url.searchParams.get('key') || '';
+      if (!key) return json({ success: false, error: { code: 'BAD_REQUEST', message: 'key required' } }, 400, origin);
+      return json({ success: true, data: { revisions: await getContentHistory(env, key) } }, 200, origin);
+    }
+    if (path === '/admin/content/revert' && request.method === 'POST') {
+      let body: any = {};
+      try { body = await request.json(); } catch { /* empty */ }
+      const r = await revertContent(env, String(body?.key || ''), Number(body?.id) || 0);
+      if (!r.ok) return json({ success: false, error: { code: 'NOT_FOUND', message: 'Revision not found' } }, 404, origin);
+      return json({ success: true, data: { message: 'Reverted', key: body?.key, value: r.value, content: await getAllContent(env) } }, 200, origin);
     }
     if (path === '/admin/settings' && request.method === 'GET') {
       const all = await getAllSettings(env);

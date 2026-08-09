@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Trash2, RefreshCw, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { API_URL } from '../../services/api';
+import AppLogo from '../apps/AppLogo';
 
 export default function RecycleBin() {
   const [apps, setApps] = useState<any[]>([]);
@@ -53,7 +54,7 @@ export default function RecycleBin() {
         <div className="space-y-3">
           {apps.map((a:any)=>(
             <div key={a.slug} className="card p-4 flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-rx-dark-tertiary flex items-center justify-center text-xl">{a.icon}</div>
+              <AppLogo app={a} size="w-12 h-12" text="text-xl" rounded="rounded-xl" />
               <div className="flex-1">
                 <p className="font-semibold text-white">{a.name} <span className="text-xs text-rx-gray-medium">({a.slug})</span></p>
                 <p className="text-xs text-rx-gray-medium">Deleted: {a.deleted_at || a.updated_at}</p>

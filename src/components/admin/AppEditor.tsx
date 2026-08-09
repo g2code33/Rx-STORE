@@ -3,6 +3,7 @@ import { X, Save, Trash2, Plus, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { API_URL } from '../../services/api';
 import { App } from '../../types';
+import AppLogo from '../apps/AppLogo';
 
 export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App> & { slug: string }; onClose: () => void; onSaved: () => void }) {
   const [form, setForm] = useState<any>({
@@ -135,7 +136,7 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
                   }}/>
                 </label>
               </div>
-              {form.icon?.startsWith('http') && <img src={form.icon} alt="logo" className="mt-2 w-16 h-16 rounded-xl object-cover border border-white/10"/>}
+              {!!form.icon && <div className="mt-2 border border-white/10 rounded-xl inline-block overflow-hidden"><AppLogo app={{ icon: form.icon, name: form.name, gradient: form.gradient }} size="w-16 h-16" text="text-2xl" rounded="rounded-xl" /></div>}
             </div>
             <div><label className="text-xs text-rx-gray-medium">Rating</label><input type="number" step="0.1" value={form.rating} onChange={e=>setForm({...form, rating:e.target.value})} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
           </div>

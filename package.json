@@ -4,33 +4,111 @@
   "version": "1.0.0",
   "description": "RX Store - Professional Digital Marketplace by Calcitonin Technologies",
   "type": "module",
+  "main": "dist-electron/main.cjs",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5173",
+    "dev:desktop": "npm run build:electron && concurrently -k \"vite\" \"wait-on tcp:127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
     "build": "tsc && vite build",
+    "build:web": "vite build",
+    "build:electron": "node scripts/build-electron.mjs",
+    "typecheck": "tsc --noEmit",
     "preview": "vite preview --host 0.0.0.0 --port 5173",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "dist": "npm run build:web && npm run build:electron && electron-builder",
+    "dist:win": "npm run build:web && npm run build:electron && electron-builder --win",
+    "dist:linux": "npm run build:web && npm run build:electron && electron-builder --linux",
+    "mobile:build": "npm run build:web && cap sync android",
+    "mobile:open": "cap open android",
+    "mobile:android": "npm run build:web && cap sync android && cap open android",
+    "release:patch": "npm version patch --no-git-tag-version && git add -A && git commit -m \"release: v$(node -p \"require(\\\"./package.json\\\").version\")\" && git push origin main",
+    "release:minor": "npm version minor --no-git-tag-version && git add -A && git commit -m \"release: v$(node -p \"require(\\\"./package.json\\\").version\")\" && git push origin main",
+    "release:major": "npm version major --no-git-tag-version && git add -A && git commit -m \"release: v$(node -p \"require(\\\"./package.json\\\").version\")\" && git push origin main"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "electron-updater": "^6.8.9",
+    "framer-motion": "^10.18.0",
+    "lucide-react": "^0.303.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.21.0",
-    "lucide-react": "^0.303.0",
-    "framer-motion": "^10.18.0",
-    "react-hot-toast": "^2.4.1"
+    "react-hot-toast": "^2.4.1",
+    "react-router-dom": "^6.21.0"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",
     "@typescript-eslint/eslint-plugin": "^6.14.0",
     "@typescript-eslint/parser": "^6.14.0",
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.16",
+    "concurrently": "^10.0.4",
+    "cross-env": "^10.1.0",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
     "eslint": "^8.55.0",
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.5",
+    "jimp": "^0.22.12",
     "postcss": "^8.4.32",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.2.2",
-    "vite": "^5.0.8"
+    "vite": "^5.0.8",
+    "wait-on": "^9.1.0"
+  },
+  "build": {
+    "appId": "com.calcitonin.rxstore",
+    "productName": "RX Store",
+    "directories": {
+      "output": "release"
+    },
+    "npmRebuild": false,
+    "asar": true,
+    "asarUnpack": [
+      "dist/**/*",
+      "build/**/*"
+    ],
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "build/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "RXStore-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility",
+      "executableName": "rx-store",
+      "artifactName": "RX-Store-${version}.${ext}",
+      "desktop": {
+        "Name": "RX Store",
+        "Comment": "Professional Digital Marketplace by Calcitonin Technologies"
+      }
+    },
+    "deb": {
+      "afterInstall": "build/after-install.sh"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "g2code33",
+        "repo": "Rx-STORE",
+        "releaseType": "release"
+      }
+    ]
   }
 }

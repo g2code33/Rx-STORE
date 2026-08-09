@@ -10,7 +10,9 @@ export async function corsMiddleware(request: Request) {
     origin.includes('rx-store-web.pages.dev') ||
     origin.endsWith('.rx-store-web.pages.dev') ||
     origin.endsWith('.pages.dev') ||
-    origin.includes('localhost:') ||
+    origin.includes('localhost') ||          // local dev + Capacitor (https://localhost)
+    origin.startsWith('app://') ||           // RX Store desktop app (Electron scheme)
+    origin.startsWith('capacitor://') ||     // Capacitor on older Android WebViews
     origin.endsWith('rxstore.com');
 
   if (request.method === 'OPTIONS') {
@@ -33,7 +35,9 @@ export function corsHeaders(origin: string) {
     !origin ||
     origin.includes('rx-store-web.pages.dev') ||
     origin.endsWith('.pages.dev') ||
-    origin.includes('localhost:') ||
+    origin.includes('localhost') ||
+    origin.startsWith('app://') ||
+    origin.startsWith('capacitor://') ||
     origin.endsWith('rxstore.com');
   return {
     'Access-Control-Allow-Origin': isAllowed ? origin || '*' : '*',

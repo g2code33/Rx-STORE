@@ -29,6 +29,7 @@ function ago(t?: string) {
 }
 import AIProviderPanel from '../components/admin/AIProviderPanel';
 import AppEditor from '../components/admin/AppEditor';
+import AppLogo from '../components/apps/AppLogo';
 import AppReleaseManager from '../components/admin/AppReleaseManager';
 import ReleasesManager from '../components/admin/ReleasesManager';
 import UserRoleEditor from '../components/admin/UserRoleEditor';
@@ -388,7 +389,7 @@ export default function Admin() {
                       <tr key={app.id} className="border-b border-white/5 hover:bg-white/5 transition-colors">
                         <td className="px-5 py-4">
                           <div className="flex items-center gap-3">
-                            {app.icon?.startsWith('http') || app.icon?.startsWith('/') ? <img src={app.icon} alt={app.name} className="w-9 h-9 rounded-lg object-cover" /> : <div className={`w-9 h-9 rounded-lg bg-gradient-to-br ${app.gradient} flex items-center justify-center text-lg`}>{app.icon}</div>}
+                            <AppLogo app={app} size="w-9 h-9" text="text-lg" rounded="rounded-lg" />
                             <div><p className="font-medium text-white text-sm">{app.name}</p><p className="text-xs text-rx-gray-medium">v{app.version}</p></div>
                           </div>
                         </td>
@@ -462,7 +463,7 @@ export default function Admin() {
                   {[...apps].sort((a, b) => b.downloadCount - a.downloadCount).slice(0, 5).map((app, i) => (
                     <div key={app.id} className="flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition-colors">
                       <span className="text-lg font-bold text-rx-gray-medium w-6">{i + 1}</span>
-                      <div className={`w-9 h-9 rounded-lg bg-gradient-to-br ${app.gradient} flex items-center justify-center text-lg`}>{app.icon}</div>
+                      <AppLogo app={app} size="w-9 h-9" text="text-lg" rounded="rounded-lg" />
                       <div className="flex-1"><p className="text-sm font-medium text-white">{app.name}</p></div>
                       <span className="text-sm font-semibold text-rx-yellow">{formatDownloadCount(app.downloadCount)}</span>
                     </div>

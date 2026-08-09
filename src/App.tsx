@@ -72,10 +72,27 @@ function LoadingFallback() {
 }
 
 function ScrollToTop() {
-  const { pathname } = useLocation();
+  const { pathname, hash } = useLocation();
   React.useEffect(() => {
-    window.scrollTo(0, 0);
-  }, [pathname]);
+    if (!hash) {
+      window.scrollTo(0, 0);
+      return;
+    }
+    // Hash link (e.g. /#apps-section from an editable button): smooth-scroll to
+    // the target. The page chunk may still be lazy-loading, so retry briefly.
+    const id = hash.slice(1);
+    let tries = 0;
+    const timer = setInterval(() => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        clearInterval(timer);
+      } else if (++tries >= 25) {
+        clearInterval(timer);
+      }
+    }, 120);
+    return () => clearInterval(timer);
+  }, [pathname, hash]);
   return null;
 }
 

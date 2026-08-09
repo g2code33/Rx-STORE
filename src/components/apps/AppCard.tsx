@@ -6,23 +6,17 @@ import { App } from '../../types';
 import { formatDownloadCount, getRatingColor } from '../../utils/helpers';
 import { useApps } from '../../context/AppContext';
 import { useEditMode } from '../edit/EditMode';
+import AppLogo from './AppLogo';
 
 interface AppCardProps {
   app: App;
   variant?: 'default' | 'featured' | 'compact' | 'horizontal';
 }
 
-function AppIcon({ icon, gradient, size = 'w-16 h-16 text-2xl' }: { icon: string; gradient: string; size?: string }) {
-  const isUrl = icon?.startsWith('http') || icon?.startsWith('/') || icon?.startsWith('data:');
-  if (isUrl) return <img src={icon} alt="logo" className={`${size.split(' ')[0]} ${size.split(' ')[0].includes('w-') ? '' : 'w-16 h-16'} rounded-2xl object-cover shadow-lg`} style={{ width: '4rem', height: '4rem' }} />;
-  return <div className={`${size} rounded-2xl bg-gradient-to-br ${gradient} flex items-center justify-center flex-shrink-0 shadow-lg`}>{icon}</div>;
-}
-
 export default function AppCard({ app, variant = 'default' }: AppCardProps) {
   const { installedApps, installApp } = useApps();
   const [showDl, setShowDl] = useState(false);
   const isInstalled = installedApps.includes(app.id);
-  const isLogoUrl = app.icon?.startsWith('http') || app.icon?.startsWith('/') || app.icon?.startsWith('data:');
   const edit = useEditMode(); // Live Website Builder: pencil opens the full AppEditor
 
   if (variant === 'horizontal') {
@@ -31,7 +25,7 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
         to={`/app/${app.slug}`}
         className="card-hover p-4 flex items-center gap-4 group"
       >
-        {isLogoUrl ? <img src={app.icon} alt={app.name} className="w-16 h-16 rounded-2xl object-cover shadow-lg flex-shrink-0" /> : <div className={`w-16 h-16 rounded-2xl bg-gradient-to-br ${app.gradient} flex items-center justify-center text-2xl flex-shrink-0 shadow-lg`}>{app.icon}</div>}
+        <AppLogo app={app} size="w-16 h-16" />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="font-semibold text-white group-hover:text-rx-yellow transition-colors truncate">
@@ -62,7 +56,7 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
         to={`/app/${app.slug}`}
         className="card-hover p-4 flex flex-col items-center text-center group"
       >
-        {isLogoUrl ? <img src={app.icon} alt={app.name} className="w-14 h-14 rounded-2xl object-cover shadow-lg mb-3" /> : <div className={`w-14 h-14 rounded-2xl bg-gradient-to-br ${app.gradient} flex items-center justify-center text-xl shadow-lg mb-3`}>{app.icon}</div>}
+        <AppLogo app={app} size="w-14 h-14" text="text-xl" className="mb-3" />
         <h3 className="text-sm font-semibold text-white group-hover:text-rx-yellow transition-colors truncate w-full">
           {app.name}
         </h3>
@@ -79,9 +73,7 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
     >
       {/* Card Header / Icon Area — enlarged logo */}
       <div className={`relative h-44 bg-gradient-to-br ${app.gradient} p-6 flex items-center justify-center`}>
-        {isLogoUrl
-          ? <img src={app.icon} alt={app.name} className="w-28 h-28 rounded-3xl object-cover shadow-2xl transform group-hover:scale-110 transition-transform duration-500" />
-          : <div className="text-7xl transform group-hover:scale-110 transition-transform duration-500 drop-shadow-xl">{app.icon}</div>}
+        <AppLogo app={app} size="w-28 h-28" text="text-7xl" rounded="rounded-3xl" className="transform group-hover:scale-110 transition-transform duration-500 drop-shadow-xl" />
         {/* Badges (booleans coerced upstream — never renders stray 0s) */}
         <div className="absolute top-3 left-3 flex gap-2">
           {!!app.isFeatured && (

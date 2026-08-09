@@ -38,3 +38,19 @@ mobile/flutter/.flutter-plugins-dependencies
 
 # Misc
 *.tsbuildinfo
+
+# Electron / desktop build output
+release/
+dist-electron/
+
+# Signing secrets — never commit
+*.p12
+*.keystore
+*.jks
+android/app/release-keystore.p12
+
+# Android build artifacts
+android/app/build/
+android/.gradle/
+android/local.properties
+android/build/

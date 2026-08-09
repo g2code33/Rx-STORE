@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Star, Download, ArrowLeft, Share2, ExternalLink, Check, ChevronRight, Shield, Clock, Monitor, Calendar, Tag, ThumbsUp } from 'lucide-react';
 import DownloadModal from '../components/apps/DownloadModal';
+import AppLogo from '../components/apps/AppLogo';
 import { useApps } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
 import { formatDownloadCount, formatDate, getRatingColor } from '../utils/helpers';
@@ -19,11 +20,15 @@ export default function AppDetail() {
   const [submitting, setSubmitting] = useState(false);
   const [showDownload, setShowDownload] = useState(false);
   const [lightbox, setLightbox] = useState<number | null>(null);
+  // Screenshots whose objects are missing (404/403) get filtered out, never shown broken
+  const [badShots, setBadShots] = useState<Set<number>>(() => new Set());
+  const allShots: string[] = ((app?.screenshots as any[]) || []).filter((s: any) => typeof s === 'string' && !!s);
+  const goodShots = allShots.filter((_, i) => !badShots.has(i));
 
   // Screenshot lightbox keyboard nav (Esc close, arrows move)
   React.useEffect(() => {
     if (lightbox === null) return;
-    const n = (app?.screenshots?.length || 0);
+    const n = goodShots.length;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setLightbox(null);
       if (e.key === 'ArrowRight') setLightbox((i) => (i === null ? null : (i + 1) % Math.max(n, 1)));
@@ -31,7 +36,7 @@ export default function AppDetail() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [lightbox, app?.screenshots?.length]);
+  }, [lightbox, goodShots.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Hooks first: `app` arrives a render later (context loads async), so no early return before this point.
   const isInstalled = app ? installedApps.includes(app.id) : false;
@@ -161,7 +166,7 @@ export default function AppDetail() {
           </Link>
           <div className="flex flex-col lg:flex-row gap-8 items-start">
             <div className="w-32 h-32 lg:w-44 lg:h-44 rounded-3xl bg-white/20 backdrop-blur-xl flex items-center justify-center text-6xl lg:text-7xl shadow-2xl flex-shrink-0 overflow-hidden">
-              {app.icon?.startsWith('http') || app.icon?.startsWith('/') ? <img src={app.icon} alt={app.name} className="w-full h-full object-cover rounded-3xl" /> : app.icon}
+              <AppLogo app={app} size="w-full h-full" text="text-6xl lg:text-7xl" rounded="rounded-3xl" className="!shadow-none" />
             </div>
             <div className="flex-1">
               <div className="flex items-center gap-3 flex-wrap">
@@ -253,21 +258,31 @@ export default function AppDetail() {
                 </div>
                 <div>
                   <h2 className="text-xl font-bold text-white mb-4">Screenshots</h2>
-                  {(app.screenshots && (app.screenshots as any[]).length > 0) ? (
+                  {goodShots.length > 0 ? (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      {(app.screenshots as any[]).map((url: string, i: number) => (
-                        <button
-                          key={i}
-                          onClick={() => setLightbox(i)}
-                          className="relative group/shot focus:outline-none focus:ring-2 focus:ring-rx-yellow/60 rounded-xl"
-                          title="Click to view full size"
-                        >
-                          <img src={url} alt={`Screenshot ${i+1}`} className="aspect-video w-full rounded-xl object-cover border border-white/10 group-hover/shot:border-rx-yellow/40 transition-colors" />
-                          <span className="absolute inset-0 rounded-xl bg-black/0 group-hover/shot:bg-black/25 transition-colors flex items-center justify-center opacity-0 group-hover/shot:opacity-100">
-                            <span className="text-xs font-semibold text-white bg-black/60 px-3 py-1.5 rounded-full">⤢ View full</span>
-                          </span>
-                        </button>
-                      ))}
+                      {allShots.map((url: string, i: number) => {
+                        if (badShots.has(i)) return null;
+                        const goodIdx = goodShots.indexOf(url);
+                        return (
+                          <button
+                            key={i}
+                            onClick={() => setLightbox(goodIdx)}
+                            className="relative group/shot focus:outline-none focus:ring-2 focus:ring-rx-yellow/60 rounded-xl"
+                            title="Click to view full size"
+                          >
+                            <img
+                              src={url}
+                              alt={`Screenshot ${i+1}`}
+                              loading="lazy"
+                              onError={() => setBadShots((s) => new Set(s).add(i))}
+                              className="aspect-video w-full rounded-xl object-cover border border-white/10 group-hover/shot:border-rx-yellow/40 transition-colors"
+                            />
+                            <span className="absolute inset-0 rounded-xl bg-black/0 group-hover/shot:bg-black/25 transition-colors flex items-center justify-center opacity-0 group-hover/shot:opacity-100">
+                              <span className="text-xs font-semibold text-white bg-black/60 px-3 py-1.5 rounded-full">⤢ View full</span>
+                            </span>
+                          </button>
+                        );
+                      })}
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -446,7 +461,7 @@ export default function AppDetail() {
       </div>
 
       {/* Full-size screenshot viewer (lightbox) */}
-      {lightbox !== null && app.screenshots?.[lightbox] && (
+      {lightbox !== null && goodShots[lightbox] && (
         <div
           className="fixed inset-0 z-[60] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 sm:p-8"
           onClick={() => setLightbox(null)}
@@ -458,18 +473,18 @@ export default function AppDetail() {
           >
             ✕
           </button>
-          {(app.screenshots as any[]).length > 1 && (
+          {goodShots.length > 1 && (
             <>
               <button
                 className="absolute left-3 sm:left-6 top-1/2 -translate-y-1/2 w-10 h-10 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-white text-lg"
-                onClick={(e) => { e.stopPropagation(); setLightbox((lightbox - 1 + (app.screenshots as any[]).length) % (app.screenshots as any[]).length); }}
+                onClick={(e) => { e.stopPropagation(); setLightbox((lightbox - 1 + goodShots.length) % goodShots.length); }}
                 aria-label="Previous screenshot"
               >
                 ‹
               </button>
               <button
                 className="absolute right-3 sm:right-6 top-1/2 -translate-y-1/2 w-10 h-10 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-white text-lg"
-                onClick={(e) => { e.stopPropagation(); setLightbox((lightbox + 1) % (app.screenshots as any[]).length); }}
+                onClick={(e) => { e.stopPropagation(); setLightbox((lightbox + 1) % goodShots.length); }}
                 aria-label="Next screenshot"
               >
                 ›
@@ -477,13 +492,14 @@ export default function AppDetail() {
             </>
           )}
           <img
-            src={(app.screenshots as any[])[lightbox]}
+            src={goodShots[lightbox]}
             alt={`Screenshot ${lightbox + 1} full size`}
             className="max-w-full max-h-full rounded-xl object-contain shadow-2xl"
             onClick={(e) => e.stopPropagation()}
+            onError={() => setLightbox(null)}
           />
           <span className="absolute bottom-4 left-1/2 -translate-x-1/2 text-xs text-white/60">
-            {lightbox + 1} / {(app.screenshots as any[]).length} — click outside or Esc to close
+            {lightbox + 1} / {goodShots.length} — click outside or Esc to close
           </span>
         </div>
       )}

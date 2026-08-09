@@ -20,6 +20,8 @@ interface ContentCtxType {
   getEffectiveJSON: <T = any>(id: string, hardFallback: T) => T;
   save: (id: string, value: string | object) => Promise<boolean>;
   remove: (id: string) => Promise<boolean>;
+  /** Update local state only (e.g. after a server-side revert) — no network. */
+  applyLocal: (id: string, value: string) => void;
   pending: PendingItem[];
   publishAll: () => Promise<void>;
   saving: string | null;
@@ -164,6 +166,10 @@ export function ContentProvider({ children }: { children: ReactNode }) {
 
   const remove = useCallback(async (id: string): Promise<boolean> => save(id, ''), [save]);
 
+  const applyLocal = useCallback((id: string, value: string) => {
+    setContent((c) => ({ ...c, [id]: value }));
+  }, []);
+
   const publishAll = useCallback(async () => {
     const items = loadPending();
     if (!items.length) { toast.success('Nothing pending'); return; }
@@ -177,7 +183,7 @@ export function ContentProvider({ children }: { children: ReactNode }) {
   }, [pushOne, fetchContent]);
 
   return (
-    <ContentContext.Provider value={{ get, getJSON, getEffective, getEffectiveJSON, save, remove, pending, publishAll, saving, savedAt, ready }}>
+    <ContentContext.Provider value={{ get, getJSON, getEffective, getEffectiveJSON, save, remove, applyLocal, pending, publishAll, saving, savedAt, ready }}>
       {children}
     </ContentContext.Provider>
   );
