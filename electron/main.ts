@@ -5,6 +5,14 @@ import { autoUpdater } from 'electron-updater';
 
 let mainWindow: BrowserWindow | null = null;
 
+// AppImages cannot reliably provide a root-owned mode-4755 chrome-sandbox from
+// their read-only FUSE mount. The installed .deb keeps Chromium's sandbox (its
+// post-install hook fixes the required permissions); only AppImage uses this
+// compatibility fallback so it starts on distributions without user namespaces.
+if (process.platform === 'linux' && process.env.APPIMAGE) {
+  app.commandLine.appendSwitch('no-sandbox');
+}
+
 const UPDATE_OWNER = 'g2code33';
 const UPDATE_REPO = 'Rx-STORE';
 
