@@ -8,6 +8,7 @@ import Editable from '../components/edit/Editable';
 import { useCategories } from '../hooks/useCategories';
 import StatsBar, { DEFAULT_STATS } from '../components/home/StatsBar';
 import WelcomeIntro from '../components/home/WelcomeIntro';
+import PageBlocks from '../components/edit/PageBlocks';
 
 const HOME_PLATFORM_FILTERS = [
   { id: 'all', label: 'All', icon: '✨' },
@@ -328,6 +329,9 @@ export default function Home() {
           </div>
         </div>
       </section>
+
+      {/* Custom sections inserted via Builder → Add Block */}
+      <PageBlocks pageId="home" />
     </div>
   );
 }

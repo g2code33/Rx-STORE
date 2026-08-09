@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { useContent } from '../../context/ContentContext';
 import { useEditMode } from './EditMode';
 import { StyleOverrides } from './Editable';
+import { newBlock, BLOCK_TYPE_LABELS, BlockType, PageBlock } from './PageBlocks';
 import { API_URL } from '../../services/api';
 
 /**
@@ -88,7 +89,7 @@ export default function Inspector() {
     }
   };
 
-  const uploadImage = async (file: File) => {
+  const uploadImage = async (file: File, onUrl?: (url: string) => void) => {
     setUploading(true);
     try {
       const fd = new FormData();
@@ -103,7 +104,8 @@ export default function Inspector() {
       const j = await res.json();
       const url = j?.data?.url;
       if (!res.ok || !url) throw new Error(j?.error?.message || 'Upload failed');
-      setDraft((v: any) => ({ ...(v || {}), url }));
+      if (onUrl) onUrl(url);
+      else setDraft((v: any) => ({ ...(v || {}), url }));
       toast.success('Image uploaded to R2');
     } catch (e: any) {
       toast.error(e.message);
@@ -326,6 +328,80 @@ export default function Inspector() {
                         <input className={inputCls} value={s.label || ''} onChange={(e) => setField(i, 'label', e.target.value)} />
                       </div>
                     ))}
+                  </>
+                )}
+                {d.type === 'blocks' && (
+                  <>
+                    <p className="text-[11px] text-rx-gray-medium mb-3">
+                      Custom sections appended to the bottom of this page. Reorder with the arrows — Save &amp; publish makes them live for every visitor.
+                    </p>
+                    {(list as PageBlock[]).map((b, i) => (
+                      <div key={b.id || i} className="rounded-xl border border-white/10 p-3 mb-3 bg-rx-dark/50">
+                        <div className="flex items-center gap-1.5 mb-2">
+                          <select className={selCls} value={b.type} onChange={(e) => setList(list.map((x, xi) => (xi === i ? { ...newBlock(e.target.value as BlockType), id: x.id } : x)))} title="Block type">
+                            {(Object.keys(BLOCK_TYPE_LABELS) as BlockType[]).map((t) => <option key={t} value={t}>{BLOCK_TYPE_LABELS[t]}</option>)}
+                          </select>
+                          <ListBtns i={i} len={list.length} move={move} removeAt={removeAt} />
+                        </div>
+                        {b.type !== 'image' && (
+                          <input className={`${inputCls} mb-2`} value={b.title || ''} onChange={(e) => setField(i, 'title', e.target.value)} placeholder={b.type === 'cta' ? 'Heading' : 'Title'} />
+                        )}
+                        {b.type === 'cta' && (
+                          <>
+                            <div className="flex items-center gap-1.5 mb-2">
+                              <input className={`${inputCls} !w-14 text-center`} value={b.icon || ''} onChange={(e) => setField(i, 'icon', e.target.value)} title="Emoji shown above the heading" placeholder="🚀" />
+                              <input className={inputCls} value={b.buttonLabel || ''} onChange={(e) => setField(i, 'buttonLabel', e.target.value)} placeholder="Button label (empty = no button)" />
+                            </div>
+                            <input className={`${inputCls} mb-2`} value={b.buttonTo || ''} onChange={(e) => setField(i, 'buttonTo', e.target.value)} placeholder="Button destination — /browse or https://…" />
+                          </>
+                        )}
+                        {(b.type === 'cta' || b.type === 'text') && (
+                          <textarea className={`${inputCls} resize-y min-h-[72px] mb-2`} value={b.body || ''} onChange={(e) => setField(i, 'body', e.target.value)} placeholder="Body text — blank line = new paragraph" />
+                        )}
+                        {b.type === 'features' && (
+                          <>
+                            <textarea
+                              className={`${inputCls} resize-y min-h-[110px]`}
+                              value={(b.items || []).map((it) => [it.title, it.description, it.icon].join(' | ')).join('\n')}
+                              onChange={(e) => setField(i, 'items', e.target.value.split('\n').filter((l) => l.trim()).map((l) => {
+                                const [t = '', dscr = '', ic = ''] = l.split('|').map((s) => s.trim());
+                                return { title: t, description: dscr, icon: ic };
+                              }))}
+                              placeholder={'One card per line:\nFast | Loads instantly | ⚡\nSafe | Audited code | 🛡️'}
+                            />
+                            <p className="text-[10px] text-rx-gray-medium mt-1">One card per line: <b>Title | Description | emoji</b> (last two optional)</p>
+                          </>
+                        )}
+                        {b.type === 'image' && (
+                          <>
+                            {b.imageUrl && <img src={b.imageUrl} alt={b.imageAlt || ''} className="w-full h-24 object-cover rounded-lg border border-white/10 mb-2" />}
+                            <div className="flex items-center gap-1.5 mb-2">
+                              <input className={inputCls} value={b.imageUrl || ''} onChange={(e) => setField(i, 'imageUrl', e.target.value)} placeholder="Image URL…" />
+                              <label className="px-3 py-2 rounded-lg bg-rx-yellow text-rx-dark text-xs font-bold cursor-pointer hover:bg-rx-yellow-light flex-shrink-0">
+                                {uploading ? '…' : 'Upload'}
+                                <input type="file" accept="image/*" className="hidden" disabled={uploading} onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadImage(f, (url) => setField(i, 'imageUrl', url)); e.target.value = ''; }} />
+                              </label>
+                            </div>
+                            <input className={inputCls} value={b.imageAlt || ''} onChange={(e) => setField(i, 'imageAlt', e.target.value)} placeholder="Alt text / caption" />
+                            <p className="text-[10px] text-rx-gray-medium mt-1">Tip: the same field doubles as the caption under the image.</p>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                    <div className="grid grid-cols-2 gap-2">
+                      {(Object.keys(BLOCK_TYPE_LABELS) as BlockType[]).map((t) => (
+                        <button
+                          key={t}
+                          onClick={() => setList([...list, newBlock(t)])}
+                          className="py-2.5 rounded-xl border border-dashed border-rx-yellow/40 text-rx-yellow text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-rx-yellow/10"
+                        >
+                          <Plus className="w-3.5 h-3.5" /> {BLOCK_TYPE_LABELS[t]}
+                        </button>
+                      ))}
+                    </div>
+                    {list.length === 0 && (
+                      <p className="text-[11px] text-rx-gray-medium mt-2 text-center">No blocks yet — pick a type above to insert your first section.</p>
+                    )}
                   </>
                 )}
                 {d.type === 'design' && <DesignEditor onClose={() => edit.closeInspector()} />}

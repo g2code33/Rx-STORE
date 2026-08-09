@@ -15,6 +15,18 @@ import Inspector from '../components/edit/Inspector';
 
 const BuilderHome = lazy(() => import('./Home'));
 const BuilderAbout = lazy(() => import('./About'));
+const BuilderBrowse = lazy(() => import('./Browse'));
+const BuilderAppDetail = lazy(() => import('./AppDetail'));
+
+/** Pages the Live Builder can edit + where their custom blocks are stored. */
+const BUILDER_PAGES = [
+  { id: 'home', label: 'Home' },
+  { id: 'about', label: 'About' },
+  { id: 'browse', label: 'Browse' },
+  { id: 'app', label: 'App page' },
+] as const;
+type BuilderPageId = (typeof BUILDER_PAGES)[number]['id'];
+const PAGE_BLOCKS_KEY: Record<BuilderPageId, string> = { home: 'home', about: 'about', browse: 'browse', app: 'appDetail' };
 
 /** Relative time for activity rows ("3h ago") */
 function ago(t?: string) {
@@ -47,7 +59,7 @@ export default function Admin() {
 
   // ---- View 2: Live Website Builder state ----
   const [view, setView] = useState<'panel' | 'builder'>('panel');
-  const [builderPage, setBuilderPage] = useState<'home' | 'about'>('home');
+  const [builderPage, setBuilderPage] = useState<BuilderPageId>('home');
   const [interact, setInteract] = useState(false);
   const [inspector, setInspector] = useState<EditDescriptor | null>(null);
   const [device, setDevice] = useState<'desktop' | 'tablet' | 'phone'>('desktop');
@@ -167,7 +179,7 @@ export default function Admin() {
 
               {/* Page picker */}
               <div className="flex rounded-xl overflow-hidden border border-white/10">
-                {([['home', 'Home'], ['about', 'About']] as const).map(([id, label]) => (
+                {BUILDER_PAGES.map(({ id, label }) => (
                   <button key={id} onClick={() => setBuilderPage(id)} className={`px-3 py-1.5 text-xs font-semibold ${builderPage === id ? 'bg-white/10 text-white' : 'text-rx-gray-medium hover:text-white'}`}>
                     {label}
                   </button>
@@ -206,10 +218,15 @@ export default function Admin() {
                 <Paintbrush className="w-3.5 h-3.5" /> Design
               </button>
 
-              {/* Add (next phase) */}
+              {/* Add Block — insert CTA banners, text sections, feature grids, image banners */}
               <button
-                onClick={() => toast('Add Block — insert brand-new sections anywhere — arrives in the next builder update 🚧', { icon: '🧱' })}
-                className="px-3.5 py-1.5 text-xs font-semibold rounded-xl border border-white/10 text-rx-gray-medium hover:text-rx-yellow flex items-center gap-1.5"
+                onClick={() => {
+                  const pageLabel = BUILDER_PAGES.find((p) => p.id === builderPage)?.label || builderPage;
+                  editCtx.openInspector({ id: `page.blocks.${PAGE_BLOCKS_KEY[builderPage]}`, type: 'blocks', label: `Blocks · ${pageLabel} page` });
+                  toast('Pick a block type below the inspector — it renders on the live page after Save & publish', { icon: '🧱', duration: 4000 });
+                }}
+                className="px-3.5 py-1.5 text-xs font-semibold rounded-xl border border-rx-yellow/40 bg-rx-yellow/10 text-rx-yellow flex items-center gap-1.5"
+                title="Insert a custom section on this page"
               >
                 <Plus className="w-3.5 h-3.5" /> Add
               </button>
@@ -243,7 +260,10 @@ export default function Admin() {
           {/* The REAL public page, with the edit layer live — width follows the device toggle */}
           <div className="mx-auto transition-[width] duration-300 min-h-screen" style={{ width: device === 'phone' ? 390 : device === 'tablet' ? 768 : '100%' }}>
             <Suspense fallback={<div className="py-24 text-center text-rx-gray-medium flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Loading page…</div>}>
-              {builderPage === 'home' ? <BuilderHome /> : <BuilderAbout />}
+              {builderPage === 'home' ? <BuilderHome /> :
+               builderPage === 'about' ? <BuilderAbout /> :
+               builderPage === 'browse' ? <BuilderBrowse /> :
+               <BuilderAppDetail previewSlug={(apps as any[])[0]?.slug} />}
             </Suspense>
           </div>
           <Inspector />

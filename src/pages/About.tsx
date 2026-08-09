@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Shield, Globe, Users, Cpu, Zap, ArrowRight, Check } from 'lucide-react';
 import { useContent } from '../context/ContentContext';
 import Editable from '../components/edit/Editable';
+import PageBlocks from '../components/edit/PageBlocks';
 
 const DEFAULT_VISION_POINTS = [
   'Healthcare-grade security and compliance',
@@ -251,6 +252,9 @@ export default function About() {
           </Editable>
         </div>
       </section>
+
+      {/* Custom sections inserted via Builder → Add Block */}
+      <PageBlocks pageId="about" />
     </div>
   );
 }

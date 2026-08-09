@@ -5,13 +5,26 @@ import DownloadModal from '../components/apps/DownloadModal';
 import AppLogo from '../components/apps/AppLogo';
 import { useApps } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
+import { useContent } from '../context/ContentContext';
+import Editable from '../components/edit/Editable';
+import PageBlocks from '../components/edit/PageBlocks';
 import { formatDownloadCount, formatDate, getRatingColor } from '../utils/helpers';
 import toast from 'react-hot-toast';
 
-export default function AppDetail() {
-  const { slug } = useParams<{ slug: string }>();
+/** Internal paths navigate in-app, external URLs open a new tab, '#' stays inert. */
+function DetailLink({ to, className, children }: { to: string; className?: string; children: React.ReactNode }) {
+  if (/^https?:\/\//.test(to)) return <a href={to} target="_blank" rel="noreferrer" className={className}>{children}</a>;
+  if (to && to !== '#') return <Link to={to} className={className}>{children}</Link>;
+  return <a href="#" onClick={(e) => e.preventDefault()} className={className}>{children}</a>;
+}
+
+/** previewSlug: the Live Builder renders this page with a real app, no route. */
+export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
+  const { slug: routeSlug } = useParams<{ slug: string }>();
+  const slug = previewSlug ?? routeSlug;
   const { getAppBySlug, installedApps, installApp, uninstallApp, isLoading } = useApps();
   const { user } = useAuth();
+  const { get, getJSON } = useContent();
   const app = getAppBySlug(slug || '');
   const [activeTab, setActiveTab] = useState<'overview' | 'reviews' | 'versions' | 'docs'>('overview');
   const [isInstalling, setIsInstalling] = useState(false);
@@ -162,7 +175,7 @@ export default function AppDetail() {
         <div className="absolute inset-0 bg-black/20" />
         <div className="relative section-container py-12 lg:py-16">
           <Link to="/browse" className="inline-flex items-center gap-2 text-white/70 hover:text-white text-sm mb-6 transition-colors">
-            <ArrowLeft className="w-4 h-4" /> Back to Browse
+            <ArrowLeft className="w-4 h-4" /> <Editable id="appd.back" label="'Back to Browse' link">{get('appd.back', 'Back to Browse')}</Editable>
           </Link>
           <div className="flex flex-col lg:flex-row gap-8 items-start">
             <div className="w-32 h-32 lg:w-44 lg:h-44 rounded-3xl bg-white/20 backdrop-blur-xl flex items-center justify-center text-6xl lg:text-7xl shadow-2xl flex-shrink-0 overflow-hidden">
@@ -228,7 +241,7 @@ export default function AppDetail() {
               className={`px-5 py-3 text-sm font-medium capitalize whitespace-nowrap transition-all border-b-2 -mb-px ${
                 activeTab === tab ? 'text-rx-yellow border-rx-yellow' : 'text-rx-gray-medium border-transparent hover:text-white'
               }`}>
-              {tab}{tab === 'reviews' && ` (${appReviews.length})`}
+              <Editable id={`appd.tab.${tab}`} label={`Tab label — ${tab}`}>{get(`appd.tab.${tab}`, tab)}{tab === 'reviews' && ` (${appReviews.length})`}</Editable>
             </button>
           ))}
         </div>
@@ -238,13 +251,13 @@ export default function AppDetail() {
             {activeTab === 'overview' && (
               <div className="space-y-8 animate-fade-in">
                 <div>
-                  <h2 className="text-xl font-bold text-white mb-4">About this application</h2>
+                  <h2 className="text-xl font-bold text-white mb-4"><Editable id="appd.aboutTitle" label="'About this application' heading">{get('appd.aboutTitle', 'About this application')}</Editable></h2>
                   {(app.longDescription || app.description || '').split('\n\n').map((paragraph, i) => (
                     <p key={i} className="text-rx-gray-medium leading-relaxed mb-4">{paragraph}</p>
                   ))}
                 </div>
                 <div>
-                  <h2 className="text-xl font-bold text-white mb-4">Key Features</h2>
+                  <h2 className="text-xl font-bold text-white mb-4"><Editable id="appd.featuresTitle" label="'Key Features' heading">{get('appd.featuresTitle', 'Key Features')}</Editable></h2>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {(app.features || []).map((feature, i) => (
                       <div key={i} className="flex items-start gap-3 p-3 rounded-xl bg-rx-dark-secondary/50 border border-white/5">
@@ -257,7 +270,7 @@ export default function AppDetail() {
                   </div>
                 </div>
                 <div>
-                  <h2 className="text-xl font-bold text-white mb-4">Screenshots</h2>
+                  <h2 className="text-xl font-bold text-white mb-4"><Editable id="appd.shotsTitle" label="'Screenshots' heading">{get('appd.shotsTitle', 'Screenshots')}</Editable></h2>
                   {goodShots.length > 0 ? (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       {allShots.map((url: string, i: number) => {
@@ -285,13 +298,15 @@ export default function AppDetail() {
                       })}
                     </div>
                   ) : (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      {[1, 2, 3, 4].map((i) => (
-                        <div key={i} className={`aspect-video rounded-xl bg-gradient-to-br ${app.gradient || 'from-rx-dark to-rx-dark-secondary'} opacity-40 flex items-center justify-center`}>
-                          <span className="text-white/50 text-sm">Screenshot {i} — upload in Admin → Edit</span>
-                        </div>
-                      ))}
-                    </div>
+                    <Editable id="appd.shotsEmpty" label="Empty-screenshots hint ({n} = number)" group>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        {[1, 2, 3, 4].map((i) => (
+                          <div key={i} className={`aspect-video rounded-xl bg-gradient-to-br ${app.gradient || 'from-rx-dark to-rx-dark-secondary'} opacity-40 flex items-center justify-center`}>
+                            <span className="text-white/50 text-sm">{get('appd.shotsEmpty', 'Screenshot {n} — upload in Admin → Edit').replace(/\{n\}/g, String(i))}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </Editable>
                   )}
                 </div>
               </div>
@@ -325,7 +340,7 @@ export default function AppDetail() {
                 </div>
                 {user && (
                   <div className="card p-5">
-                    <h4 className="font-semibold text-white mb-3">Write a review</h4>
+                    <h4 className="font-semibold text-white mb-3"><Editable id="appd.writeReview" label="'Write a review' heading">{get('appd.writeReview', 'Write a review')}</Editable></h4>
                     <div className="flex items-center gap-2 mb-3">
                       {[1,2,3,4,5].map(s=>(
                         <button key={s} onClick={()=>setNewRating(s)} className={`w-8 h-8 rounded-lg flex items-center justify-center ${s<=newRating ? 'bg-rx-yellow text-rx-dark' : 'bg-white/10 text-white'}`}><Star className={`w-4 h-4 ${s<=newRating ? 'fill-current' : ''}`} /></button>
@@ -378,7 +393,7 @@ export default function AppDetail() {
                     </div>
                   </div>
                 )) : (
-                  <div className="text-center py-12"><p className="text-rx-gray-medium">No reviews yet. Be the first to review!</p></div>
+                  <div className="text-center py-12"><p className="text-rx-gray-medium"><Editable id="appd.noReviews" type="textarea" label="No-reviews message">{get('appd.noReviews', 'No reviews yet. Be the first to review!')}</Editable></p></div>
                 )}
               </div>
             )}
@@ -413,9 +428,15 @@ export default function AppDetail() {
               <div className="animate-fade-in">
                 <div className="card p-8 text-center">
                   <div className="text-4xl mb-4">📖</div>
-                  <h3 className="text-xl font-bold text-white mb-2">Documentation</h3>
-                  <p className="text-rx-gray-medium mb-6">Comprehensive documentation for {app.name} is available on our developer portal.</p>
-                  <a href="#" className="btn-primary inline-flex items-center gap-2"><ExternalLink className="w-4 h-4" /> Open Documentation</a>
+                  <h3 className="text-xl font-bold text-white mb-2"><Editable id="appd.docsTitle" label="Docs card heading">{get('appd.docsTitle', 'Documentation')}</Editable></h3>
+                  <p className="text-rx-gray-medium mb-6">
+                    <Editable id="appd.docsBody" type="textarea" label="Docs card body ({app} = app name)">{get('appd.docsBody', 'Comprehensive documentation for {app} is available on our developer portal.').replace(/\{app\}/g, app.name)}</Editable>
+                  </p>
+                  <Editable id="appd.docsBtn" type="link" label="'Open Documentation' button">
+                    <DetailLink to={getJSON('appd.docsBtn', { label: 'Open Documentation', to: '#' }).to} className="btn-primary inline-flex items-center gap-2">
+                      <ExternalLink className="w-4 h-4" /> {getJSON('appd.docsBtn', { label: 'Open Documentation', to: '#' }).label}
+                    </DetailLink>
+                  </Editable>
                 </div>
               </div>
             )}
@@ -423,14 +444,13 @@ export default function AppDetail() {
 
           <div className="space-y-6">
             <div className="card p-6 space-y-4">
-              <h3 className="font-bold text-white text-lg">Information</h3>
+              <h3 className="font-bold text-white text-lg"><Editable id="appd.infoTitle" label="'Information' card title">{get('appd.infoTitle', 'Information')}</Editable></h3>
               <div className="space-y-3">
                 {[
                   { icon: Calendar, label: 'Released', value: app.releaseDate ? formatDate(app.releaseDate) : '—' },
                   { icon: Clock, label: 'Updated', value: app.lastUpdated ? formatDate(app.lastUpdated) : '—' },
                   { icon: Monitor, label: 'Size', value: app.size || '—' },
                   { icon: Tag, label: 'Version', value: app.version },
-                  { icon: Shield, label: 'Security', value: 'Verified & Safe' },
                 ].map((item) => (
                   <div key={item.label} className="flex items-center justify-between py-2 border-b border-white/5 last:border-0">
                     <div className="flex items-center gap-2 text-rx-gray-medium">
@@ -439,10 +459,18 @@ export default function AppDetail() {
                     <span className="text-sm text-white font-medium">{item.value}</span>
                   </div>
                 ))}
+                <Editable id="appd.securityValue" label="Security row value" group>
+                  <div className="flex items-center justify-between py-2">
+                    <div className="flex items-center gap-2 text-rx-gray-medium">
+                      <Shield className="w-4 h-4" /><span className="text-sm">Security</span>
+                    </div>
+                    <span className="text-sm text-white font-medium">{get('appd.securityValue', 'Verified & Safe')}</span>
+                  </div>
+                </Editable>
               </div>
             </div>
             <div className="card p-6">
-              <h3 className="font-bold text-white mb-3">Tags</h3>
+              <h3 className="font-bold text-white mb-3"><Editable id="appd.tagsTitle" label="'Tags' card title">{get('appd.tagsTitle', 'Tags')}</Editable></h3>
               <div className="flex flex-wrap gap-2">
                 {(app.tags || []).map((tag: any) => (
                   <span key={tag} className="px-2.5 py-1 bg-rx-dark-tertiary text-rx-gray-medium text-xs rounded-lg hover:text-rx-yellow hover:bg-rx-yellow/10 transition-all cursor-pointer">#{tag}</span>
@@ -450,14 +478,17 @@ export default function AppDetail() {
               </div>
             </div>
             <div className="card p-6">
-              <h3 className="font-bold text-white mb-3">Developer</h3>
+              <h3 className="font-bold text-white mb-3"><Editable id="appd.devTitle" label="'Developer' card title">{get('appd.devTitle', 'Developer')}</Editable></h3>
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-rx-yellow/20 flex items-center justify-center"><span className="text-rx-yellow font-bold text-sm">CT</span></div>
-                <div><p className="text-sm font-medium text-white">{app.developer}</p><p className="text-xs text-rx-gray-medium">Verified Publisher</p></div>
+                <div><p className="text-sm font-medium text-white">{app.developer}</p><p className="text-xs text-rx-gray-medium"><Editable id="appd.verifiedPublisher" label="'Verified Publisher' line">{get('appd.verifiedPublisher', 'Verified Publisher')}</Editable></p></div>
               </div>
             </div>
           </div>
         </div>
+
+        {/* Custom sections inserted via Builder → Add Block */}
+        <PageBlocks pageId="appDetail" inContainer />
       </div>
 
       {/* Full-size screenshot viewer (lightbox) */}

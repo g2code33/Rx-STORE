@@ -4,10 +4,14 @@ import { Search, SlidersHorizontal, Grid3X3, List, X } from 'lucide-react';
 import { useApps } from '../context/AppContext';
 import { useCategories } from '../hooks/useCategories';
 import AppCard from '../components/apps/AppCard';
+import { useContent } from '../context/ContentContext';
+import Editable from '../components/edit/Editable';
+import PageBlocks from '../components/edit/PageBlocks';
 
 export default function Browse() {
   const { apps, isLoading, searchQuery, setSearchQuery, selectedCategory, setSelectedCategory, selectedPlatform, setSelectedPlatform, getFilteredApps } = useApps();
   const categories = useCategories();
+  const { get } = useContent();
   const [viewMode, setViewMode] = React.useState<'grid' | 'list'>('grid');
   const [sortBy, setSortBy] = React.useState<'popular' | 'rating' | 'newest' | 'name'>('popular');
 
@@ -47,33 +51,40 @@ export default function Browse() {
 
   const hasFilters = searchQuery || selectedCategory || selectedPlatform;
 
+  // Editable copy — {count} is replaced with the live number of applications
+  const subtitle = get('browse.sub', 'Discover {count} applications for healthcare, education, productivity, and more.').replace(/\{count\}/g, String(apps.length));
+  const searchPlaceholder = get('browse.searchPlaceholder', 'Search applications, categories, tags...');
+
   return (
     <div className="section-container py-8 lg:py-12">
       <div className="mb-8">
         <h1 className="text-3xl sm:text-4xl font-bold text-white">
-          Browse <span className="gradient-text">Applications</span>
+          <Editable id="browse.title" label="Browse title (part 1)">{get('browse.title', 'Browse')}</Editable>{' '}
+          <span className="gradient-text"><Editable id="browse.titleHi" label="Browse title (highlight)">{get('browse.titleHi', 'Applications')}</Editable></span>
         </h1>
         <p className="mt-2 text-rx-gray-medium">
-          Discover {apps.length} applications for healthcare, education, productivity, and more.
+          <Editable id="browse.sub" type="textarea" label="Browse subtitle ({count} = live number)">{subtitle}</Editable>
         </p>
       </div>
 
       <div className="flex flex-col lg:flex-row gap-4 mb-8">
-        <div className="relative flex-1">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-rx-gray-medium" />
-          <input
-            type="text"
-            placeholder="Search applications, categories, tags..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-rx-dark-secondary border border-white/10 rounded-xl pl-12 pr-4 py-3.5 text-white placeholder-rx-gray-medium focus:outline-none focus:border-rx-yellow/50 focus:ring-1 focus:ring-rx-yellow/25 transition-all"
-          />
-          {searchQuery && (
-            <button onClick={() => setSearchQuery('')} className="absolute right-4 top-1/2 -translate-y-1/2 text-rx-gray-medium hover:text-white">
-              <X className="w-4 h-4" />
-            </button>
-          )}
-        </div>
+        <Editable id="browse.searchPlaceholder" label="Search placeholder" className="flex-1">
+          <div className="relative w-full">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-rx-gray-medium" />
+            <input
+              type="text"
+              placeholder={searchPlaceholder}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-rx-dark-secondary border border-white/10 rounded-xl pl-12 pr-4 py-3.5 text-white placeholder-rx-gray-medium focus:outline-none focus:border-rx-yellow/50 focus:ring-1 focus:ring-rx-yellow/25 transition-all"
+            />
+            {searchQuery && (
+              <button onClick={() => setSearchQuery('')} className="absolute right-4 top-1/2 -translate-y-1/2 text-rx-gray-medium hover:text-white">
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </Editable>
 
         <div className="flex items-center gap-3">
           <select
@@ -106,7 +117,7 @@ export default function Browse() {
 
       <div className="flex flex-wrap items-center gap-3 mb-8">
         <span className="text-xs text-rx-gray-medium uppercase tracking-wider font-medium flex items-center gap-1.5">
-          <SlidersHorizontal className="w-3.5 h-3.5" /> Filters:
+          <SlidersHorizontal className="w-3.5 h-3.5" /> <Editable id="browse.filtersLabel" label="Filters label">{get('browse.filtersLabel', 'Filters:')}</Editable>
         </span>
         <button
           onClick={() => setSelectedCategory(null)}
@@ -114,19 +125,23 @@ export default function Browse() {
             !selectedCategory ? 'bg-rx-yellow text-rx-dark' : 'bg-rx-dark-tertiary text-rx-gray-medium hover:text-white hover:bg-rx-dark-secondary'
           }`}
         >
-          All Categories
+          <Editable id="browse.allCategories" label="'All Categories' chip">{get('browse.allCategories', 'All Categories')}</Editable>
         </button>
-        {categories.map((cat) => (
-          <button
-            key={cat.id}
-            onClick={() => setSelectedCategory(selectedCategory === cat.id ? null : cat.id)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-              selectedCategory === cat.id ? 'bg-rx-yellow text-rx-dark' : 'bg-rx-dark-tertiary text-rx-gray-medium hover:text-white hover:bg-rx-dark-secondary'
-            }`}
-          >
-            {cat.name}
-          </button>
-        ))}
+        <Editable id="site.categories" type="categories" label="Category chips (shared with Home)" group>
+          <span className="contents">
+            {categories.map((cat) => (
+              <button
+                key={cat.id}
+                onClick={() => setSelectedCategory(selectedCategory === cat.id ? null : cat.id)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  selectedCategory === cat.id ? 'bg-rx-yellow text-rx-dark' : 'bg-rx-dark-tertiary text-rx-gray-medium hover:text-white hover:bg-rx-dark-secondary'
+                }`}
+              >
+                {cat.name}
+              </button>
+            ))}
+          </span>
+        </Editable>
         <div className="w-px h-5 bg-white/10 mx-1 hidden sm:block" />
         {['web', 'windows', 'linux', 'android', 'ios'].map((platform) => (
           <button
@@ -184,11 +199,20 @@ export default function Browse() {
       ) : (
         <div className="text-center py-20">
           <div className="text-5xl mb-4">🔍</div>
-          <h3 className="text-xl font-semibold text-white mb-2">No applications found</h3>
-          <p className="text-rx-gray-medium mb-6">Try adjusting your search or filters</p>
-          <button onClick={clearFilters} className="btn-primary">Clear Filters</button>
+          <h3 className="text-xl font-semibold text-white mb-2">
+            <Editable id="browse.emptyTitle" label="Empty-state heading">{get('browse.emptyTitle', 'No applications found')}</Editable>
+          </h3>
+          <p className="text-rx-gray-medium mb-6">
+            <Editable id="browse.emptyBody" type="textarea" label="Empty-state message">{get('browse.emptyBody', 'Try adjusting your search or filters')}</Editable>
+          </p>
+          <button onClick={clearFilters} className="btn-primary">
+            <Editable id="browse.emptyBtn" label="Empty-state button">{get('browse.emptyBtn', 'Clear Filters')}</Editable>
+          </button>
         </div>
       )}
+
+      {/* Custom sections inserted via Builder → Add Block */}
+      <PageBlocks pageId="browse" inContainer />
     </div>
   );
 }
