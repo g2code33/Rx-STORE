@@ -2,23 +2,21 @@ name: Build & Release Desktop App
 
 # HOW TO USE
 # ----------
-# 1. This file lives at: .github/workflows/build-desktop.yml (an editable copy
-#    is kept at docs/workflow-build-desktop.yml — if the bot token ever lacks
-#    the `workflows` permission, apply it locally:
+# 1. One runner, one job, zero races: every push to `main` builds EVERYTHING on
+#    a single Ubuntu agent and publishes it to one GitHub Release:
+#      - Windows installer  RXStore-Setup-<version>.exe  (+ latest.yml)
+#      - Linux              rx-store_<version>_amd64.deb, RX-Store-<version>.AppImage (+ latest-linux.yml)
+#      - Android            rx-store-<version>.apk
+#    No separate Windows agent (the old matrix legs raced each other on the
+#    same release and failed) — Ubuntu builds the Windows .exe too, using Wine
+#    so the installer and app icon are embedded properly.
+# 2. An editable copy lives at docs/workflow-build-desktop.yml — if a bot push
+#    ever gets rejected for missing `workflows` permission, apply it locally:
 #      cp docs/workflow-build-desktop.yml .github/workflows/build-desktop.yml
-#      git add -A && git commit -m "ci: add build-desktop workflow" && git push
-# 2. From then on, EVERY push to `main`:
-#      - builds Windows (NSIS .exe + latest.yml) and Linux (.deb + AppImage
-#        + latest-linux.yml)
-#      - builds an Android APK (Capacitor) and uploads it to the same release
-#        as rx-store-<version>.apk — download from the release page and
-#        sideload on your phone.
-#      - publishes them to a real GitHub Release (not a draft/pre-release),
-#        which is what the desktop self-updater reads.
-#    No tags, no manual steps.
+#      git add -A && git commit -m "ci: update build-desktop workflow" && git push
 # 3. To ship an update to installed desktops: bump "version" in package.json
 #    (or run `npm run release:patch`) and push — the new latest.yml makes the
-#    app self-update.
+#    desktop app self-update.
 #
 # OPTIONAL (recommended): signed Android release APK
 # Add these repository secrets (Settings → Secrets and variables → Actions):
@@ -32,102 +30,21 @@ name: Build & Release Desktop App
 
 on:
   push:
-    branches: [main, arena/*]
-  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
 
+# Back-to-back pushes queue up instead of racing on the same release.
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
 jobs:
-  build:
-    name: Build ${{ matrix.os }}
-    # PRs and non-main branches: build only, upload artifacts (no release).
-    if: github.ref != 'refs/heads/main'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Type-check
-        run: npm run typecheck
-
-      - name: Build renderer (web build)
-        run: npm run build:web
-
-      - name: Build Electron main process
-        run: npm run build:electron
-
-      - name: Package Electron app
-        run: npm run dist -- --publish never
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # ----- Android APK (ubuntu leg only) -----
-      - name: Set up JDK 21
-        if: matrix.os == 'ubuntu-latest'
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-
-      - name: Set up Android SDK
-        if: matrix.os == 'ubuntu-latest'
-        uses: android-actions/setup-android@v3
-
-      - name: Sync Capacitor web assets
-        if: matrix.os == 'ubuntu-latest'
-        run: npx cap sync android
-
-      - name: Build Android APK (debug, installable)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          cd android
-          ./gradlew assembleDebug --no-daemon
-
-      - name: Upload Android APK artifact
-        if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v4
-        with:
-          name: rx-store-android-apk
-          path: android/app/build/outputs/apk/**/*.apk
-          if-no-files-found: warn
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: rx-store-${{ matrix.os }}
-          path: |
-            release/*.AppImage
-            release/*.deb
-            release/*.exe
-            release/*.yml
-          if-no-files-found: warn
-
   release:
-    name: Release ${{ matrix.os }}
-    # Push to main: build AND publish a GitHub Release automatically.
-    # Bump "version" in package.json to make desktop installs self-update.
-    if: github.ref == 'refs/heads/main'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
+    name: Build & publish (Ubuntu)
+    runs-on: ubuntu-latest
 
     steps:
       - name: Check out repository
@@ -151,7 +68,19 @@ jobs:
       - name: Build Electron main process
         run: npm run build:electron
 
-      - name: Build & publish desktop app to GitHub Releases
+      # Wine lets electron-builder embed the RX icon + version info into the
+      # Windows .exe while building on Ubuntu (that's rcedit, needs `wine`).
+      - name: Install Wine (for the Windows installer)
+        run: |
+          set -e
+          if ! command -v wine >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends wine64
+            command -v wine >/dev/null 2>&1 || sudo ln -sf "$(command -v wine64)" /usr/local/bin/wine
+          fi
+          wine --version
+
+      - name: Build & publish Windows .exe + Linux .deb/.AppImage to GitHub Releases
         run: npm run dist -- --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -159,20 +88,17 @@ jobs:
           # was created more than 2 hours ago by an earlier push.
           EP_GH_IGNORE_TIME: 'true'
 
-      # ----- Android APK (ubuntu leg only) -----
+      # ----- Android APK -----
       - name: Set up JDK 21
-        if: matrix.os == 'ubuntu-latest'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 21
 
       - name: Set up Android SDK
-        if: matrix.os == 'ubuntu-latest'
         uses: android-actions/setup-android@v3
 
       - name: Build Android APK
-        if: matrix.os == 'ubuntu-latest'
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -192,7 +118,6 @@ jobs:
           ./gradlew assembleRelease --no-daemon
 
       - name: Upload Android APK to release
-        if: matrix.os == 'ubuntu-latest'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
