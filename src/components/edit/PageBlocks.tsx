@@ -2,7 +2,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { Check, Megaphone } from 'lucide-react';
 import { useContent } from '../../context/ContentContext';
-import { IntroAd, trackAd, sanitizeAccent } from '../home/introAds';
+import { IntroAd, trackAd, sanitizeAccent, isAdLive } from '../home/introAds';
 import Editable from './Editable';
 
 /**
@@ -35,6 +35,9 @@ export interface PageBlock {
   items?: { icon?: string; title: string; description: string }[];
   /** adBanner — which intro ad to show; '' rotates through them */
   adId?: string;
+  /** adBanner — optional schedule window for THIS placement ('YYYY-MM-DD') */
+  startsAt?: string;
+  endsAt?: string;
 }
 
 export const BLOCK_TYPE_LABELS: Record<BlockType, string> = {
@@ -75,7 +78,9 @@ function BlockLink({ to, className, style, onClick, children }: { to: string; cl
 function AdBannerView({ block }: { block: PageBlock }) {
   const { getJSON, ready } = useContent();
   const ads = getJSON<IntroAd[]>('intro.ads', []);
-  const active = (Array.isArray(ads) ? ads : []).filter((a) => a && a.enabled && a.title?.trim());
+  // Placement window (block-level) AND each creative's own schedule both apply
+  const blockLive = isAdLive({ startsAt: block.startsAt, endsAt: block.endsAt });
+  const active = (Array.isArray(ads) ? ads : []).filter((a) => a && a.enabled && a.title?.trim() && isAdLive(a));
   let ad: IntroAd | undefined;
   if (block.adId) ad = active.find((a) => a.id === block.adId);
   else if (active.length) {
@@ -89,6 +94,8 @@ function AdBannerView({ block }: { block: PageBlock }) {
   React.useEffect(() => {
     if (ready && ad && !viewed.current) { viewed.current = true; trackAd(ad.id, 'views'); }
   }, [ready, ad?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!blockLive) return null; // scheduled placement — hidden outside its window
 
   if (!ad) {
     return (

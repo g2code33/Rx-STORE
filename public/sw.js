@@ -34,3 +34,30 @@ self.addEventListener('fetch', (e) => {
     })
   );
 });
+
+/* Promo notifications — tapping one focuses the app (or opens the offer). */
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const target = (e.notification.data && e.notification.data.url) || '/';
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((cls) => {
+      const own = /^https?:/.test(target) ? null : cls.find((c) => 'focus' in c);
+      if (own) { own.navigate(target); return own.focus(); }
+      if (self.clients.openWindow) return self.clients.openWindow(target);
+    })
+  );
+});
+
+/* Server push (VAPID fan-out) — stub ready: when the worker gains a send
+   route + subscription table, payloads land here. */
+self.addEventListener('push', (e) => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (_e) { d = { title: 'RX Store', body: e.data ? e.data.text() : '' }; }
+  e.waitUntil(self.registration.showNotification(d.title || 'RX Store', {
+    body: d.body || '',
+    icon: d.icon || '/icon-192.png',
+    badge: '/icon-192.png',
+    tag: d.tag || d.id || 'rx-push',
+    data: d.data || (d.url ? { url: d.url } : {}),
+  }));
+});

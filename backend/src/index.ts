@@ -14,7 +14,7 @@ import { adminRoutes } from './routes/admin';
 import { aiRoutes } from './routes/ai';
 import { getSetting, getAllSettings, putSettings, SETTING_DEFAULTS, PUBLIC_SETTING_KEYS } from './services/settings';
 import { getAllContent, putContent, getContentHistory, revertContent } from './services/content';
-import { trackAdEvent, getAdStats } from './services/ads';
+import { trackAdEvent, getAdStats, createAdShare, listAdShares, revokeAdShare, getPublicShare } from './services/ads';
 import { updatesRoutes } from './routes/updates';
 
 const router = new Router();
@@ -231,6 +231,30 @@ export default {
     }
     if (path === '/admin/ads/stats' && request.method === 'GET') {
       return json({ success: true, data: { stats: await getAdStats(env) } }, 200, origin);
+    }
+    // Sponsor self-serve — admin mints a read-only dashboard link per ad
+    if (path === '/admin/ads/shares' && request.method === 'POST') {
+      let body: any = {};
+      try { body = await request.json(); } catch { /* empty */ }
+      const r = await createAdShare(env, String(body?.adId || ''), String(body?.label || ''));
+      if (!r.ok) return json({ success: false, error: { code: 'BAD_REQUEST', message: r.error } }, 400, origin);
+      return json({ success: true, data: r.share }, 200, origin);
+    }
+    if (path === '/admin/ads/shares' && request.method === 'GET') {
+      return json({ success: true, data: { shares: await listAdShares(env) } }, 200, origin);
+    }
+    if (path.match(/^\/admin\/ads\/shares\/[a-f0-9]{32}$/) && request.method === 'DELETE') {
+      const token = path.split('/').pop() || '';
+      const removed = await revokeAdShare(env, token);
+      if (!removed) return json({ success: false, error: { code: 'NOT_FOUND', message: 'Share link not found' } }, 404, origin);
+      return json({ success: true, data: { message: 'Share link revoked' } }, 200, origin);
+    }
+    // Public, token-gated sponsor dashboard data — totals + last 30 days
+    if (path.match(/^\/ads\/public\/[a-f0-9]{32}$/) && request.method === 'GET') {
+      const token = path.split('/').pop() || '';
+      const stats = await getPublicShare(env, token);
+      if (!stats) return json({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown or revoked sponsor link' } }, 404, origin);
+      return json({ success: true, data: stats }, 200, origin);
     }
     if (path === '/admin/settings' && request.method === 'GET') {
       const all = await getAllSettings(env);

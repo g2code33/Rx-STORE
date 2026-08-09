@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { X, Save, Loader2, Check, Trash2, ArrowUp, ArrowDown, Plus, UploadCloud, RotateCcw, Paintbrush, Monitor, Tablet, Smartphone, History } from 'lucide-react';
+import { X, Save, Loader2, Check, Trash2, ArrowUp, ArrowDown, Plus, UploadCloud, RotateCcw, Paintbrush, Monitor, Tablet, Smartphone, History, Link2, Send } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useContent } from '../../context/ContentContext';
 import { useEditMode } from './EditMode';
 import { StyleOverrides } from './Editable';
 import { newBlock, BLOCK_TYPE_LABELS, BlockType, PageBlock } from './PageBlocks';
-import { newIntroAd, IntroAd, readAdStats, fetchAdServerStats, AdStat } from '../home/introAds';
+import { newIntroAd, IntroAd, readAdStats, fetchAdServerStats, AdStat, isAdLive, adWindowLabel, dateForInput, createSponsorShare, listSponsorShares, revokeSponsorShare, sponsorUrl, SponsorShare } from '../home/introAds';
+import { broadcastPromo } from '../../promo';
 import { API_URL } from '../../services/api';
 
 /**
@@ -39,8 +40,54 @@ export default function Inspector() {
   const [uploading, setUploading] = useState(false);
   // Server-side ad totals (all devices) — loaded when the Ads editor opens
   const [serverAdStats, setServerAdStats] = useState<Record<string, AdStat>>({});
+  // Sponsor share links + promo composer
+  const [shares, setShares] = useState<SponsorShare[]>([]);
+  const [promoBusy, setPromoBusy] = useState(false);
+  const [promoForm, setPromoForm] = useState<{ adId: string; title: string; body: string; url: string }>({ adId: '', title: '', body: '', url: '' });
 
   const d = edit?.inspector;
+
+  const refreshShares = () => { listSponsorShares().then(setShares).catch(() => {}); };
+  useEffect(() => {
+    if (d?.type === 'introAds') refreshShares();
+  }, [d?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const copySponsorLink = async (ad: IntroAd) => {
+    try {
+      const existing = shares.find((s) => s.ad_id === ad.id);
+      const share = existing || (await createSponsorShare(ad.id, ad.sponsor ? `${ad.sponsor} — ${ad.title}` : ad.title));
+      if (!share) throw new Error('Could not create link');
+      const url = sponsorUrl(share.token);
+      try { await navigator.clipboard.writeText(url); toast.success('Sponsor link copied ✓'); }
+      catch { window.prompt('Sponsor link (copy it):', url); }
+      refreshShares();
+    } catch (e: any) { toast.error(e?.message || 'Sponsor link failed'); }
+  };
+
+  const fillPromoFromAd = (adId: string) => {
+    const ad = (getEffectiveJSON('intro.ads', []) as IntroAd[]).find((a) => a.id === adId);
+    setPromoForm({ adId, title: ad ? `🔥 ${ad.title}` : '', body: ad?.body || '', url: ad?.buttonTo || '' });
+  };
+
+  const sendPromo = async () => {
+    const title = promoForm.title.trim();
+    if (!title) { toast.error('Promo headline required'); return; }
+    setPromoBusy(true);
+    try {
+      const ads = getEffectiveJSON('intro.ads', []) as IntroAd[];
+      const ad = promoForm.adId ? ads.find((a) => a.id === promoForm.adId) : undefined;
+      const ok = await broadcastPromo({
+        id: `promo-${Date.now()}`,
+        title,
+        body: promoForm.body.trim(),
+        url: promoForm.url.trim() || ad?.buttonTo || '/',
+        iconUrl: ad?.imageUrl || undefined,
+        adId: ad?.id,
+      });
+      if (ok) toast.success('Promo broadcast — opted-in visitors get it shortly ✓');
+      else toast.error('Broadcast failed — check the connection');
+    } finally { setPromoBusy(false); }
+  };
   const styleKey = d ? `style.${d.id}` : '';
 
   useEffect(() => {
@@ -409,6 +456,15 @@ export default function Inspector() {
                             <p className="text-[10px] text-rx-gray-medium mt-1.5">
                               Creatives live in Builder toolbar → Ads. Views & clicks count into the same stats.
                             </p>
+                            <div className="flex items-center gap-1.5 mt-2">
+                              <label className="flex-1 flex items-center gap-1 text-[10px] text-rx-gray-medium">From
+                                <input type="date" className={`${inputCls} !py-1.5 !px-2 text-xs`} value={dateForInput(b.startsAt)} onChange={(e) => setField(i, 'startsAt', e.target.value)} />
+                              </label>
+                              <label className="flex-1 flex items-center gap-1 text-[10px] text-rx-gray-medium">To
+                                <input type="date" className={`${inputCls} !py-1.5 !px-2 text-xs`} value={dateForInput(b.endsAt)} onChange={(e) => setField(i, 'endsAt', e.target.value)} />
+                              </label>
+                            </div>
+                            <p className="text-[10px] text-rx-gray-medium mt-1">Optional window for this placement — outside it the banner hides itself.</p>
                           </>
                         )}
                       </div>
@@ -462,6 +518,15 @@ export default function Inspector() {
                             <input className={inputCls} value={ad.sponsor || ''} onChange={(e) => setField(i, 'sponsor', e.target.value)} placeholder="Sponsor name (optional)" />
                             <input type="color" value={ad.accent && /^#[0-9a-f]{6}$/i.test(ad.accent) ? ad.accent : '#FFD600'} onChange={(e) => setField(i, 'accent', e.target.value)} className="w-10 h-9 rounded-lg bg-transparent border border-white/10 cursor-pointer flex-shrink-0" title="Accent color" />
                           </div>
+                          <div className="flex items-center gap-1.5 mb-2">
+                            <label className="flex-1 flex items-center gap-1 text-[10px] text-rx-gray-medium">From
+                              <input type="date" className={`${inputCls} !py-1.5 !px-2 text-xs`} value={dateForInput(ad.startsAt)} onChange={(e) => setField(i, 'startsAt', e.target.value)} title="First day this ad can show (empty = always)" />
+                            </label>
+                            <label className="flex-1 flex items-center gap-1 text-[10px] text-rx-gray-medium">To
+                              <input type="date" className={`${inputCls} !py-1.5 !px-2 text-xs`} value={dateForInput(ad.endsAt)} onChange={(e) => setField(i, 'endsAt', e.target.value)} title="Last day (inclusive) — the ad parks itself after" />
+                            </label>
+                            <span className={`text-[9px] font-bold uppercase tracking-wider px-2 py-1 rounded-full flex-shrink-0 ${ad.enabled && isAdLive(ad) ? 'bg-green-400/15 text-green-400' : 'bg-white/5 text-rx-gray-medium'}`}>{adWindowLabel(ad)}</span>
+                          </div>
                           <div className="flex items-center gap-1.5 mb-1">
                             <input className={inputCls} value={ad.buttonLabel || ''} onChange={(e) => setField(i, 'buttonLabel', e.target.value)} placeholder="Button label" />
                             <input className={inputCls} value={ad.buttonTo || ''} onChange={(e) => setField(i, 'buttonTo', e.target.value)} placeholder="https://… or /path" />
@@ -472,12 +537,55 @@ export default function Inspector() {
                               : 'No server stats yet (deploy the worker for totals)'}
                             {st ? ` · ${st.views}/${st.clicks} this device` : ''}
                           </p>
+                          <button onClick={() => copySponsorLink(ad)} className="mt-1.5 text-[10px] font-bold text-rx-yellow hover:underline flex items-center gap-1" title="Create / copy this ad's read-only live-stats dashboard link">
+                            <Link2 className="w-3 h-3" /> Sponsor link
+                          </button>
                         </div>
                       );
                     })}
                     <button onClick={() => setList([...list, newIntroAd()])} className="w-full py-2.5 rounded-xl border border-dashed border-rx-yellow/40 text-rx-yellow text-sm font-bold flex items-center justify-center gap-1.5 hover:bg-rx-yellow/10">
                       <Plus className="w-4 h-4" /> New ad
                     </button>
+
+                    {/* Sponsor dashboards — read-only live stats links */}
+                    <div className="mt-5 rounded-xl border border-white/10 p-3 bg-rx-dark/50">
+                      <p className="text-[11px] font-bold text-white mb-1.5 flex items-center gap-1.5"><Link2 className="w-3.5 h-3.5 text-rx-yellow" /> Sponsor dashboards</p>
+                      <p className="text-[10px] text-rx-gray-medium mb-1">Send each sponsor their own live stats link. Use "Sponsor link" on an ad above to mint one.</p>
+                      {shares.length === 0 && <p className="text-[10px] text-rx-gray-medium">No links yet.</p>}
+                      {shares.map((s) => (
+                        <div key={s.token} className="flex items-center gap-2 py-1.5 border-t border-white/5 first:border-0">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs text-white truncate">{s.label || s.ad_id}</p>
+                            <p className="text-[10px] text-rx-gray-medium truncate">/sponsor/{s.token.slice(0, 8)}…{s.created_at ? ` · since ${String(s.created_at).slice(0, 10)}` : ''}</p>
+                          </div>
+                          <button
+                            onClick={async () => { const url = sponsorUrl(s.token); try { await navigator.clipboard.writeText(url); toast.success('Copied ✓'); } catch { window.prompt('Sponsor link (copy it):', url); } }}
+                            className="px-2 py-1 rounded-lg bg-rx-yellow/10 text-rx-yellow text-[10px] font-bold hover:bg-rx-yellow/20 flex-shrink-0"
+                          >Copy</button>
+                          <button
+                            onClick={async () => { if (!confirm(`Revoke the link for "${s.label || s.ad_id}"? It stops working immediately.`)) return; try { await revokeSponsorShare(s.token); toast.success('Link revoked'); refreshShares(); } catch { toast.error('Revoke failed'); } }}
+                            className="p-1.5 rounded-lg text-red-400/80 hover:bg-red-400/10 flex-shrink-0" title="Revoke — link dies instantly"
+                          ><Trash2 className="w-3.5 h-3.5" /></button>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Broadcast promo — PWA/deal-alert notifications tied to an ad */}
+                    <div className="mt-3 rounded-xl border border-rx-yellow/25 p-3 bg-rx-yellow/5">
+                      <p className="text-[11px] font-bold text-white mb-1.5 flex items-center gap-1.5"><Send className="w-3.5 h-3.5 text-rx-yellow" /> Broadcast promo</p>
+                      <p className="text-[10px] text-rx-gray-medium mb-2.5">Push a notification to every visitor with deal alerts on (PWA + desktop app). Pick an ad to prefill.</p>
+                      <select className={`${selCls} mb-2`} value={promoForm.adId} onChange={(e) => fillPromoFromAd(e.target.value)}>
+                        <option value="">✍️ Custom promo (no ad)…</option>
+                        {(list as IntroAd[]).map((ad) => <option key={ad.id} value={ad.id}>{ad.title}</option>)}
+                      </select>
+                      <input className={`${inputCls} mb-2`} value={promoForm.title} onChange={(e) => setPromoForm({ ...promoForm, title: e.target.value })} placeholder="Notification headline" maxLength={80} />
+                      <input className={`${inputCls} mb-2`} value={promoForm.body} onChange={(e) => setPromoForm({ ...promoForm, body: e.target.value })} placeholder="One short body line (optional)" maxLength={140} />
+                      <input className={`${inputCls} mb-2`} value={promoForm.url} onChange={(e) => setPromoForm({ ...promoForm, url: e.target.value })} placeholder="Tap destination — /browse or https://…" />
+                      <button onClick={sendPromo} disabled={promoBusy} className="w-full py-2.5 rounded-xl bg-rx-yellow text-rx-dark text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-rx-yellow-light disabled:opacity-50">
+                        {promoBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />} Broadcast now
+                      </button>
+                      <p className="text-[10px] text-rx-gray-medium mt-1.5">Reaches open tabs within ~30 min and every device on next launch. Each promo alerts a device once.</p>
+                    </div>
                     {list.length === 0 && (
                       <p className="text-[11px] text-rx-gray-medium mt-2 text-center">No ads — the welcome hero shows instead. This is also how you sell the slot later.</p>
                     )}

@@ -6,6 +6,8 @@ import Footer from './components/layout/Footer';
 import MobileTabBar from './components/layout/MobileTabBar';
 import { AIFloatingButton } from './components/ai/AIChat';
 import UpdateBanner from './components/desktop/UpdateBanner';
+import PromoOptIn from './components/promo/PromoOptIn';
+import { startPromoWatcher } from './promo';
 import { getPublicSettings } from './services/api';
 import { useAuth } from './context/AuthContext';
 import { EditModeContext, getBuilderCtx, subscribeBuilder } from './components/edit/EditMode';
@@ -61,6 +63,7 @@ const Admin = lazy(() => import('./pages/Admin'));
 const Privacy = lazy(() => import('./pages/Privacy'));
 const Terms = lazy(() => import('./pages/Terms'));
 const Advertise = lazy(() => import('./pages/Advertise'));
+const Sponsor = lazy(() => import('./pages/Sponsor'));
 
 function LoadingFallback() {
   return (
@@ -99,6 +102,7 @@ function ScrollToTop() {
 }
 
 export default function App() {
+  React.useEffect(() => startPromoWatcher(), []); // promo alerts (opt-in only)
   return (
     <div className="min-h-screen bg-rx-dark text-white flex flex-col">
       <ScrollToTop />
@@ -130,6 +134,7 @@ export default function App() {
             <Route path="/privacy" element={<Privacy />} />
             <Route path="/terms" element={<Terms />} />
             <Route path="/advertise" element={<Advertise />} />
+            <Route path="/sponsor/:token" element={<Sponsor />} />
             <Route path="/admin" element={<Admin />} />
           </Routes>
         </Suspense>
@@ -137,6 +142,7 @@ export default function App() {
       <Footer />
       <AIFloatingButton />
       <UpdateBanner />
+      <PromoOptIn />
       <MobileTabBar />
       </BuilderScope>
       </MaintenanceGate>
