@@ -70,18 +70,31 @@ jobs:
 
       # Wine lets electron-builder embed the RX icon + version info into the
       # Windows .exe while building on Ubuntu (that's rcedit, needs `wine`).
-      - name: Install Wine (for the Windows installer)
+      # apt on hosted runners is flaky — retries, alternate packages, and a
+      # graceful fallback that still ships the installer (default exe icon).
+      - name: Install Wine (for the Windows installer icon)
+        id: wine
         run: |
-          set -e
-          if ! command -v wine >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends wine64
+          sudo apt-get update -y -o Acquire::Retries=3 || sudo apt-get update -y || true
+          if sudo apt-get install -y --no-install-recommends --fix-missing wine64 \
+          || sudo apt-get install -y --no-install-recommends wine wine64 wine32; then
             command -v wine >/dev/null 2>&1 || sudo ln -sf "$(command -v wine64)" /usr/local/bin/wine
+            echo "wine_ok=1" >> "$GITHUB_OUTPUT"
+            wine --version || true
+          else
+            echo "wine_ok=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::Wine unavailable — .exe ships without embedded icon/metadata; the installer itself is unaffected."
           fi
-          wine --version
 
       - name: Build & publish Windows .exe + Linux .deb/.AppImage to GitHub Releases
-        run: npm run dist -- --publish always
+        run: |
+          set -e
+          if [ "${{ steps.wine.outputs.wine_ok }}" = "1" ]; then
+            npm run dist -- --publish always
+          else
+            npm pkg set build.win.signAndEditExecutable=false
+            npm run dist -- --publish always
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Always (re)publish assets for this version, even if the release

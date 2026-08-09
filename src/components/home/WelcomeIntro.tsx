@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, Megaphone } from 'lucide-react';
 import { useContent } from '../../context/ContentContext';
 import { useApps } from '../../context/AppContext';
 import { useEditMode } from '../edit/EditMode';
 import StatsBar, { DEFAULT_STATS } from './StatsBar';
+import { IntroAd, pickAd, trackAd, sanitizeAccent } from './introAds';
 
 const INTRO_MS = 3000;
 const FADE_MS = 700;
@@ -14,11 +15,11 @@ const FADE_MS = 700;
 let introShownThisLoad = false;
 
 /**
- * Fresh-open welcome hero: the exact hero (same content ids, so builder edits
- * apply) fills the screen for 3 seconds on every refresh, then fades out —
- * revealing the Applications grid scrolled into view. A Skip control and a
- * thin progress bar keep it honest, and it never appears inside the builder.
- * (Ad space candidate later.)
+ * Fresh-open welcome hero: fills the screen for 3 seconds on every refresh,
+ * then fades out — revealing the Applications grid scrolled into view.
+ * When the admin publishes intro ads (Builder toolbar → Ads), ONE sponsored
+ * card replaces the hero for that load — rotated per refresh, same 3s timer,
+ * same Skip. Never appears inside the builder.
  */
 export default function WelcomeIntro() {
   const edit = useEditMode();
@@ -31,8 +32,21 @@ export default function WelcomeIntro() {
   });
   const [phase, setPhase] = useState<'show' | 'fade'>('show');
   const [gone, setGone] = useState(false);
-  const { get, getJSON } = useContent();
+  const { get, getJSON, ready } = useContent();
   const { apps } = useApps();
+
+  // Ad roll: once content has arrived, pick this refresh's ad (round-robin).
+  const [ad, setAd] = useState<IntroAd | null>(null);
+  const rolled = React.useRef(false);
+  useEffect(() => {
+    if (!enabled || builderActive || rolled.current || !ready) return;
+    rolled.current = true;
+    const picked = pickAd(getJSON<IntroAd[]>('intro.ads', []));
+    if (picked) {
+      setAd(picked);
+      trackAd(picked.id, 'views');
+    }
+  }, [enabled, builderActive, ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const btn1 = getJSON('home.hero.btn1', { label: 'Explore Applications', to: '/browse' });
   const btn2 = getJSON('home.hero.btn2', { label: 'Learn More', to: '/about' });
@@ -43,7 +57,7 @@ export default function WelcomeIntro() {
     document.body.style.overflow = 'hidden';
     const fade = setTimeout(() => {
       setPhase('fade');
-      // Position the applications grid under the dissolving hero
+      // Position the applications grid under the dissolving intro
       document.getElementById('apps-section')?.scrollIntoView({ behavior: 'auto', block: 'start' });
     }, INTRO_MS);
     const remove = setTimeout(() => {
@@ -65,60 +79,109 @@ export default function WelcomeIntro() {
     setGone(true);
   };
 
+  const accent = ad ? sanitizeAccent(ad.accent) : '#FFD600';
+  const AdCta = ({ ad: a }: { ad: IntroAd }) => {
+    const cls = 'inline-flex items-center gap-2 font-bold rounded-xl px-7 py-3 text-base transition-transform active:scale-95 hover:brightness-110';
+    const style = { background: accent, color: '#0F1419' };
+    const onClick = () => trackAd(a.id, 'clicks');
+    if (a.buttonTo && /^https?:\/\//.test(a.buttonTo)) {
+      return <a href={a.buttonTo} target="_blank" rel="noreferrer" className={cls} style={style} onClick={() => { onClick(); dismiss(); }}>{a.buttonLabel || 'Learn more'} ↗</a>;
+    }
+    return <Link to={a.buttonTo || '/'} className={cls} style={style} onClick={onClick}>{a.buttonLabel || 'Learn more'}</Link>;
+  };
+
   return (
     <div
       className={`fixed inset-0 z-[100] bg-rx-dark overflow-hidden transition-opacity ease-out ${phase === 'fade' ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
       style={{ transitionDuration: `${FADE_MS}ms` }}
       role="dialog"
-      aria-label="Welcome to RX Store"
+      aria-label={ad ? 'Sponsored' : 'Welcome to RX Store'}
     >
       {/* Same backdrop treatment as the hero */}
       <div className="absolute inset-0 bg-gradient-hero" />
       <div className="absolute top-0 left-1/4 w-96 h-96 bg-rx-yellow/5 rounded-full blur-3xl animate-float" />
       <div className="absolute bottom-0 right-1/4 w-80 h-80 bg-rx-yellow/3 rounded-full blur-3xl animate-float" style={{ animationDelay: '-3s' }} />
 
-      <div className="relative h-full section-container flex flex-col items-center justify-center text-center overflow-y-auto py-16">
-        <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-rx-yellow/10 border border-rx-yellow/20 mb-8 animate-fade-in">
-          <div className="w-2 h-2 bg-rx-yellow rounded-full animate-pulse" />
-          <span className="text-xs font-medium text-rx-yellow">{get('home.hero.badge', 'Platform v1.0 — Now Available')}</span>
+      {ad ? (
+        /* ================= SPONSORED CARD (rotates per refresh) ================= */
+        <div className="relative h-full section-container flex flex-col items-center justify-center overflow-y-auto py-16">
+          <div className="w-full max-w-xl animate-slide-up">
+            <div
+              className="rounded-3xl border bg-rx-dark-secondary/85 backdrop-blur-xl overflow-hidden"
+              style={{ borderColor: `${accent}4D`, boxShadow: `0 30px 90px -30px ${accent}66` }}
+            >
+              {ad.imageUrl && (
+                <img
+                  src={ad.imageUrl}
+                  alt={ad.title}
+                  className="w-full h-48 sm:h-60 object-cover"
+                  onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                />
+              )}
+              <div className="p-7 sm:p-9 text-center">
+                <span
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest"
+                  style={{ background: `${accent}1F`, color: accent }}
+                >
+                  <Megaphone className="w-3 h-3" /> Sponsored{ad.sponsor ? ` · ${ad.sponsor}` : ''}
+                </span>
+                <h2 className="text-3xl sm:text-4xl font-black text-white mt-4 leading-tight">{ad.title}</h2>
+                {ad.body && <p className="mt-3 text-rx-gray-medium leading-relaxed whitespace-pre-line">{ad.body}</p>}
+                <div className="mt-7">
+                  <AdCta ad={ad} />
+                </div>
+              </div>
+            </div>
+            <p className="text-center text-[11px] text-white/30 mt-4">
+              {get('intro.ads.footNote', 'Advertisement — keeps RX Store free for everyone')}
+            </p>
+          </div>
         </div>
+      ) : (
+        /* ================= DEFAULT WELCOME HERO (no ads published) ================= */
+        <div className="relative h-full section-container flex flex-col items-center justify-center text-center overflow-y-auto py-16">
+          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-rx-yellow/10 border border-rx-yellow/20 mb-8 animate-fade-in">
+            <div className="w-2 h-2 bg-rx-yellow rounded-full animate-pulse" />
+            <span className="text-xs font-medium text-rx-yellow">{get('home.hero.badge', 'Platform v1.0 — Now Available')}</span>
+          </div>
 
-        <h1 className="text-4xl sm:text-5xl lg:text-7xl font-black text-white leading-tight animate-slide-up">
-          {get('home.hero.l1', 'The Future of')}
-          <br />
-          <span className="gradient-text">{get('home.hero.l2', 'Healthcare Apps')}</span>
-          <br />
-          {get('home.hero.l3', 'Starts Here')}
-        </h1>
+          <h1 className="text-4xl sm:text-5xl lg:text-7xl font-black text-white leading-tight animate-slide-up">
+            {get('home.hero.l1', 'The Future of')}
+            <br />
+            <span className="gradient-text">{get('home.hero.l2', 'Healthcare Apps')}</span>
+            <br />
+            {get('home.hero.l3', 'Starts Here')}
+          </h1>
 
-        <p className="mt-6 text-lg sm:text-xl text-rx-gray-medium max-w-2xl leading-relaxed animate-slide-up text-balance" style={{ animationDelay: '0.1s' }}>
-          {get('home.hero.subtitle', 'Discover, download, and manage premium applications for healthcare, education, productivity, and technology — all in one professional marketplace.')}
-        </p>
+          <p className="mt-6 text-lg sm:text-xl text-rx-gray-medium max-w-2xl leading-relaxed animate-slide-up text-balance" style={{ animationDelay: '0.1s' }}>
+            {get('home.hero.subtitle', 'Discover, download, and manage premium applications for healthcare, education, productivity, and technology — all in one professional marketplace.')}
+          </p>
 
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mt-10 animate-slide-up" style={{ animationDelay: '0.2s' }}>
-          <Link to={btn1.to || '/browse'} className="btn-primary text-base flex items-center gap-2 group">
-            {btn1.label}
-            <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-          </Link>
-          <Link to={btn2.to || '/about'} className="btn-secondary text-base">{btn2.label}</Link>
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mt-10 animate-slide-up" style={{ animationDelay: '0.2s' }}>
+            <Link to={btn1.to || '/browse'} className="btn-primary text-base flex items-center gap-2 group">
+              {btn1.label}
+              <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+            </Link>
+            <Link to={btn2.to || '/about'} className="btn-secondary text-base">{btn2.label}</Link>
+          </div>
+
+          <div className="w-full max-w-2xl">
+            <StatsBar apps={apps} labels={statsLabels} />
+          </div>
         </div>
+      )}
 
-        <div className="w-full max-w-2xl">
-          <StatsBar apps={apps} labels={statsLabels} />
-        </div>
-      </div>
-
-      {/* Skip + 5s progress */}
+      {/* Skip + 3s progress */}
       <button
         onClick={dismiss}
         className="absolute bottom-8 right-6 sm:right-10 text-xs font-semibold text-rx-gray-medium hover:text-rx-yellow transition-colors flex items-center gap-1"
       >
-        Skip intro <ArrowRight className="w-3.5 h-3.5" />
+        {ad ? get('intro.ads.skipLabel', 'Skip ad') : 'Skip intro'} <ArrowRight className="w-3.5 h-3.5" />
       </button>
       <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white/5">
         <div
-          className="h-full bg-rx-yellow"
-          style={{ animation: `rx-intro-progress ${INTRO_MS}ms linear forwards` }}
+          className="h-full"
+          style={{ background: accent, animation: `rx-intro-progress ${INTRO_MS}ms linear forwards` }}
         />
       </div>
       <style>{`@keyframes rx-intro-progress { from { width: 0% } to { width: 100% } }`}</style>

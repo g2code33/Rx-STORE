@@ -4,7 +4,7 @@ import React, { createContext, useContext } from 'react';
 export type EditType =
   | 'text' | 'textarea' | 'link' | 'image' | 'color'
   | 'textList' | 'features' | 'platformCards' | 'categories'
-  | 'stackCards' | 'statsLabels' | 'linkList' | 'design' | 'blocks';
+  | 'stackCards' | 'statsLabels' | 'linkList' | 'design' | 'blocks' | 'introAds';
 
 export interface EditDescriptor { id: string; type: EditType; label: string }
 

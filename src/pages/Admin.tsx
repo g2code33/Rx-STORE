@@ -7,6 +7,7 @@ import {
   Monitor, Eye, Paintbrush, Loader2, Rocket, MousePointerClick, Tablet, Smartphone, PanelRight
 } from 'lucide-react';
 import { useApps } from '../context/AppContext';
+import { useCategories } from '../hooks/useCategories';
 import { formatDownloadCount } from '../utils/helpers';
 import NotificationComposer from '../components/admin/NotificationComposer';
 import { useContent } from '../context/ContentContext';
@@ -17,6 +18,8 @@ const BuilderHome = lazy(() => import('./Home'));
 const BuilderAbout = lazy(() => import('./About'));
 const BuilderBrowse = lazy(() => import('./Browse'));
 const BuilderAppDetail = lazy(() => import('./AppDetail'));
+const BuilderCategories = lazy(() => import('./Categories'));
+const BuilderCategoryPage = lazy(() => import('./CategoryPage'));
 
 /** Pages the Live Builder can edit + where their custom blocks are stored. */
 const BUILDER_PAGES = [
@@ -24,9 +27,11 @@ const BUILDER_PAGES = [
   { id: 'about', label: 'About' },
   { id: 'browse', label: 'Browse' },
   { id: 'app', label: 'App page' },
+  { id: 'categories', label: 'Categories' },
+  { id: 'category', label: 'Category' },
 ] as const;
 type BuilderPageId = (typeof BUILDER_PAGES)[number]['id'];
-const PAGE_BLOCKS_KEY: Record<BuilderPageId, string> = { home: 'home', about: 'about', browse: 'browse', app: 'appDetail' };
+const PAGE_BLOCKS_KEY: Record<BuilderPageId, string> = { home: 'home', about: 'about', browse: 'browse', app: 'appDetail', categories: 'categories', category: 'categoryPage' };
 
 /** Relative time for activity rows ("3h ago") */
 function ago(t?: string) {
@@ -65,6 +70,8 @@ export default function Admin() {
   const [device, setDevice] = useState<'desktop' | 'tablet' | 'phone'>('desktop');
   const lastInspector = React.useRef<EditDescriptor | null>(null);
   const { pending, publishAll } = useContent();
+  const builderCats = useCategories();
+  const builderFirstCategory = builderCats[0]?.id;
 
   const editCtx: EditCtxType = {
     editMode: view === 'builder' && !interact,
@@ -231,6 +238,18 @@ export default function Admin() {
                 <Plus className="w-3.5 h-3.5" /> Add
               </button>
 
+              {/* Intro ads — sponsored cards on the 3s welcome screen */}
+              <button
+                onClick={() => {
+                  editCtx.openInspector({ id: 'intro.ads', type: 'introAds', label: 'Welcome intro — sponsored cards' });
+                  toast('One ad shows per refresh, rotated in order — refresh the site to preview', { icon: '📣', duration: 4000 });
+                }}
+                className="px-3.5 py-1.5 text-xs font-semibold rounded-xl border border-white/10 text-rx-gray-medium hover:text-rx-yellow flex items-center gap-1.5"
+                title="Manage the sponsored card on the 3-second welcome intro"
+              >
+                <Megaphone className="w-3.5 h-3.5" /> Ads
+              </button>
+
               {/* Inspector toggle */}
               <button
                 onClick={() => {
@@ -263,7 +282,9 @@ export default function Admin() {
               {builderPage === 'home' ? <BuilderHome /> :
                builderPage === 'about' ? <BuilderAbout /> :
                builderPage === 'browse' ? <BuilderBrowse /> :
-               <BuilderAppDetail previewSlug={(apps as any[])[0]?.slug} />}
+               builderPage === 'app' ? <BuilderAppDetail previewSlug={(apps as any[])[0]?.slug} /> :
+               builderPage === 'categories' ? <BuilderCategories /> :
+               <BuilderCategoryPage previewCategory={builderFirstCategory} />}
             </Suspense>
           </div>
           <Inspector />

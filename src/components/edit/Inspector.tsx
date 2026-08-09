@@ -5,6 +5,7 @@ import { useContent } from '../../context/ContentContext';
 import { useEditMode } from './EditMode';
 import { StyleOverrides } from './Editable';
 import { newBlock, BLOCK_TYPE_LABELS, BlockType, PageBlock } from './PageBlocks';
+import { newIntroAd, IntroAd, readAdStats } from '../home/introAds';
 import { API_URL } from '../../services/api';
 
 /**
@@ -351,6 +352,7 @@ export default function Inspector() {
                             <div className="flex items-center gap-1.5 mb-2">
                               <input className={`${inputCls} !w-14 text-center`} value={b.icon || ''} onChange={(e) => setField(i, 'icon', e.target.value)} title="Emoji shown above the heading" placeholder="🚀" />
                               <input className={inputCls} value={b.buttonLabel || ''} onChange={(e) => setField(i, 'buttonLabel', e.target.value)} placeholder="Button label (empty = no button)" />
+                              <input type="color" value={b.accent && /^#[0-9a-f]{6}$/i.test(b.accent) ? b.accent : '#FFD600'} onChange={(e) => setField(i, 'accent', e.target.value)} className="w-10 h-9 rounded-lg bg-transparent border border-white/10 cursor-pointer flex-shrink-0" title="Accent — border, glow & button tint" />
                             </div>
                             <input className={`${inputCls} mb-2`} value={b.buttonTo || ''} onChange={(e) => setField(i, 'buttonTo', e.target.value)} placeholder="Button destination — /browse or https://…" />
                           </>
@@ -401,6 +403,57 @@ export default function Inspector() {
                     </div>
                     {list.length === 0 && (
                       <p className="text-[11px] text-rx-gray-medium mt-2 text-center">No blocks yet — pick a type above to insert your first section.</p>
+                    )}
+                  </>
+                )}
+                {d.type === 'introAds' && (
+                  <>
+                    <p className="text-[11px] text-rx-gray-medium mb-3">
+                      One sponsored card shows on the welcome intro per page refresh — rotated in this order, 3s auto-dismiss, visitors can skip. Refresh your own tab to preview.
+                    </p>
+                    {(list as IntroAd[]).map((ad, i) => {
+                      const st = readAdStats()[ad.id];
+                      return (
+                        <div key={ad.id || i} className={`rounded-xl border p-3 mb-3 bg-rx-dark/50 ${ad.enabled ? 'border-rx-yellow/30' : 'border-white/10 opacity-70'}`}>
+                          <div className="flex items-center gap-1.5 mb-2">
+                            <button
+                              onClick={() => setField(i, 'enabled', !ad.enabled)}
+                              className={`w-10 h-5 rounded-full relative transition-colors flex-shrink-0 ${ad.enabled ? 'bg-rx-yellow' : 'bg-rx-dark-tertiary border border-white/10'}`}
+                              title={ad.enabled ? 'Live — click to pause' : 'Paused — click to go live'}
+                            >
+                              <span className={`w-3.5 h-3.5 rounded-full absolute top-[3px] transition-all ${ad.enabled ? 'right-[3px] bg-rx-dark' : 'left-[3px] bg-white/70'}`} />
+                            </button>
+                            <input className={inputCls} value={ad.title || ''} onChange={(e) => setField(i, 'title', e.target.value)} placeholder="Ad headline" />
+                            <ListBtns i={i} len={list.length} move={move} removeAt={removeAt} />
+                          </div>
+                          <textarea className={`${inputCls} resize-y min-h-[56px] mb-2`} value={ad.body || ''} onChange={(e) => setField(i, 'body', e.target.value)} placeholder="Body (optional)" />
+                          {ad.imageUrl && <img src={ad.imageUrl} alt="" className="w-full h-20 object-cover rounded-lg border border-white/10 mb-2" />}
+                          <div className="flex items-center gap-1.5 mb-2">
+                            <input className={inputCls} value={ad.imageUrl || ''} onChange={(e) => setField(i, 'imageUrl', e.target.value)} placeholder="Banner image URL (optional)…" />
+                            <label className="px-3 py-2 rounded-lg bg-rx-yellow text-rx-dark text-xs font-bold cursor-pointer hover:bg-rx-yellow-light flex-shrink-0">
+                              {uploading ? '…' : 'Upload'}
+                              <input type="file" accept="image/*" className="hidden" disabled={uploading} onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadImage(f, (url) => setField(i, 'imageUrl', url)); e.target.value = ''; }} />
+                            </label>
+                          </div>
+                          <div className="flex items-center gap-1.5 mb-2">
+                            <input className={inputCls} value={ad.sponsor || ''} onChange={(e) => setField(i, 'sponsor', e.target.value)} placeholder="Sponsor name (optional)" />
+                            <input type="color" value={ad.accent && /^#[0-9a-f]{6}$/i.test(ad.accent) ? ad.accent : '#FFD600'} onChange={(e) => setField(i, 'accent', e.target.value)} className="w-10 h-9 rounded-lg bg-transparent border border-white/10 cursor-pointer flex-shrink-0" title="Accent color" />
+                          </div>
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <input className={inputCls} value={ad.buttonLabel || ''} onChange={(e) => setField(i, 'buttonLabel', e.target.value)} placeholder="Button label" />
+                            <input className={inputCls} value={ad.buttonTo || ''} onChange={(e) => setField(i, 'buttonTo', e.target.value)} placeholder="https://… or /path" />
+                          </div>
+                          <p className="text-[10px] text-rx-gray-medium mt-1.5">
+                            {st ? `${st.views || 0} views · ${st.clicks || 0} clicks (this device)` : 'No views on this device yet'}
+                          </p>
+                        </div>
+                      );
+                    })}
+                    <button onClick={() => setList([...list, newIntroAd()])} className="w-full py-2.5 rounded-xl border border-dashed border-rx-yellow/40 text-rx-yellow text-sm font-bold flex items-center justify-center gap-1.5 hover:bg-rx-yellow/10">
+                      <Plus className="w-4 h-4" /> New ad
+                    </button>
+                    {list.length === 0 && (
+                      <p className="text-[11px] text-rx-gray-medium mt-2 text-center">No ads — the welcome hero shows instead. This is also how you sell the slot later.</p>
                     )}
                   </>
                 )}

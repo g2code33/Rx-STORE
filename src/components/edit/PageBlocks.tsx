@@ -25,6 +25,8 @@ export interface PageBlock {
   icon?: string;
   buttonLabel?: string;
   buttonTo?: string;
+  /** cta — #RRGGBB tint for the border, glow and button */
+  accent?: string;
   /** image */
   imageUrl?: string;
   imageAlt?: string;
@@ -58,29 +60,38 @@ export function newBlock(type: BlockType): PageBlock {
 }
 
 /** Internal links use the router; external open in a new tab. */
-function BlockLink({ to, className, children }: { to: string; className?: string; children: React.ReactNode }) {
-  if (/^https?:\/\//.test(to)) return <a href={to} target="_blank" rel="noreferrer" className={className}>{children}</a>;
-  return <Link to={to || '/'} className={className}>{children}</Link>;
+function BlockLink({ to, className, style, children }: { to: string; className?: string; style?: React.CSSProperties; children: React.ReactNode }) {
+  if (/^https?:\/\//.test(to)) return <a href={to} target="_blank" rel="noreferrer" className={className} style={style}>{children}</a>;
+  return <Link to={to || '/'} className={className} style={style}>{children}</Link>;
 }
 
 function BlockView({ block }: { block: PageBlock }) {
   switch (block.type) {
-    case 'cta':
+    case 'cta': {
+      const accent = block.accent && /^#[0-9a-f]{6}$/i.test(block.accent) ? block.accent : null;
       return (
-        <div className="relative overflow-hidden rounded-3xl border border-rx-yellow/20 bg-gradient-to-br from-rx-dark-secondary to-rx-dark px-6 py-14 text-center">
-          <div className="absolute -top-16 left-1/4 w-72 h-72 bg-rx-yellow/10 rounded-full blur-3xl pointer-events-none" />
+        <div
+          className="relative overflow-hidden rounded-3xl border bg-gradient-to-br from-rx-dark-secondary to-rx-dark px-6 py-14 text-center"
+          style={accent ? { borderColor: `${accent}4D`, boxShadow: `0 24px 80px -32px ${accent}55` } : { borderColor: 'rgba(255,214,0,0.2)' }}
+        >
+          <div className="absolute -top-16 left-1/4 w-72 h-72 rounded-full blur-3xl pointer-events-none" style={{ background: accent ? `${accent}1A` : 'rgba(255,214,0,0.1)' }} />
           <div className="relative">
             {block.icon && <div className="text-5xl mb-4">{block.icon}</div>}
             <h2 className="text-2xl sm:text-3xl font-bold text-white">{block.title}</h2>
             {block.body && <p className="mt-3 text-rx-gray-medium max-w-2xl mx-auto whitespace-pre-line">{block.body}</p>}
             {block.buttonLabel && (
-              <BlockLink to={block.buttonTo || '/'} className="btn-primary inline-flex items-center gap-2 mt-7">
+              <BlockLink
+                to={block.buttonTo || '/'}
+                className={`${accent ? 'font-bold text-rx-dark hover:brightness-110' : 'btn-primary'} inline-flex items-center gap-2 mt-7 rounded-xl px-6 py-3 transition-all active:scale-95`}
+                style={accent ? { background: accent } : undefined}
+              >
                 {block.buttonLabel}
               </BlockLink>
             )}
           </div>
         </div>
       );
+    }
     case 'text':
       return (
         <div className="max-w-3xl mx-auto">
