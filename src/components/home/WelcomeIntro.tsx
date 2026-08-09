@@ -5,9 +5,8 @@ import { useContent } from '../../context/ContentContext';
 import { useApps } from '../../context/AppContext';
 import { useEditMode } from '../edit/EditMode';
 import StatsBar, { DEFAULT_STATS } from './StatsBar';
-import { IntroAd, pickAd, trackAd, sanitizeAccent } from './introAds';
+import { IntroAd, pickAd, trackAd, sanitizeAccent, INTRO_DURATION_KEY, DEFAULT_INTRO_MS, parseIntroDuration } from './introAds';
 
-const INTRO_MS = 3000;
 const FADE_MS = 700;
 
 // Once per FULL page load (module state resets on refresh) — so the intro
@@ -24,11 +23,40 @@ export function replayWelcomeIntro() {
 }
 
 /**
- * Fresh-open welcome hero: fills the screen for 3 seconds on every refresh
- * AND on every click of a Home control, then fades out — revealing the
- * Applications grid scrolled into view. When the admin publishes intro ads
- * (Builder toolbar → Ads), ONE sponsored card replaces the hero for that
- * showing — rotated per play, same 3s timer, same Skip. Never in the builder.
+ * Ad canvas is DEFINED as 16:9 (recommended creative: 1200×675 px). The image
+ * is letterboxed inside the frame — always shown in FULL, never cropped — with
+ * a softly blurred copy of itself filling the frame behind it.
+ */
+function AdImage({ src, alt, accent }: { src: string; alt: string; accent: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
+  return (
+    <div className="relative w-full aspect-video overflow-hidden bg-black/50">
+      <img
+        src={src}
+        alt=""
+        aria-hidden
+        className="absolute inset-0 w-full h-full object-cover blur-2xl opacity-40 scale-125"
+        onError={() => setFailed(true)}
+      />
+      <img
+        src={src}
+        alt={alt}
+        className="relative w-full h-full object-contain"
+        style={{ filter: `drop-shadow(0 8px 24px ${accent}22)` }}
+        onError={() => setFailed(true)}
+      />
+    </div>
+  );
+}
+
+/**
+ * Fresh-open welcome hero: fills the screen on every refresh AND on every
+ * click of a Home control, then fades out — revealing the Applications grid
+ * scrolled into view. On-screen time is admin-adjustable (Builder → Ads →
+ * Intro duration, default 3s). When the admin publishes intro ads (Builder
+ * toolbar → Ads), ONE sponsored card replaces the hero for that showing —
+ * rotated per play, same timer, same Skip. Never in the builder.
  */
 export default function WelcomeIntro() {
   const edit = useEditMode();
@@ -46,6 +74,19 @@ export default function WelcomeIntro() {
   const [replayKey, setReplayKey] = useState(0);
   const { get, getJSON, ready } = useContent();
   const { apps } = useApps();
+  // Admin-adjustable on-screen time (Builder → Ads → Intro duration), default 3s.
+  const introMs = parseIntroDuration(get(INTRO_DURATION_KEY, String(DEFAULT_INTRO_MS)));
+
+  // Arm the countdown only once content has landed (so the admin's duration
+  // applies on THIS viewing) — but never hold the intro hostage on a slow
+  // network: after 1.2s we run with the default.
+  const [contentWaitExpired, setContentWaitExpired] = useState(false);
+  useEffect(() => {
+    if (ready || contentWaitExpired) return;
+    const t = setTimeout(() => setContentWaitExpired(true), 1200);
+    return () => clearTimeout(t);
+  }, [ready, contentWaitExpired]);
+  const armed = ready || contentWaitExpired;
 
   // Ad roll: once content has arrived, pick this showing's ad (round-robin).
   const [ad, setAd] = useState<IntroAd | null>(null);
@@ -81,24 +122,29 @@ export default function WelcomeIntro() {
   const btn2 = getJSON('home.hero.btn2', { label: 'Learn More', to: '/about' });
   const statsLabels = getJSON('home.statsLabels', DEFAULT_STATS);
 
+  // Scroll-lock the moment the intro is on screen
   useEffect(() => {
     if (!enabled || builderActive || gone) return;
     document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = ''; };
+  }, [enabled, builderActive, gone]);
+
+  useEffect(() => {
+    if (!enabled || builderActive || gone || !armed) return;
     const fade = setTimeout(() => {
       setPhase('fade');
       // Position the applications grid under the dissolving intro
       document.getElementById('apps-section')?.scrollIntoView({ behavior: 'auto', block: 'start' });
-    }, INTRO_MS);
+    }, introMs);
     const remove = setTimeout(() => {
       document.body.style.overflow = '';
       setGone(true);
-    }, INTRO_MS + FADE_MS);
+    }, introMs + FADE_MS);
     return () => {
       clearTimeout(fade);
       clearTimeout(remove);
-      document.body.style.overflow = '';
     };
-  }, [enabled, builderActive, gone, replayKey]);
+  }, [enabled, builderActive, gone, replayKey, armed, introMs]);
 
   if (!enabled || builderActive || gone) return null;
 
@@ -108,7 +154,7 @@ export default function WelcomeIntro() {
     setGone(true);
   };
 
-  const accent = ad ? sanitizeAccent(ad.accent) : '#FFD600';
+    const accent = ad ? sanitizeAccent(ad.accent) : '#FFD600';
   const AdCta = ({ ad: a }: { ad: IntroAd }) => {
     const cls = 'inline-flex items-center gap-2 font-bold rounded-xl px-7 py-3 text-base transition-transform active:scale-95 hover:brightness-110';
     const style = { background: accent, color: '#0F1419' };
@@ -139,14 +185,7 @@ export default function WelcomeIntro() {
               className="rounded-3xl border bg-rx-dark-secondary/85 backdrop-blur-xl overflow-hidden"
               style={{ borderColor: `${accent}4D`, boxShadow: `0 30px 90px -30px ${accent}66` }}
             >
-              {ad.imageUrl && (
-                <img
-                  src={ad.imageUrl}
-                  alt={ad.title}
-                  className="w-full h-48 sm:h-60 object-cover"
-                  onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
-                />
-              )}
+              {ad.imageUrl && <AdImage src={ad.imageUrl} alt={ad.title} accent={accent} />}
               <div className="p-7 sm:p-9 text-center">
                 <span
                   className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest"
@@ -208,10 +247,13 @@ export default function WelcomeIntro() {
         {ad ? get('intro.ads.skipLabel', 'Skip ad') : 'Skip intro'} <ArrowRight className="w-3.5 h-3.5" />
       </button>
       <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white/5">
-        <div
-          className="h-full"
-          style={{ background: accent, animation: `rx-intro-progress ${INTRO_MS}ms linear forwards` }}
-        />
+        {armed && (
+          <div
+            key={`${replayKey}-${introMs}`}
+            className="h-full"
+            style={{ background: accent, animation: `rx-intro-progress ${introMs}ms linear forwards` }}
+          />
+        )}
       </div>
       <style>{`@keyframes rx-intro-progress { from { width: 0% } to { width: 100% } }`}</style>
     </div>

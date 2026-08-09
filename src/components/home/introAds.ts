@@ -28,6 +28,26 @@ export interface IntroAd {
   endsAt?: string;
 }
 
+/** Content key the admin's duration control writes (Builder → Ads). */
+export const INTRO_DURATION_KEY = 'intro.durationMs';
+/** Factory default; the admin can change it live (1s–30s). */
+export const DEFAULT_INTRO_MS = 3000;
+export const MIN_INTRO_MS = 1000;
+export const MAX_INTRO_MS = 30000;
+
+/**
+ * Parse the admin-set intro/ad on-screen duration. Anything missing or
+ * malformed falls back to the default; valid numbers are clamped to
+ * [MIN_INTRO_MS, MAX_INTRO_MS] and snapped to 100ms steps.
+ */
+export function parseIntroDuration(raw: unknown, fallback = DEFAULT_INTRO_MS): number {
+  const n = typeof raw === 'number' ? raw : parseInt(String(raw ?? '').trim(), 10);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  const clamped = Math.min(MAX_INTRO_MS, Math.max(MIN_INTRO_MS, n));
+  return Math.round(clamped / 100) * 100;
+}
+
+
 export function newIntroAd(): IntroAd {
   return {
     id: `ad-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,

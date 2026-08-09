@@ -3,6 +3,7 @@ import { X, Save, Trash2, Plus, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { API_URL } from '../../services/api';
 import { App } from '../../types';
+import { normalizeWebsiteUrl } from '../../utils/url';
 import AppLogo from '../apps/AppLogo';
 
 export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App> & { slug: string }; onClose: () => void; onSaved: () => void }) {
@@ -17,6 +18,7 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
     color: app.color || '#FFD600',
     gradient: app.gradient || 'from-rx-dark to-rx-dark-secondary',
     developer: app.developer || 'Calcitonin Technologies',
+    website: (app as any).website || '',
     version: app.version || '1.0.0',
     size: app.size || '',
     rating: app.rating || 4.5,
@@ -36,6 +38,8 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
   const save = async () => {
     if (!API_URL) { toast.error('Set VITE_API_URL to save live'); return; }
     if (!token) { toast.error('Login as admin'); return; }
+    const website = normalizeWebsiteUrl(form.website);
+    if (form.website.trim() && !website) { toast.error('Website URL looks invalid — use a full address like https://example.com'); return; }
     setSaving(true);
     try {
       const payload: any = {
@@ -43,6 +47,7 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
         description: form.description,
         long_description: form.longDescription,
         category: form.category,
+        website,
         tags: form.tags.split(',').map((s:string)=>s.trim()).filter(Boolean),
         icon: form.icon,
         color: form.color,
@@ -143,6 +148,10 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
           <div><label className="text-xs text-rx-gray-medium">Short Description</label><textarea value={form.description} onChange={e=>setForm({...form, description:e.target.value})} rows={2} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
           <div><label className="text-xs text-rx-gray-medium">Long Description</label><textarea value={form.longDescription} onChange={e=>setForm({...form, longDescription:e.target.value})} rows={4} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
           <div><label className="text-xs text-rx-gray-medium">Developer</label><input value={form.developer} onChange={e=>setForm({...form, developer:e.target.value})} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
+          <div>
+            <label className="text-xs text-rx-gray-medium">Website URL <span className="text-rx-gray-medium/60">(the ↗ button on the app page opens this)</span></label>
+            <input value={form.website} onChange={e=>setForm({...form, website:e.target.value})} placeholder="https://yourapp.com" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-rx-gray-medium/60"/>
+          </div>
           <div>
             <label className="text-xs text-rx-gray-medium">Platforms *</label>
             <div className="mt-1 p-3 rounded-xl bg-rx-dark border border-white/10">

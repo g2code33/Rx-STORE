@@ -118,6 +118,18 @@ export default {
       if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
       return json({ success: true, data }, 200, origin);
     }
+    // Mark a user as having an active advertisement
+    if (path.match(/^\/admin\/users\/[^\/]+\/advertiser$/) && request.method === 'PATCH') {
+      const data = await (adminRoutes as any).setUserAdvertiser(normalizedRequest as any, env);
+      if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
+      return json({ success: true, data }, 200, origin);
+    }
+    // Admin resets a user's login for them (returns a temp password when none supplied)
+    if (path.match(/^\/admin\/users\/[^\/]+\/reset-password$/) && request.method === 'POST') {
+      const data = await (adminRoutes as any).resetUserPassword(normalizedRequest as any, env);
+      if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
+      return json({ success: true, data }, 200, origin);
+    }
     if (path === '/admin/revenue' && request.method === 'GET') {
       const data = await adminRoutes.revenue(normalizedRequest as any, env);
       return json({ success: true, data }, 200, origin);

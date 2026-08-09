@@ -27,6 +27,8 @@ export interface App {
   isNew?: boolean;
   isTrending?: boolean;
   requiresAuth?: boolean;
+  /** The app's own website — opened by the ↗ button on the detail page. */
+  website?: string;
   status: 'active' | 'beta' | 'coming-soon';
 }
 

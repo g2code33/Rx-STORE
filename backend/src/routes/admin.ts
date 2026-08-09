@@ -4,9 +4,18 @@
  */
 
 import { getSetting } from '../services/settings';
+import { hashPassword } from '../services/auth';
 
 // Live column list for a table (cached per request) — prod DBs evolve via ALTER
 // migrations, so writes must tolerate columns that don't exist yet
+/** Add a column to an existing prod table when it's missing (no migration needed). */
+async function ensureColumn(env: any, table: string, col: string, ddl: string): Promise<void> {
+  const cols = await tableColumns(env, table);
+  if (cols.size === 0 || cols.has(col)) return; // unknown schema → leave SQL to error naturally
+  await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`).run().catch(() => {});
+  cols.add(col);
+}
+
 async function tableColumns(env: any, table: string): Promise<Set<string>> {
   (env as any)._tcols = (env as any)._tcols || {};
   if (!(env as any)._tcols[table]) {
@@ -245,8 +254,54 @@ export const adminRoutes = {
 
 
   async listUsers(request: Request, env: any) {
-    const users = await env.DB.prepare(`SELECT id, name, email, role, created_at, last_login_at FROM users ORDER BY created_at DESC LIMIT 100`).all();
+    await ensureColumn(env, 'users', 'advertiser', 'INTEGER DEFAULT 0');
+    const cols = await tableColumns(env, 'users');
+    const sel = ['id','name','email','role','created_at','last_login_at'];
+    if (cols.size === 0 || cols.has('advertiser')) sel.push('advertiser');
+    const users = await env.DB.prepare(`SELECT ${sel.join(', ')} FROM users ORDER BY created_at DESC LIMIT 100`).all();
     return users.results || [];
+  },
+
+  // PATCH /admin/users/:id/advertiser  {advertiser: boolean} — "has an active advertisement"
+  async setUserAdvertiser(request: Request, env: any) {
+    const url = new URL(request.url);
+    const parts = url.pathname.split('/');
+    const userId = parts[parts.length - 2];
+    const body: any = await request.json().catch(() => ({}));
+    const flag = body?.advertiser ? 1 : 0;
+    await ensureColumn(env, 'users', 'advertiser', 'INTEGER DEFAULT 0');
+    const r: any = await env.DB.prepare(`UPDATE users SET advertiser=?, updated_at=datetime('now') WHERE id=?`).bind(flag, userId).run();
+    if ((r?.meta?.changes ?? 1) === 0) return { error: 'User not found' };
+    return { success: true, id: userId, advertiser: flag === 1 };
+  },
+
+  // POST /admin/users/:id/reset-password  {password?: string}
+  // Admin resets a user's login for them. When no password is supplied a
+  // temporary one is generated and returned ONCE (only the hash is stored).
+  async resetUserPassword(request: Request, env: any) {
+    const url = new URL(request.url);
+    const parts = url.pathname.split('/');
+    const userId = parts[parts.length - 2];
+    const user: any = await env.DB.prepare(`SELECT id, email, name FROM users WHERE id=?`).bind(userId).first().catch(() => null);
+    if (!user) return { error: 'User not found' };
+    const body: any = await request.json().catch(() => ({}));
+    let password = typeof body?.password === 'string' ? body.password.trim() : '';
+    const generated = !password;
+    if (generated) {
+      const rnd = new Uint32Array(2);
+      globalThis.crypto.getRandomValues(rnd);
+      password = `Rx-${rnd[0].toString(36)}${rnd[1].toString(36)}`.slice(0, 12);
+    }
+    if (password.length < 8) return { error: 'Password must be at least 8 characters' };
+    const hash = await hashPassword(password);
+    // Also invalidate any outstanding forgot-password token so only this login works
+    await env.DB.prepare(`UPDATE users SET password_hash=?, reset_token=NULL, reset_token_expiry=NULL, updated_at=datetime('now') WHERE id=?`).bind(hash, userId).run();
+    return {
+      success: true,
+      id: user.id,
+      email: user.email,
+      ...(generated ? { tempPassword: password } : {}),
+    };
   },
 
   async updateUserRole(request: Request, env: any) {
@@ -544,7 +599,8 @@ export const adminRoutes = {
     const body: any = await request.json().catch(()=>({}));
     const app: any = await env.DB.prepare(`SELECT id FROM applications WHERE slug=?`).bind(slug).first();
     if (!app) return { error: 'Application not found' };
-    const fields = ['name','description','long_description','category','tags','developer','icon','color','gradient','screenshots','features','release_notes','status','current_version','size_mb','rating','price_type','price_amount','platforms','is_featured','is_new','is_trending','release_date','last_updated'];
+    await ensureColumn(env, 'applications', 'website', 'TEXT');
+    const fields = ['name','description','long_description','category','tags','developer','icon','color','gradient','screenshots','features','release_notes','status','current_version','size_mb','rating','price_type','price_amount','platforms','is_featured','is_new','is_trending','release_date','last_updated','website'];
     const cols = await tableColumns(env, 'applications');
     const sets: string[] = [];
     const binds: any[] = [];
@@ -638,6 +694,7 @@ export const adminRoutes = {
     const exists: any = await env.DB.prepare(`SELECT id FROM applications WHERE slug=?`).bind(slug).first().catch(()=>null);
     if (exists) slug = `${slug}-${Date.now().toString().slice(-4)}`;
     // Save everything the editor sends (like updateApp), tolerating columns missing on older prod DBs
+    await ensureColumn(env, 'applications', 'website', 'TEXT');
     const cols = await tableColumns(env, 'applications');
     const candidate: Record<string, any> = {
       name: data.name || 'New App',
@@ -646,6 +703,7 @@ export const adminRoutes = {
       category: data.category || 'healthcare',
       tags: JSON.stringify(data.tags || []),
       developer: data.developer || 'Calcitonin Technologies',
+      website: data.website || null,
       icon: data.icon || '📦',
       color: data.color || '#FFD600',
       gradient: data.gradient || null,

@@ -89,6 +89,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     version: a.version || a.current_version || '1.0.0',
     size: a.size || (a.size_mb ? `${a.size_mb} MB` : '—'),
     developer: a.developer || 'Calcitonin Technologies',
+    website: a.website || a.website_url || a.websiteUrl || '',
     rating: a.rating ?? 0,
     reviewCount: a.reviewCount ?? a.review_count ?? 0,
     downloadCount: a.downloadCount ?? a.download_count ?? 0,

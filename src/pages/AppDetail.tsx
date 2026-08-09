@@ -9,6 +9,7 @@ import { useContent } from '../context/ContentContext';
 import Editable from '../components/edit/Editable';
 import PageBlocks from '../components/edit/PageBlocks';
 import { formatDownloadCount, formatDate, getRatingColor } from '../utils/helpers';
+import { normalizeWebsiteUrl } from '../utils/url';
 import toast from 'react-hot-toast';
 
 /** Internal paths navigate in-app, external URLs open a new tab, '#' stays inert. */
@@ -163,6 +164,34 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
     toast.success(`${app.name} has been uninstalled`);
   };
 
+  // The app's own website — set per app in the App Editor (Website URL field).
+  const appWebsite = normalizeWebsiteUrl((app as any)?.website || '');
+
+  const handleShare = async () => {
+    const url = window.location.href;
+    const payload = { title: `${app.name} — RX Store`, text: `${app.name}: ${app.description}`, url };
+    try {
+      if (typeof navigator !== 'undefined' && navigator.share) {
+        await navigator.share(payload); // user may cancel — that's not an error
+      } else {
+        await navigator.clipboard.writeText(url);
+        toast.success('App link copied — paste it anywhere ✓');
+      }
+    } catch (e: any) {
+      if (e?.name === 'AbortError') return; // share sheet dismissed
+      try { await navigator.clipboard.writeText(url); toast.success('App link copied ✓'); }
+      catch { window.prompt('Copy this app link:', url); }
+    }
+  };
+
+  const handleWebsite = () => {
+    if (!appWebsite) {
+      toast('No website published for this app yet.', { icon: 'ℹ️' });
+      return;
+    }
+    window.open(appWebsite, '_blank', 'noopener,noreferrer');
+  };
+
   const ratingDistribution = [5, 4, 3, 2, 1].map((stars) => ({
     stars,
     count: appReviews.filter((r) => r.rating === stars).length,
@@ -225,8 +254,20 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
                 </button>
               )}
               <div className="flex items-center gap-2">
-                <button className="p-2 rounded-lg bg-white/10 text-white/70 hover:text-white hover:bg-white/20 transition-all"><Share2 className="w-4 h-4" /></button>
-                <button className="p-2 rounded-lg bg-white/10 text-white/70 hover:text-white hover:bg-white/20 transition-all"><ExternalLink className="w-4 h-4" /></button>
+                {/* Share this app — native share sheet when available, else copy the link */}
+                <button
+                  onClick={handleShare}
+                  title="Share this app"
+                  aria-label="Share this app"
+                  className="p-2 rounded-lg bg-white/10 text-white/70 hover:text-white hover:bg-white/20 transition-all"
+                ><Share2 className="w-4 h-4" /></button>
+                {/* Open the app's own website (set in the App Editor) */}
+                <button
+                  onClick={handleWebsite}
+                  title={appWebsite ? `Visit website — ${appWebsite}` : 'No website published for this app yet'}
+                  aria-label="Visit app website"
+                  className={`p-2 rounded-lg transition-all ${appWebsite ? 'bg-white/10 text-white/70 hover:text-white hover:bg-white/20' : 'bg-white/5 text-white/30 hover:text-white/60 hover:bg-white/10'}`}
+                ><ExternalLink className="w-4 h-4" /></button>
               </div>
             </div>
           </div>

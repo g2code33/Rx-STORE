@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS users (
   last_login_at TEXT,
   reset_token TEXT,
   reset_token_expiry TEXT,
+  -- 1 = user has an active advertisement running (admin flag)
+  advertiser INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -36,6 +38,8 @@ CREATE TABLE IF NOT EXISTS applications (
   tags TEXT DEFAULT '[]',
   developer TEXT DEFAULT 'Calcitonin Technologies',
   developer_id TEXT REFERENCES users(id),
+  -- The app's own website — opened by the ↗ button on the app detail page
+  website TEXT,
   icon TEXT,
   color TEXT,
   gradient TEXT,

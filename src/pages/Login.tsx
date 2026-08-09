@@ -149,6 +149,17 @@ export default function Login() {
                   </div>
                 </form>
               )}
+              {/* Human fallback — email the team and the admin sorts the reset manually */}
+              <p className="mt-3 text-[11px] leading-relaxed text-rx-gray-medium">
+                No reset email, or no longer have access to that inbox?{' '}
+                <a
+                  className="text-rx-yellow hover:underline font-medium"
+                  href={`mailto:support@rxstore.com?subject=${encodeURIComponent('Password reset help — RX Store')}&body=${encodeURIComponent('Hi RX Store team,\n\nPlease reset the password for my account.\n\nMy account email: \nMy full name: \n\nThank you.')}`}
+                >
+                  Email support@rxstore.com
+                </a>{' '}
+                from your account email — an admin will sort it for you.
+              </p>
             </div>
           )}
 
