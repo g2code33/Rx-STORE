@@ -14,6 +14,10 @@ type PendingItem = { key: string; value: string; at: number };
 interface ContentCtxType {
   get: (id: string, fallback?: string) => string;
   getJSON: <T = any>(id: string, fallback: T) => T;
+  /** Like get/getJSON but fall back to the value the page currently shows
+   *  (registered by render sites) — so editors always open PRE-FILLED. */
+  getEffective: (id: string, hardFallback?: string) => string;
+  getEffectiveJSON: <T = any>(id: string, hardFallback: T) => T;
   save: (id: string, value: string | object) => Promise<boolean>;
   remove: (id: string) => Promise<boolean>;
   pending: PendingItem[];
@@ -62,6 +66,9 @@ export function ContentProvider({ children }: { children: ReactNode }) {
   const [pending, setPending] = useState<PendingItem[]>(loadPending());
   const [saving, setSaving] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<Record<string, number>>({});
+  // Every render site's fallback, so the Inspector can pre-fill with the text
+  // the visitor currently sees (instead of an empty box) — updated per render.
+  const defaultsRef = React.useRef<Record<string, any>>({});
 
   const fetchContent = useCallback(async () => {
     if (!isApiConfigured()) { setReady(true); return; }
@@ -92,15 +99,34 @@ export function ContentProvider({ children }: { children: ReactNode }) {
   useEffect(() => { try { localStorage.setItem(PENDING_KEY, JSON.stringify(pending)); } catch {} }, [pending]);
 
   const get = useCallback((id: string, fallback = '') => {
+    if (fallback !== undefined && fallback !== null) defaultsRef.current[id] = fallback;
     const v = content[id];
-    return v === undefined || v === null ? fallback : v;
+    return v === undefined || v === null || v === '' ? fallback : v;
   }, [content]);
 
   const getJSON = useCallback(<T,>(id: string, fallback: T): T => {
+    if (fallback !== undefined && fallback !== null) defaultsRef.current[id] = fallback;
     const v = content[id];
     if (!v) return fallback;
     if (typeof v !== 'string') return v as T;
     try { return JSON.parse(v) as T; } catch { return fallback; }
+  }, [content]);
+
+  const getEffective = useCallback((id: string, hardFallback = '') => {
+    const v = content[id];
+    if (v !== undefined && v !== null && v !== '') return v;
+    const d = defaultsRef.current[id];
+    return d !== undefined ? String(d) : hardFallback;
+  }, [content]);
+
+  const getEffectiveJSON = useCallback(<T,>(id: string, hardFallback: T): T => {
+    const v = content[id];
+    if (v) {
+      if (typeof v !== 'string') return v as T;
+      try { return JSON.parse(v) as T; } catch { /* fall through */ }
+    }
+    const d = defaultsRef.current[id];
+    return d !== undefined ? (d as T) : hardFallback;
   }, [content]);
 
   const pushOne = useCallback(async (key: string, value: string): Promise<boolean> => {
@@ -151,7 +177,7 @@ export function ContentProvider({ children }: { children: ReactNode }) {
   }, [pushOne, fetchContent]);
 
   return (
-    <ContentContext.Provider value={{ get, getJSON, save, remove, pending, publishAll, saving, savedAt, ready }}>
+    <ContentContext.Provider value={{ get, getJSON, getEffective, getEffectiveJSON, save, remove, pending, publishAll, saving, savedAt, ready }}>
       {children}
     </ContentContext.Provider>
   );

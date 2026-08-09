@@ -1,9 +1,10 @@
 import React, { useState, Suspense, lazy } from 'react';
 import { Link } from 'react-router-dom';
+import toast from 'react-hot-toast';
 import {
   LayoutDashboard, Package, Users, BarChart3, DollarSign, Upload,
   Download, Star, Settings, Shield, Plus, Edit, Trash2, Activity, Database, Cloud, Bot, Key, Globe, FileText, Bell, Megaphone,
-  Monitor, Eye, Paintbrush, Loader2, Rocket, MousePointerClick
+  Monitor, Eye, Paintbrush, Loader2, Rocket, MousePointerClick, Tablet, Smartphone, PanelRight
 } from 'lucide-react';
 import { useApps } from '../context/AppContext';
 import { formatDownloadCount } from '../utils/helpers';
@@ -48,13 +49,15 @@ export default function Admin() {
   const [builderPage, setBuilderPage] = useState<'home' | 'about'>('home');
   const [interact, setInteract] = useState(false);
   const [inspector, setInspector] = useState<EditDescriptor | null>(null);
+  const [device, setDevice] = useState<'desktop' | 'tablet' | 'phone'>('desktop');
+  const lastInspector = React.useRef<EditDescriptor | null>(null);
   const { pending, publishAll } = useContent();
 
   const editCtx: EditCtxType = {
     editMode: view === 'builder' && !interact,
     interact,
     inspector,
-    openInspector: (d) => { setInteract(false); setInspector(d); },
+    openInspector: (d) => { lastInspector.current = d; setInteract(false); setInspector(d); },
     closeInspector: () => setInspector(null),
     onEditApp: (app) => { setEditingApp(app); setView('panel'); setActiveSection('applications'); },
   };
@@ -180,12 +183,46 @@ export default function Admin() {
                 {interact ? 'Preview' : 'Editing'}
               </button>
 
+              {/* Device preview widths (reference-builder parity) */}
+              <div className="flex rounded-xl overflow-hidden border border-white/10">
+                {([['desktop', Monitor], ['tablet', Tablet], ['phone', Smartphone]] as const).map(([id, Icon]) => (
+                  <button
+                    key={id}
+                    onClick={() => setDevice(id)}
+                    title={`${id} preview`}
+                    className={`px-2.5 py-1.5 ${device === id ? 'bg-white/10 text-rx-yellow' : 'text-rx-gray-medium hover:text-white'}`}
+                  >
+                    <Icon className="w-3.5 h-3.5" />
+                  </button>
+                ))}
+              </div>
+
               {/* Design tokens */}
               <button
                 onClick={() => { setInteract(false); setInspector({ id: 'design', type: 'design', label: 'Site-wide design' }); }}
                 className="px-3.5 py-1.5 text-xs font-semibold rounded-xl border border-white/10 text-rx-gray-medium hover:text-rx-yellow flex items-center gap-1.5"
               >
                 <Paintbrush className="w-3.5 h-3.5" /> Design
+              </button>
+
+              {/* Add (next phase) */}
+              <button
+                onClick={() => toast('Add Block — insert brand-new sections anywhere — arrives in the next builder update 🚧', { icon: '🧱' })}
+                className="px-3.5 py-1.5 text-xs font-semibold rounded-xl border border-white/10 text-rx-gray-medium hover:text-rx-yellow flex items-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" /> Add
+              </button>
+
+              {/* Inspector toggle */}
+              <button
+                onClick={() => {
+                  if (inspector) setInspector(null);
+                  else if (lastInspector.current) { setInteract(false); setInspector(lastInspector.current); }
+                  else toast('Click any outlined element on the page to edit it', { icon: '👆' });
+                }}
+                className={`px-3.5 py-1.5 text-xs font-semibold rounded-xl border flex items-center gap-1.5 ${inspector ? 'border-rx-yellow/40 bg-rx-yellow/10 text-rx-yellow' : 'border-white/10 text-rx-gray-medium hover:text-rx-yellow'}`}
+              >
+                <PanelRight className="w-3.5 h-3.5" /> Inspector
               </button>
 
               <div className="flex-1" />
@@ -198,14 +235,16 @@ export default function Admin() {
               ) : (
                 <span className="text-[11px] text-green-400/80 flex items-center gap-1">✓ Everything published</span>
               )}
-              {!interact && <span className="hidden md:inline text-[11px] text-rx-gray-medium">Hover anything on the page → ✏️ to edit it. App cards open the full app editor.</span>}
+              {!interact && <span className="hidden md:inline text-[11px] text-rx-gray-medium">Every outlined element is editable — click it. App cards open the full app editor.</span>}
             </div>
           </div>
 
-          {/* The REAL public page, with the edit layer live */}
-          <Suspense fallback={<div className="py-24 text-center text-rx-gray-medium flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Loading page…</div>}>
-            {builderPage === 'home' ? <BuilderHome /> : <BuilderAbout />}
-          </Suspense>
+          {/* The REAL public page, with the edit layer live — width follows the device toggle */}
+          <div className="mx-auto transition-[width] duration-300 min-h-screen" style={{ width: device === 'phone' ? 390 : device === 'tablet' ? 768 : '100%' }}>
+            <Suspense fallback={<div className="py-24 text-center text-rx-gray-medium flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Loading page…</div>}>
+              {builderPage === 'home' ? <BuilderHome /> : <BuilderAbout />}
+            </Suspense>
+          </div>
           <Inspector />
         </div>
     );

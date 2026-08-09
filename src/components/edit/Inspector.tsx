@@ -1,46 +1,82 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { X, Save, Loader2, Check, Trash2, ArrowUp, ArrowDown, Plus, UploadCloud, RotateCcw } from 'lucide-react';
+import { X, Save, Loader2, Check, Trash2, ArrowUp, ArrowDown, Plus, UploadCloud, RotateCcw, Paintbrush, Monitor, Tablet, Smartphone } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useContent } from '../../context/ContentContext';
 import { useEditMode } from './EditMode';
+import { StyleOverrides } from './Editable';
 import { API_URL } from '../../services/api';
 
 /**
- * The focused edit drawer. Every editable element on the site opens here with
- * the right editor for its content type. Each item has its own Save that
+ * The focused edit drawer — mirrors the reference Live Website Builder:
+ * Content | Style | Layout | Responsive | Theme tabs. Every editor opens
+ * PRE-FILLED with the exact text the visitor currently sees, and every Save
  * publishes immediately (failures queue for Publish All).
  */
 
+type Tab = 'content' | 'style' | 'layout' | 'responsive' | 'theme';
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'content', label: 'Content' },
+  { id: 'style', label: 'Style' },
+  { id: 'layout', label: 'Layout' },
+  { id: 'responsive', label: 'Responsive' },
+  { id: 'theme', label: 'Theme' },
+];
+
 const inputCls = 'w-full bg-rx-dark border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-rx-yellow/50';
 const labelCls = 'block text-[11px] uppercase tracking-wider text-rx-gray-medium mb-1';
+const selCls = `${inputCls} cursor-pointer`;
 
 function Row({ children }: { children: React.ReactNode }) { return <div className="mb-3">{children}</div>; }
 
 export default function Inspector() {
   const edit = useEditMode();
-  const { get, getJSON, save, saving, savedAt, pending } = useContent();
+  const { getEffective, getEffectiveJSON, save, saving, savedAt, pending } = useContent();
+  const [tab, setTab] = useState<Tab>('content');
   const [draft, setDraft] = useState<any>('');
+  const [sty, setSty] = useState<StyleOverrides>({});
   const [uploading, setUploading] = useState(false);
 
   const d = edit?.inspector;
+  const styleKey = d ? `style.${d.id}` : '';
 
-  // Load the current value whenever a different element is opened
+  // Load current values (pre-filled with exactly what the visitor sees)
   useEffect(() => {
     if (!d) return;
-    if (d.type === 'text' || d.type === 'textarea' || d.type === 'color') setDraft(get(d.id, ''));
-    else if (d.type === 'link') setDraft(getJSON(d.id, { label: '', to: '' }));
-    else if (d.type === 'image') setDraft(getJSON(d.id, { url: '', alt: '', pos: 'center' }));
-    else setDraft(getJSON(d.id, []));
+    setTab('content');
+    if (d.type === 'text' || d.type === 'textarea' || d.type === 'color') setDraft(getEffective(d.id, ''));
+    else if (d.type === 'link') setDraft(getEffectiveJSON(d.id, { label: '', to: '' }));
+    else if (d.type === 'image') setDraft(getEffectiveJSON(d.id, { url: '', alt: '', pos: 'center' }));
+    else if (d.type === 'design') setDraft('');
+    else setDraft(getEffectiveJSON(d.id, []));
+    setSty(getEffectiveJSON(`style.${d.id}`, {}));
   }, [d?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isPending = d ? pending.some((p) => p.key === d.id) : false;
-  const justSaved = d ? savedAt[d.id] : 0;
+  const activeKey = tab === 'content' ? d?.id : styleKey;
+  const isPending = activeKey ? pending.some((p) => p.key === activeKey) : false;
+  const justSaved = activeKey ? savedAt[activeKey] : 0;
+  const busySaving = activeKey ? saving === activeKey : false;
 
   const doSave = async () => {
     if (!d) return;
-    const ok = await save(d.id, draft);
-    if (ok) { toast.success('Published — live on the website ✓'); edit.closeInspector(); }
+    if (tab === 'content') {
+      const ok = await save(d.id, draft);
+      if (ok) { toast.success('Published — live on the website ✓'); edit.closeInspector(); }
+    } else {
+      const ok = await save(styleKey, cleanSty(sty));
+      if (ok) toast.success('Styling published ✓');
+    }
   };
+
+  const resetStyling = async () => {
+    if (!d) return;
+    setSty({});
+    const ok = await save(styleKey, '');
+    if (ok) toast.success('Styling reset to site defaults ✓');
+  };
+
+  // Style helpers — '' / undefined / false removes the key (back to default)
+  const setStyField = (k: keyof StyleOverrides, v: any) =>
+    setSty((s) => { const n: any = { ...s }; if (v === '' || v === undefined || v === false) delete n[k]; else n[k] = v; return n; });
 
   const uploadImage = async (file: File) => {
     setUploading(true);
@@ -87,222 +123,410 @@ export default function Inspector() {
         {d && (
           <div className="p-5">
             <div className="flex items-start justify-between mb-1">
-              <div>
-                <p className="text-[10px] uppercase tracking-widest text-rx-yellow">{d.type} · {d.id}</p>
-                <h3 className="text-lg font-bold text-white">Edit — {d.label}</h3>
+              <div className="min-w-0">
+                <p className="text-[10px] uppercase tracking-widest text-rx-yellow truncate">{d.type} · {d.id}</p>
+                <h3 className="text-lg font-bold text-white truncate">{d.label}</h3>
+                <p className="text-[11px] text-rx-gray-medium">Live Website Builder · editing in place</p>
               </div>
-              <button onClick={() => edit.closeInspector()} className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-rx-gray-medium hover:text-white">
+              <button onClick={() => edit.closeInspector()} className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-rx-gray-medium hover:text-white flex-shrink-0">
                 <X className="w-4 h-4" />
               </button>
             </div>
 
+            {/* Tabs — reference builder parity (design editor stays single-tab) */}
+            {d.type !== 'design' && (
+              <div className="flex rounded-xl overflow-hidden border border-white/10 my-4">
+                {TABS.map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => setTab(t.id)}
+                    className={`flex-1 py-2 text-[11px] font-bold transition-colors ${tab === t.id ? 'bg-rx-yellow text-rx-dark' : 'text-rx-gray-medium hover:text-white hover:bg-white/5'}`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* status line */}
             <p className="text-xs mb-4">
-              {saving === d.id ? (
+              {busySaving ? (
                 <span className="text-rx-yellow flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Publishing…</span>
               ) : isPending ? (
                 <span className="text-amber-300">● Not yet published — queued for Publish All</span>
               ) : justSaved ? (
                 <span className="text-green-400 flex items-center gap-1"><Check className="w-3 h-3" /> Published {new Date(justSaved).toLocaleTimeString()}</span>
               ) : (
-                <span className="text-rx-gray-medium">Saves publish to the live site immediately.</span>
+                <span className="text-rx-gray-medium">Pre-filled with the live text. Saves publish immediately.</span>
               )}
             </p>
 
-            {/* ---- text / textarea ---- */}
-            {d.type === 'text' && (
-              <Row><label className={labelCls}>Text</label><input className={inputCls} value={draft || ''} onChange={(e) => setDraft(e.target.value)} /></Row>
-            )}
-            {d.type === 'textarea' && (
-              <Row><label className={labelCls}>Text</label><textarea className={`${inputCls} min-h-[120px] resize-y`} value={draft || ''} onChange={(e) => setDraft(e.target.value)} /></Row>
-            )}
-
-            {/* ---- link ---- */}
-            {d.type === 'link' && (
+            {/* ================= CONTENT TAB ================= */}
+            {tab === 'content' && (
               <>
-                <Row><label className={labelCls}>Button / link label</label><input className={inputCls} value={draft?.label || ''} onChange={(e) => setDraft({ ...draft, label: e.target.value })} /></Row>
-                <Row><label className={labelCls}>Destination (path or URL)</label><input className={inputCls} placeholder="/browse or https://…" value={draft?.to || ''} onChange={(e) => setDraft({ ...draft, to: e.target.value })} /></Row>
+                {d.type === 'text' && (
+                  <Row><label className={labelCls}>Text</label><input className={inputCls} value={draft || ''} onChange={(e) => setDraft(e.target.value)} /></Row>
+                )}
+                {d.type === 'textarea' && (
+                  <Row><label className={labelCls}>Text</label><textarea className={`${inputCls} min-h-[120px] resize-y`} value={draft || ''} onChange={(e) => setDraft(e.target.value)} /></Row>
+                )}
+                {d.type === 'link' && (
+                  <>
+                    <Row><label className={labelCls}>Button / link label</label><input className={inputCls} value={draft?.label || ''} onChange={(e) => setDraft({ ...draft, label: e.target.value })} /></Row>
+                    <Row><label className={labelCls}>Destination (path or URL)</label><input className={inputCls} placeholder="/browse or https://…" value={draft?.to || ''} onChange={(e) => setDraft({ ...draft, to: e.target.value })} /></Row>
+                  </>
+                )}
+                {d.type === 'color' && (
+                  <Row>
+                    <label className={labelCls}>Color</label>
+                    <div className="flex items-center gap-2">
+                      <input type="color" value={/^#[0-9a-f]{6}$/i.test(draft || '') ? draft : '#FFD600'} onChange={(e) => setDraft(e.target.value)} className="w-12 h-10 rounded-lg bg-transparent border border-white/10 cursor-pointer" />
+                      <input className={inputCls} value={draft || ''} onChange={(e) => setDraft(e.target.value)} placeholder="#FFD600" />
+                    </div>
+                    <p className="text-[11px] text-rx-gray-medium mt-1.5">Applies site-wide as soon as it's published.</p>
+                  </Row>
+                )}
+                {d.type === 'image' && (
+                  <>
+                    <Row>
+                      <label className={labelCls}>Image</label>
+                      <div
+                        className="border-2 border-dashed border-white/15 rounded-xl p-4 text-center hover:border-rx-yellow/40 transition-colors"
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) uploadImage(f); }}
+                      >
+                        {draft?.url ? (
+                          <img src={draft.url} alt={draft.alt || ''} className="max-h-36 mx-auto rounded-lg object-contain mb-3" />
+                        ) : (
+                          <UploadCloud className="w-8 h-8 text-rx-gray-medium mx-auto mb-2" />
+                        )}
+                        <label className="inline-block px-3 py-1.5 rounded-lg bg-rx-yellow text-rx-dark text-xs font-bold cursor-pointer hover:bg-rx-yellow-light">
+                          {uploading ? 'Uploading…' : draft?.url ? 'Replace image' : 'Upload image'}
+                          <input type="file" accept="image/*" className="hidden" disabled={uploading} onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadImage(f); e.target.value = ''; }} />
+                        </label>
+                        <p className="text-[11px] text-rx-gray-medium mt-2">Drag & drop works too — uploads straight to R2.</p>
+                      </div>
+                    </Row>
+                    <Row><label className={labelCls}>…or paste an image URL</label><input className={inputCls} value={draft?.url || ''} onChange={(e) => setDraft({ ...draft, url: e.target.value })} placeholder="https://…" /></Row>
+                    <Row><label className={labelCls}>Alt text</label><input className={inputCls} value={draft?.alt || ''} onChange={(e) => setDraft({ ...draft, alt: e.target.value })} /></Row>
+                    <Row>
+                      <label className={labelCls}>Crop position</label>
+                      <select className={selCls} value={draft?.pos || 'center'} onChange={(e) => setDraft({ ...draft, pos: e.target.value })}>
+                        {['center', 'top', 'bottom', 'left', 'right'].map((p) => <option key={p} value={p}>{p}</option>)}
+                      </select>
+                    </Row>
+                  </>
+                )}
+                {d.type === 'textList' && (
+                  <ListShell onAdd={() => setList([...list, ''])}>
+                    {list.map((item, i) => (
+                      <div key={i} className="flex items-center gap-1.5 mb-2">
+                        <input className={inputCls} value={item} onChange={(e) => setList(list.map((x, xi) => (xi === i ? e.target.value : x)))} />
+                        <ListBtns i={i} len={list.length} move={move} removeAt={removeAt} />
+                      </div>
+                    ))}
+                  </ListShell>
+                )}
+                {d.type === 'linkList' && (
+                  <ListShell onAdd={() => setList([...list, { label: 'New link', to: '/' }])}>
+                    {list.map((item, i) => (
+                      <div key={i} className="flex items-center gap-1.5 mb-2">
+                        <input className={inputCls} value={item.label || ''} onChange={(e) => setField(i, 'label', e.target.value)} placeholder="Label" />
+                        <input className={inputCls} value={item.to || ''} onChange={(e) => setField(i, 'to', e.target.value)} placeholder="/path" />
+                        <ListBtns i={i} len={list.length} move={move} removeAt={removeAt} />
+                      </div>
+                    ))}
+                  </ListShell>
+                )}
+                {d.type === 'features' && (
+                  <ListShell onAdd={() => setList([...list, { icon: 'star', title: 'New feature', description: '', color: '#FFD600' }])}>
+                    {list.map((f, i) => (
+                      <div key={i} className="rounded-xl border border-white/10 p-3 mb-3 bg-rx-dark/50">
+                        <div className="flex items-center gap-1.5 mb-2">
+                          <select className={selCls} value={f.icon || 'star'} onChange={(e) => setField(i, 'icon', e.target.value)}>
+                            {['shield', 'zap', 'globe', 'download', 'users', 'star'].map((x) => <option key={x} value={x}>{x}</option>)}
+                          </select>
+                          <input type="color" value={f.color || '#FFD600'} onChange={(e) => setField(i, 'color', e.target.value)} className="w-9 h-9 rounded-lg bg-transparent border border-white/10 cursor-pointer flex-shrink-0" />
+                          <ListBtns i={i} len={list.length} move={move} removeAt={removeAt} />
+                        </div>
+                        <input className={`${inputCls} mb-2`} value={f.title || ''} onChange={(e) => setField(i, 'title', e.target.value)} placeholder="Title" />
+                        <textarea className={`${inputCls} resize-y min-h-[56px]`} value={f.description || ''} onChange={(e) => setField(i, 'description', e.target.value)} placeholder="Description" />
+                      </div>
+                    ))}
+                  </ListShell>
+                )}
+                {d.type === 'platformCards' && (
+                  <ListShell onAdd={() => setList([...list, { name: 'New platform', icon: '📦', desc: '' }])}>
+                    {list.map((p, i) => (
+                      <div key={i} className="flex items-center gap-1.5 mb-2">
+                        <input className={`${inputCls} !w-16 text-center`} value={p.icon || ''} onChange={(e) => setField(i, 'icon', e.target.value)} title="Emoji" />
+                        <input className={inputCls} value={p.name || ''} onChange={(e) => setField(i, 'name', e.target.value)} placeholder="Name" />
+                        <input className={inputCls} value={p.desc || ''} onChange={(e) => setField(i, 'desc', e.target.value)} placeholder="Note" />
+                        <ListBtns i={i} len={list.length} move={move} removeAt={removeAt} />
+                      </div>
+                    ))}
+                  </ListShell>
+                )}
+                {d.type === 'categories' && (
+                  <ListShell onAdd={() => setList([...list, { id: `custom-${Date.now()}`, name: 'New category', description: '', icon: 'Globe', color: '#FFD600' }])}>
+                    <p className="text-[11px] text-rx-gray-medium mb-2">Categories also appear under Browse filters. App counts stay automatic.</p>
+                    {list.map((c, i) => (
+                      <div key={c.id || i} className="rounded-xl border border-white/10 p-3 mb-3 bg-rx-dark/50">
+                        <div className="flex items-center gap-1.5 mb-2">
+                          <input className={`${inputCls} !w-24`} value={c.icon || ''} onChange={(e) => setField(i, 'icon', e.target.value)} title="Icon (Heart/GraduationCap/Zap/Cpu/Gamepad2/Users/Globe)" />
+                          <input type="color" value={c.color || '#FFD600'} onChange={(e) => setField(i, 'color', e.target.value)} className="w-9 h-9 rounded-lg bg-transparent border border-white/10 cursor-pointer flex-shrink-0" />
+                          <span className="text-[10px] text-rx-gray-medium truncate flex-1 px-1">{c.id}</span>
+                          <ListBtns i={i} len={list.length} move={move} removeAt={removeAt} />
+                        </div>
+                        <input className={`${inputCls} mb-2`} value={c.name || ''} onChange={(e) => setField(i, 'name', e.target.value)} placeholder="Name" />
+                        <input className={inputCls} value={c.description || ''} onChange={(e) => setField(i, 'description', e.target.value)} placeholder="Description" />
+                      </div>
+                    ))}
+                  </ListShell>
+                )}
+                {d.type === 'stackCards' && (
+                  <ListShell onAdd={() => setList([...list, { title: 'New area', items: [], color: '#FFD600' }])}>
+                    {list.map((s, i) => (
+                      <div key={i} className="rounded-xl border border-white/10 p-3 mb-3 bg-rx-dark/50">
+                        <div className="flex items-center gap-1.5 mb-2">
+                          <input className={inputCls} value={s.title || ''} onChange={(e) => setField(i, 'title', e.target.value)} placeholder="Title" />
+                          <input type="color" value={s.color || '#FFD600'} onChange={(e) => setField(i, 'color', e.target.value)} className="w-9 h-9 rounded-lg bg-transparent border border-white/10 cursor-pointer flex-shrink-0" />
+                          <ListBtns i={i} len={list.length} move={move} removeAt={removeAt} />
+                        </div>
+                        <textarea
+                          className={`${inputCls} resize-y min-h-[72px]`}
+                          value={(s.items || []).join('\n')}
+                          onChange={(e) => setField(i, 'items', e.target.value.split('\n').filter((x) => x.trim()))}
+                          placeholder={'One item per line'}
+                        />
+                      </div>
+                    ))}
+                  </ListShell>
+                )}
+                {d.type === 'statsLabels' && (
+                  <>
+                    <p className="text-[11px] text-rx-gray-medium mb-2">Values are always live counts — labels are editable.</p>
+                    {list.map((s, i) => (
+                      <div key={i} className="flex items-center gap-1.5 mb-2">
+                        <input className={inputCls} value={s.label || ''} onChange={(e) => setField(i, 'label', e.target.value)} />
+                      </div>
+                    ))}
+                  </>
+                )}
+                {d.type === 'design' && <DesignEditor onClose={() => edit.closeInspector()} />}
               </>
             )}
 
-            {/* ---- color ---- */}
-            {d.type === 'color' && (
-              <Row>
-                <label className={labelCls}>Color</label>
-                <div className="flex items-center gap-2">
-                  <input type="color" value={/^#[0-9a-f]{6}$/i.test(draft || '') ? draft : '#FFD600'} onChange={(e) => setDraft(e.target.value)} className="w-12 h-10 rounded-lg bg-transparent border border-white/10 cursor-pointer" />
-                  <input className={inputCls} value={draft || ''} onChange={(e) => setDraft(e.target.value)} placeholder="#FFD600" />
-                </div>
-                <p className="text-[11px] text-rx-gray-medium mt-1.5">Applies site-wide as soon as it's published.</p>
-              </Row>
-            )}
-
-            {/* ---- image: URL + drag-drop upload ---- */}
-            {d.type === 'image' && (
+            {/* ================= STYLE TAB ================= */}
+            {tab === 'style' && (
               <>
                 <Row>
-                  <label className={labelCls}>Image</label>
-                  <div
-                    className="border-2 border-dashed border-white/15 rounded-xl p-4 text-center hover:border-rx-yellow/40 transition-colors"
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) uploadImage(f); }}
-                  >
-                    {draft?.url ? (
-                      <img src={draft.url} alt={draft.alt || ''} className="max-h-36 mx-auto rounded-lg object-contain mb-3" />
-                    ) : (
-                      <UploadCloud className="w-8 h-8 text-rx-gray-medium mx-auto mb-2" />
-                    )}
-                    <label className="inline-block px-3 py-1.5 rounded-lg bg-rx-yellow text-rx-dark text-xs font-bold cursor-pointer hover:bg-rx-yellow-light">
-                      {uploading ? 'Uploading…' : draft?.url ? 'Replace image' : 'Upload image'}
-                      <input type="file" accept="image/*" className="hidden" disabled={uploading} onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadImage(f); e.target.value = ''; }} />
-                    </label>
-                    <p className="text-[11px] text-rx-gray-medium mt-2">Drag & drop works too — uploads straight to R2.</p>
-                  </div>
+                  <label className={labelCls}>Text color</label>
+                  <ColorField value={sty.color || ''} onChange={(v) => setStyField('color', v)} />
                 </Row>
-                <Row><label className={labelCls}>…or paste an image URL</label><input className={inputCls} value={draft?.url || ''} onChange={(e) => setDraft({ ...draft, url: e.target.value })} placeholder="https://…" /></Row>
-                <Row><label className={labelCls}>Alt text</label><input className={inputCls} value={draft?.alt || ''} onChange={(e) => setDraft({ ...draft, alt: e.target.value })} /></Row>
                 <Row>
-                  <label className={labelCls}>Crop position</label>
-                  <select className={inputCls} value={draft?.pos || 'center'} onChange={(e) => setDraft({ ...draft, pos: e.target.value })}>
-                    {['center', 'top', 'bottom', 'left', 'right'].map((p) => <option key={p} value={p}>{p}</option>)}
+                  <label className={labelCls}>Background color</label>
+                  <ColorField value={sty.bg || ''} onChange={(v) => setStyField('bg', v)} />
+                </Row>
+                <Row>
+                  <label className={labelCls}>Font size</label>
+                  <select className={selCls} value={sty.fontSize || ''} onChange={(e) => setStyField('fontSize', e.target.value)}>
+                    <option value="">Default (inherit)</option>
+                    <option value="xs">Extra small</option>
+                    <option value="sm">Small</option>
+                    <option value="base">Normal</option>
+                    <option value="lg">Large</option>
+                    <option value="xl">Extra large</option>
+                    <option value="2xl">Huge</option>
                   </select>
                 </Row>
+                <Row>
+                  <label className={labelCls}>Font weight</label>
+                  <select className={selCls} value={sty.fontWeight || ''} onChange={(e) => setStyField('fontWeight', e.target.value)}>
+                    <option value="">Default</option>
+                    <option value="400">Regular</option>
+                    <option value="500">Medium</option>
+                    <option value="600">Semi-bold</option>
+                    <option value="700">Bold</option>
+                    <option value="800">Extra bold</option>
+                  </select>
+                </Row>
+                <Row>
+                  <label className={labelCls}>Text alignment</label>
+                  <div className="flex rounded-xl overflow-hidden border border-white/10">
+                    {(['', 'left', 'center', 'right'] as const).map((a) => (
+                      <button key={a || 'default'} onClick={() => setStyField('align', a)} className={`flex-1 py-2 text-xs font-semibold capitalize ${(sty.align || '') === a ? 'bg-rx-yellow text-rx-dark' : 'text-rx-gray-medium hover:text-white'}`}>
+                        {a || 'Default'}
+                      </button>
+                    ))}
+                  </div>
+                </Row>
+                <Row>
+                  <label className={labelCls}>Opacity — {Math.round((sty.opacity ?? 1) * 100)}%</label>
+                  <input type="range" min={30} max={100} value={Math.round((sty.opacity ?? 1) * 100)} onChange={(e) => { const v = Number(e.target.value); setStyField('opacity', v >= 100 ? '' : v / 100); }} className="w-full accent-rx-yellow" />
+                </Row>
               </>
             )}
 
-            {/* ---- plain list of strings ---- */}
-            {d.type === 'textList' && (
-              <ListShell onAdd={() => setList([...list, ''])}>
-                {list.map((item, i) => (
-                  <div key={i} className="flex items-center gap-1.5 mb-2">
-                    <input className={inputCls} value={item} onChange={(e) => setList(list.map((x, xi) => (xi === i ? e.target.value : x)))} />
-                    <ListBtns i={i} len={list.length} move={move} removeAt={removeAt} />
-                  </div>
-                ))}
-              </ListShell>
-            )}
-
-            {/* ---- link list (footer columns etc.) ---- */}
-            {d.type === 'linkList' && (
-              <ListShell onAdd={() => setList([...list, { label: 'New link', to: '/' }])}>
-                {list.map((item, i) => (
-                  <div key={i} className="flex items-center gap-1.5 mb-2">
-                    <input className={inputCls} value={item.label || ''} onChange={(e) => setField(i, 'label', e.target.value)} placeholder="Label" />
-                    <input className={inputCls} value={item.to || ''} onChange={(e) => setField(i, 'to', e.target.value)} placeholder="/path" />
-                    <ListBtns i={i} len={list.length} move={move} removeAt={removeAt} />
-                  </div>
-                ))}
-              </ListShell>
-            )}
-
-            {/* ---- Why-Choose feature cards ---- */}
-            {d.type === 'features' && (
-              <ListShell onAdd={() => setList([...list, { icon: 'star', title: 'New feature', description: '', color: '#FFD600' }])}>
-                {list.map((f, i) => (
-                  <div key={i} className="rounded-xl border border-white/10 p-3 mb-3 bg-rx-dark/50">
-                    <div className="flex items-center gap-1.5 mb-2">
-                      <select className={inputCls} value={f.icon || 'star'} onChange={(e) => setField(i, 'icon', e.target.value)}>
-                        {['shield', 'zap', 'globe', 'download', 'users', 'star'].map((x) => <option key={x} value={x}>{x}</option>)}
-                      </select>
-                      <input type="color" value={f.color || '#FFD600'} onChange={(e) => setField(i, 'color', e.target.value)} className="w-9 h-9 rounded-lg bg-transparent border border-white/10 cursor-pointer flex-shrink-0" />
-                      <ListBtns i={i} len={list.length} move={move} removeAt={removeAt} />
-                    </div>
-                    <input className={`${inputCls} mb-2`} value={f.title || ''} onChange={(e) => setField(i, 'title', e.target.value)} placeholder="Title" />
-                    <textarea className={`${inputCls} resize-y min-h-[56px]`} value={f.description || ''} onChange={(e) => setField(i, 'description', e.target.value)} placeholder="Description" />
-                  </div>
-                ))}
-              </ListShell>
-            )}
-
-            {/* ---- platform availability cards ---- */}
-            {d.type === 'platformCards' && (
-              <ListShell onAdd={() => setList([...list, { name: 'New platform', icon: '📦', desc: '' }])}>
-                {list.map((p, i) => (
-                  <div key={i} className="flex items-center gap-1.5 mb-2">
-                    <input className={`${inputCls} !w-16 text-center`} value={p.icon || ''} onChange={(e) => setField(i, 'icon', e.target.value)} title="Emoji" />
-                    <input className={inputCls} value={p.name || ''} onChange={(e) => setField(i, 'name', e.target.value)} placeholder="Name" />
-                    <input className={inputCls} value={p.desc || ''} onChange={(e) => setField(i, 'desc', e.target.value)} placeholder="Note" />
-                    <ListBtns i={i} len={list.length} move={move} removeAt={removeAt} />
-                  </div>
-                ))}
-              </ListShell>
-            )}
-
-            {/* ---- categories (name/description per id) ---- */}
-            {d.type === 'categories' && (
-              <ListShell onAdd={() => setList([...list, { id: `custom-${Date.now()}`, name: 'New category', description: '', icon: 'Globe', color: '#FFD600' }])}>
-                <p className="text-[11px] text-rx-gray-medium mb-2">Categories also appear under Browse filters. App counts stay automatic.</p>
-                {list.map((c, i) => (
-                  <div key={c.id || i} className="rounded-xl border border-white/10 p-3 mb-3 bg-rx-dark/50">
-                    <div className="flex items-center gap-1.5 mb-2">
-                      <input className={`${inputCls} !w-24`} value={c.icon || ''} onChange={(e) => setField(i, 'icon', e.target.value)} title="Icon (Heart/GraduationCap/Zap/Cpu/Gamepad2/Users/Globe)" />
-                      <input type="color" value={c.color || '#FFD600'} onChange={(e) => setField(i, 'color', e.target.value)} className="w-9 h-9 rounded-lg bg-transparent border border-white/10 cursor-pointer flex-shrink-0" />
-                      <span className="text-[10px] text-rx-gray-medium truncate flex-1 px-1">{c.id}</span>
-                      <ListBtns i={i} len={list.length} move={move} removeAt={removeAt} />
-                    </div>
-                    <input className={`${inputCls} mb-2`} value={c.name || ''} onChange={(e) => setField(i, 'name', e.target.value)} placeholder="Name" />
-                    <input className={inputCls} value={c.description || ''} onChange={(e) => setField(i, 'description', e.target.value)} placeholder="Description" />
-                  </div>
-                ))}
-              </ListShell>
-            )}
-
-            {/* ---- About tech-stack cards ---- */}
-            {d.type === 'stackCards' && (
-              <ListShell onAdd={() => setList([...list, { title: 'New area', items: [], color: '#FFD600' }])}>
-                {list.map((s, i) => (
-                  <div key={i} className="rounded-xl border border-white/10 p-3 mb-3 bg-rx-dark/50">
-                    <div className="flex items-center gap-1.5 mb-2">
-                      <input className={inputCls} value={s.title || ''} onChange={(e) => setField(i, 'title', e.target.value)} placeholder="Title" />
-                      <input type="color" value={s.color || '#FFD600'} onChange={(e) => setField(i, 'color', e.target.value)} className="w-9 h-9 rounded-lg bg-transparent border border-white/10 cursor-pointer flex-shrink-0" />
-                      <ListBtns i={i} len={list.length} move={move} removeAt={removeAt} />
-                    </div>
-                    <textarea
-                      className={`${inputCls} resize-y min-h-[72px]`}
-                      value={(s.items || []).join('\n')}
-                      onChange={(e) => setField(i, 'items', e.target.value.split('\n').filter((x) => x.trim()))}
-                      placeholder={'One item per line'}
-                    />
-                  </div>
-                ))}
-              </ListShell>
-            )}
-
-            {/* ---- hero stat labels (values stay live) ---- */}
-            {d.type === 'statsLabels' && (
+            {/* ================= LAYOUT TAB ================= */}
+            {tab === 'layout' && (
               <>
-                <p className="text-[11px] text-rx-gray-medium mb-2">Values are always live counts — labels are editable.</p>
-                {list.map((s, i) => (
-                  <div key={i} className="flex items-center gap-1.5 mb-2">
-                    <input className={inputCls} value={s.label || ''} onChange={(e) => setField(i, 'label', e.target.value)} />
+                <Row>
+                  <label className={labelCls}>Padding</label>
+                  <select className={selCls} value={sty.pad || ''} onChange={(e) => setStyField('pad', e.target.value)}>
+                    <option value="">Default</option>
+                    <option value="none">None</option>
+                    <option value="sm">Small</option>
+                    <option value="md">Medium</option>
+                    <option value="lg">Large</option>
+                    <option value="xl">Extra large</option>
+                  </select>
+                </Row>
+                <Row>
+                  <label className={labelCls}>Corner radius</label>
+                  <select className={selCls} value={sty.radius || ''} onChange={(e) => setStyField('radius', e.target.value)}>
+                    <option value="">Default</option>
+                    <option value="none">Square</option>
+                    <option value="sm">Small</option>
+                    <option value="md">Medium</option>
+                    <option value="lg">Large</option>
+                    <option value="full">Pill</option>
+                  </select>
+                </Row>
+                <Row>
+                  <label className={labelCls}>Width</label>
+                  <div className="flex rounded-xl overflow-hidden border border-white/10">
+                    {(['', '100%', '75%', '50%', '33.333%'] as const).map((w) => (
+                      <button key={w || 'auto'} onClick={() => setStyField('width', w)} className={`flex-1 py-2 text-[11px] font-semibold ${(sty.width || '') === w ? 'bg-rx-yellow text-rx-dark' : 'text-rx-gray-medium hover:text-white'}`}>
+                        {w ? w.replace('.333%', '') + (w.startsWith('33') ? '⅓' : '') : 'Auto'}
+                      </button>
+                    ))}
                   </div>
-                ))}
+                </Row>
+                <Row>
+                  <label className="flex items-center justify-between cursor-pointer">
+                    <span className={labelCls}>Center horizontally</span>
+                    <button onClick={() => setStyField('center', !sty.center)} className={`w-11 h-6 rounded-full relative transition-colors ${sty.center ? 'bg-rx-yellow' : 'bg-rx-dark-tertiary border border-white/10'}`}>
+                      <span className={`w-4 h-4 rounded-full absolute top-1 transition-all ${sty.center ? 'right-1 bg-rx-dark' : 'left-1 bg-white/70'}`} />
+                    </button>
+                  </label>
+                  <p className="text-[11px] text-rx-gray-medium mt-1">Applies auto margins — combine with a width below 100% to center the block.</p>
+                </Row>
               </>
             )}
 
-            {/* ---- global design tokens ---- */}
-            {d.type === 'design' && <DesignEditor onClose={() => edit.closeInspector()} />}
+            {/* ================= RESPONSIVE TAB ================= */}
+            {tab === 'responsive' && (
+              <>
+                <p className="text-[11px] text-rx-gray-medium mb-3">Choose where this element appears. Hidden elements are unpublished styling, not deleted content.</p>
+                {([
+                  { key: 'hideMobile', label: 'Hide on phones', desc: 'Screens under 640px', Icon: Smartphone },
+                  { key: 'hideTablet', label: 'Hide on tablets', desc: '640 – 1024px', Icon: Tablet },
+                  { key: 'hideDesktop', label: 'Hide on desktop', desc: 'Over 1024px', Icon: Monitor },
+                ] as const).map(({ key, label, desc, Icon }) => (
+                  <div key={key} className="flex items-center justify-between gap-3 py-3 border-b border-white/5">
+                    <div className="flex items-center gap-3">
+                      <Icon className="w-4 h-4 text-rx-gray-medium flex-shrink-0" />
+                      <div>
+                        <p className="text-sm font-medium text-white">{label}</p>
+                        <p className="text-[11px] text-rx-gray-medium">{desc}</p>
+                      </div>
+                    </div>
+                    <button onClick={() => setStyField(key as any, !(sty as any)[key])} className={`w-11 h-6 rounded-full relative transition-colors flex-shrink-0 ${(sty as any)[key] ? 'bg-rx-yellow' : 'bg-rx-dark-tertiary border border-white/10'}`}>
+                      <span className={`w-4 h-4 rounded-full absolute top-1 transition-all ${(sty as any)[key] ? 'right-1 bg-rx-dark' : 'left-1 bg-white/70'}`} />
+                    </button>
+                  </div>
+                ))}
+                <p className="text-[11px] text-rx-gray-medium mt-3">Use the device buttons in the builder toolbar to preview each size.</p>
+              </>
+            )}
 
-            {d.type !== 'design' && (
-              <div className="flex gap-2 mt-5 sticky bottom-0 bg-rx-dark-secondary pt-3 pb-1 border-t border-white/10">
-                <button onClick={() => edit.closeInspector()} className="flex-1 py-2.5 rounded-xl bg-white/5 text-white border border-white/10 text-sm">
-                  Cancel
-                </button>
+            {/* ================= THEME TAB ================= */}
+            {tab === 'theme' && (
+              <>
+                <p className="text-[11px] text-rx-gray-medium mb-3">One-tap looks for this element, on top of the site-wide theme.</p>
+                <div className="grid grid-cols-2 gap-2 mb-4">
+                  {([
+                    { id: '', label: 'Default', hint: 'Inherit site theme' },
+                    { id: 'accent', label: 'Accent', hint: 'Brand yellow text' },
+                    { id: 'muted', label: 'Muted', hint: 'Quiet gray text' },
+                    { id: 'card', label: 'Card', hint: 'Surface panel look' },
+                  ] as const).map((t) => (
+                    <button
+                      key={t.id || 'default'}
+                      onClick={() => setStyField('theme', t.id)}
+                      className={`p-3 rounded-xl border text-left transition-all ${((sty.theme || '') === t.id) ? 'border-rx-yellow bg-rx-yellow/10' : 'border-white/10 hover:border-rx-yellow/40'}`}
+                    >
+                      <p className="text-sm font-bold text-white">{t.label}</p>
+                      <p className="text-[11px] text-rx-gray-medium mt-0.5">{t.hint}</p>
+                    </button>
+                  ))}
+                </div>
                 <button
-                  onClick={doSave}
-                  disabled={saving === d.id}
-                  className="flex-1 py-2.5 rounded-xl bg-rx-yellow text-rx-dark font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-rx-yellow-light transition-colors"
+                  onClick={() => edit.openInspector({ id: 'design', type: 'design', label: 'Site-wide design' })}
+                  className="w-full py-2.5 rounded-xl bg-white/5 border border-rx-yellow/30 text-rx-yellow text-sm font-semibold flex items-center justify-center gap-2 hover:bg-rx-yellow/10"
                 >
-                  {saving === d.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                  Save — publish now
+                  <Paintbrush className="w-4 h-4" /> Open site-wide Design (brand & surfaces)
                 </button>
-              </div>
+              </>
+            )}
+
+            {/* Footer — per-tab immediate publish */}
+            {d.type !== 'design' && (
+              <>
+                <div className="flex gap-2 mt-5 sticky bottom-0 bg-rx-dark-secondary pt-3 pb-1 border-t border-white/10">
+                  <button onClick={() => edit.closeInspector()} className="flex-1 py-2.5 rounded-xl bg-white/5 text-white border border-white/10 text-sm">
+                    Cancel
+                  </button>
+                  <button
+                    onClick={doSave}
+                    disabled={busySaving}
+                    className="flex-1 py-2.5 rounded-xl bg-rx-yellow text-rx-dark font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-rx-yellow-light transition-colors"
+                  >
+                    {busySaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                    Save & publish
+                  </button>
+                </div>
+                {tab !== 'content' && (
+                  <button onClick={resetStyling} className="w-full mt-2 text-center text-xs text-rx-gray-medium hover:text-rx-yellow transition-colors flex items-center justify-center gap-1.5 pb-1">
+                    <RotateCcw className="w-3 h-3" /> Reset desktop styling
+                  </button>
+                )}
+              </>
             )}
           </div>
         )}
       </aside>
     </div>
   );
+}
+
+/** '#RRGGBB' picker with a typed field + auto (clear) button */
+function ColorField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="flex items-center gap-2">
+      <input
+        type="color"
+        value={/^#[0-9a-f]{6}$/i.test(value) ? value : '#8899AA'}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-12 h-10 rounded-lg bg-transparent border border-white/10 cursor-pointer flex-shrink-0"
+      />
+      <input className={inputCls} value={value} onChange={(e) => onChange(e.target.value)} placeholder="(default)" />
+      {value && (
+        <button onClick={() => onChange('')} className="px-2.5 py-2 rounded-lg bg-white/5 text-rx-gray-medium hover:text-white text-xs flex-shrink-0" title="Back to default">
+          <RotateCcw className="w-3.5 h-3.5" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function cleanSty(sty: StyleOverrides): StyleOverrides | '' {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(sty || {})) {
+    if (v !== undefined && v !== '' && v !== false) out[k] = v;
+  }
+  return Object.keys(out).length ? (out as StyleOverrides) : '';
 }
 
 function ListShell({ children, onAdd }: { children: React.ReactNode; onAdd: () => void }) {
@@ -337,10 +561,10 @@ const DESIGN_FIELDS: { key: string; label: string; hint: string }[] = [
 ];
 
 function DesignEditor({ onClose }: { onClose: () => void }) {
-  const { get, save } = useContent();
+  const { getEffective, save } = useContent();
   const [vals, setVals] = useState<Record<string, string>>(() => {
     const o: Record<string, string> = {};
-    for (const f of DESIGN_FIELDS) o[f.key] = get(f.key, '');
+    for (const f of DESIGN_FIELDS) o[f.key] = getEffective(f.key, '');
     return o;
   });
   const [busy, setBusy] = useState(false);
@@ -350,7 +574,7 @@ function DesignEditor({ onClose }: { onClose: () => void }) {
     let ok = true;
     for (const f of DESIGN_FIELDS) {
       const v = (vals[f.key] || '').trim();
-      const cur = get(f.key, '');
+      const cur = getEffective(f.key, '');
       if (v === cur) continue;
       if (v && !/^#[0-9a-f]{6}$/i.test(v)) { toast.error(`${f.label}: use #RRGGBB`); ok = false; continue; }
       ok = (await save(f.key, v)) && ok;
@@ -364,15 +588,7 @@ function DesignEditor({ onClose }: { onClose: () => void }) {
       {DESIGN_FIELDS.map((f) => (
         <Row key={f.key}>
           <label className={labelCls}>{f.label}</label>
-          <div className="flex items-center gap-2">
-            <input
-              type="color"
-              value={/^#[0-9a-f]{6}$/i.test(vals[f.key] || '') ? vals[f.key] : '#0F1419'}
-              onChange={(e) => setVals({ ...vals, [f.key]: e.target.value })}
-              className="w-12 h-10 rounded-lg bg-transparent border border-white/10 cursor-pointer"
-            />
-            <input className={inputCls} value={vals[f.key] || ''} onChange={(e) => setVals({ ...vals, [f.key]: e.target.value })} placeholder="(site default)" />
-          </div>
+          <ColorField value={vals[f.key] || ''} onChange={(v) => setVals({ ...vals, [f.key]: v })} />
           <p className="text-[11px] text-rx-gray-medium mt-1">{f.hint} — empty resets to default.</p>
         </Row>
       ))}
