@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { App, AppCategory } from '../types';
-import { apps as initialApps } from '../data/apps';
 import { api, isApiConfigured } from '../services/api';
 
 interface AppContextType {
@@ -26,7 +25,8 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [apps, setApps] = useState<App[]>(initialApps);
+  // Real data only — never seed from the mock dataset.
+  const [apps, setApps] = useState<App[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -49,7 +49,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setError(null);
     try {
       const data = await api.apps.list({ limit: 100 });
-      if (data.apps && Array.isArray(data.apps) && data.apps.length > 0) {
+      if (data.apps && Array.isArray(data.apps)) {
         const normalized = (data.apps as any[]).map((a) => normalizeApp(a));
         setApps(normalized);
       }

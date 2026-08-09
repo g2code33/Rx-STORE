@@ -4,7 +4,6 @@ import { Star, Download, ArrowLeft, Share2, ExternalLink, Check, ChevronRight, S
 import DownloadModal from '../components/apps/DownloadModal';
 import { useApps } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
-import { reviews } from '../data/apps';
 import { formatDownloadCount, formatDate, getRatingColor } from '../utils/helpers';
 import toast from 'react-hot-toast';
 
@@ -39,7 +38,7 @@ export default function AppDetail() {
     fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/reviews`)
       .then(r=>r.json()).then(j=>{
         const arr = j?.data || j?.results || j;
-        if (Array.isArray(arr) && arr.length) {
+        if (Array.isArray(arr)) {
           const mapped = arr.map((r:any)=>({
             id: r.id,
             appId: app.id,
@@ -55,7 +54,8 @@ export default function AppDetail() {
         }
       }).catch(()=>{});
   }, [app.slug]);
-  const appReviews = (liveReviews || reviews.filter((r) => r.appId === app.id));
+  // Live reviews only — null (still loading) or empty both render "No reviews yet", never fabricated ones.
+  const appReviews = liveReviews || [];
 
   const handleInstall = async () => {
     if (!user) { toast.error('Please sign in to install applications'); return; }

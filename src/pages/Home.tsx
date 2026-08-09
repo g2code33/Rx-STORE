@@ -2,9 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, Shield, Zap, Globe, Download, Star, Users, Cpu, Heart, GraduationCap, Gamepad2 } from 'lucide-react';
 import { useApps } from '../context/AppContext';
-import { featuredApps, trendingApps, newApps, categories } from '../data/apps';
+import { categories } from '../data/apps';
 import AppCard from '../components/apps/AppCard';
-import { formatDownloadCount } from '../utils/helpers';
 
 
 function StatsBar({ apps }: { apps: any[] }) {
@@ -22,7 +21,7 @@ function StatsBar({ apps }: { apps: any[] }) {
         const d=j.data||j;
         const totalDl = d.totalDownloads ?? apps.reduce((s,a)=> s + (a.downloadCount||0),0);
         const avg = d.averageRating ?? (apps.length ? apps.reduce((s,a)=> s + (a.rating||0),0)/apps.length : 0);
-        setStats({ apps: apps.length || d.totalUsers || 0, downloads: totalDl, platforms: 5, rating: Number(Number(avg).toFixed(1)) });
+        setStats({ apps: apps.length, downloads: totalDl, platforms: 5, rating: Number(Number(avg).toFixed(1)) });
       }).catch(()=>{
         const totalDl = apps.reduce((s,a)=> s + (a.downloadCount||0),0);
         const avg = apps.length ? apps.reduce((s,a)=> s + (a.rating||0),0)/apps.length : 0;
@@ -49,6 +48,16 @@ function StatsBar({ apps }: { apps: any[] }) {
 
 export default function Home() {
   const { apps } = useApps();
+  // Real trending: admin-flagged apps first, then by actual download count.
+  const trending = [...apps]
+    .sort((a, b) =>
+      Number((b as any).isTrending ? 1 : 0) - Number((a as any).isTrending ? 1 : 0) ||
+      (b.downloadCount || 0) - (a.downloadCount || 0) ||
+      (b.rating || 0) - (a.rating || 0)
+    )
+    .slice(0, 6);
+  // Real per-category counts from live apps (mock file counts are stale).
+  const categoryCount = (id: string) => apps.filter((a) => a.category === id).length;
 
   return (
     <div className="min-h-screen">
@@ -153,33 +162,35 @@ export default function Home() {
                 <h3 className="text-sm font-semibold text-white group-hover:text-rx-yellow transition-colors">
                   {cat.name}
                 </h3>
-                <p className="text-xs text-rx-gray-medium mt-1">{cat.count} apps</p>
+                <p className="text-xs text-rx-gray-medium mt-1">{categoryCount(cat.id)} {categoryCount(cat.id) === 1 ? 'app' : 'apps'}</p>
               </Link>
             );
           })}
         </div>
       </section>
 
-      {/* Trending */}
-      <section className="section-container py-20">
-        <div className="flex items-center justify-between mb-10">
-          <div>
-            <h2 className="text-2xl sm:text-3xl font-bold text-white flex items-center gap-2">
-              🔥 Trending Now
-            </h2>
-            <p className="mt-2 text-rx-gray-medium">Most popular applications this week</p>
+      {/* Trending — real apps from D1, no fabricated stats */}
+      {trending.length > 0 && (
+        <section className="section-container py-20">
+          <div className="flex items-center justify-between mb-10">
+            <div>
+              <h2 className="text-2xl sm:text-3xl font-bold text-white flex items-center gap-2">
+                🔥 Trending Now
+              </h2>
+              <p className="mt-2 text-rx-gray-medium">Most popular applications this week</p>
+            </div>
+            <Link to="/browse" className="text-sm text-rx-yellow hover:underline flex items-center gap-1">
+              See all <ArrowRight className="w-4 h-4" />
+            </Link>
           </div>
-          <Link to="/browse" className="text-sm text-rx-yellow hover:underline flex items-center gap-1">
-            See all <ArrowRight className="w-4 h-4" />
-          </Link>
-        </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {trendingApps.map((app) => (
-            <AppCard key={app.id} app={app} />
-          ))}
-        </div>
-      </section>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            {trending.map((app) => (
+              <AppCard key={app.id} app={app} />
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Platform Availability */}
       <section className="section-container py-20">
