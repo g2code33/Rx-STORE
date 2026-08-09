@@ -5,6 +5,7 @@ import App from './App';
 import { AuthProvider } from './context/AuthContext';
 import { AppProvider } from './context/AppContext';
 import { ContentProvider } from './context/ContentContext';
+import { capturePwaInstallPrompt } from './platform/pwaInstall';
 import './index.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
@@ -27,3 +28,6 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
   });
 }
+
+// Capture the browser's install prompt early so /get-app can offer 1-tap install
+capturePwaInstallPrompt();

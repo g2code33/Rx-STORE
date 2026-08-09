@@ -104,6 +104,14 @@ export default function Header() {
 
           {/* Right Actions */}
           <div className="flex items-center gap-2">
+            {/* Get the app — device-aware downloads live on /get-app */}
+            <Link
+              to="/get-app"
+              title="Download the RX Store app"
+              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-rx-yellow/10 text-rx-yellow border border-rx-yellow/25 hover:bg-rx-yellow/20 transition-all"
+            >
+              <Download className="w-3.5 h-3.5" /> Get App
+            </Link>
             {/* Mobile search toggle — opens the search row under the header */}
             <button
               onClick={() => { setMobileSearchOpen((v) => !v); setIsProfileOpen(false); setIsNotifOpen(false); }}

@@ -7,6 +7,7 @@ import MobileTabBar from './components/layout/MobileTabBar';
 import { AIFloatingButton } from './components/ai/AIChat';
 import UpdateBanner from './components/desktop/UpdateBanner';
 import PromoOptIn from './components/promo/PromoOptIn';
+import GetAppBanner from './components/platform/GetAppBanner';
 import { startPromoWatcher } from './promo';
 import { getPublicSettings } from './services/api';
 import { useAuth } from './context/AuthContext';
@@ -64,6 +65,7 @@ const Privacy = lazy(() => import('./pages/Privacy'));
 const Terms = lazy(() => import('./pages/Terms'));
 const Advertise = lazy(() => import('./pages/Advertise'));
 const Sponsor = lazy(() => import('./pages/Sponsor'));
+const GetApp = lazy(() => import('./pages/GetApp'));
 
 function LoadingFallback() {
   return (
@@ -121,6 +123,7 @@ export default function App() {
       />
       <Header />
       <main className="flex-1 pt-16 pb-16 lg:pb-0">
+        <GetAppBanner />
         <Suspense fallback={<LoadingFallback />}>
           <Routes>
             <Route path="/" element={<Home />} />
@@ -134,6 +137,7 @@ export default function App() {
             <Route path="/privacy" element={<Privacy />} />
             <Route path="/terms" element={<Terms />} />
             <Route path="/advertise" element={<Advertise />} />
+            <Route path="/get-app" element={<GetApp />} />
             <Route path="/sponsor/:token" element={<Sponsor />} />
             <Route path="/admin" element={<Admin />} />
           </Routes>

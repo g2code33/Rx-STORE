@@ -8,6 +8,7 @@ import Editable from '../edit/Editable';
 import { replayWelcomeIntro } from '../home/WelcomeIntro';
 
 const DEFAULT_PLATFORM_LINKS = [
+  { label: 'Get the App', to: '/get-app' },
   { label: 'Browse Apps', to: '/browse' },
   { label: 'Categories', to: '/categories' },
   { label: 'Featured', to: '/browse?featured=1' },
