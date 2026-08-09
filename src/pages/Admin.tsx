@@ -1,10 +1,24 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   LayoutDashboard, Package, Users, BarChart3, DollarSign, Upload,
-  Download, Star, Settings, Shield, Plus, Edit, Trash2, Activity, Database, Cloud, Bot, Key, Globe, FileText, Bell
+  Download, Star, Settings, Shield, Plus, Edit, Trash2, Activity, Database, Cloud, Bot, Key, Globe, FileText, Bell, Megaphone
 } from 'lucide-react';
 import { useApps } from '../context/AppContext';
 import { formatDownloadCount } from '../utils/helpers';
+import NotificationComposer from '../components/admin/NotificationComposer';
+
+/** Relative time for activity rows ("3h ago") */
+function ago(t?: string) {
+  if (!t) return '';
+  const ts = new Date(String(t).replace(' ', 'T') + 'Z').getTime();
+  if (isNaN(ts)) return String(t);
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
 import AIProviderPanel from '../components/admin/AIProviderPanel';
 import AppEditor from '../components/admin/AppEditor';
 import AppReleaseManager from '../components/admin/AppReleaseManager';
@@ -28,6 +42,16 @@ export default function Admin() {
     { label: 'Revenue (MTD)', value: '—', change: '', icon: DollarSign, color: '#45B7D1' },
     { label: 'App Rating', value: '—', change: '', icon: Star, color: '#96CEB4' },
   ]);
+  const [activity, setActivity] = useState<any[]>([]);
+  const publishAsNotice = (item: any) => {
+    // Hand this activity to the Notifications composer as a ready-to-send draft
+    sessionStorage.setItem('rx-notif-draft', JSON.stringify({
+      title: item.text,
+      message: item.kind === 'user' ? 'Please join us in welcoming our newest member to RX Store.' : item.text + ' — details on the store.',
+      link: item.to === 'app' && item.slug ? `/app/${item.slug}` : '',
+    }));
+    setActiveSection('notifications');
+  };
 
   React.useEffect(() => {
     const API = (import.meta as any).env?.VITE_API_URL;
@@ -51,6 +75,7 @@ export default function Admin() {
           { label: 'Revenue (MTD)', value: `$${(d.monthlyRevenue ?? 0).toLocaleString()}`, change: '', icon: DollarSign, color: '#45B7D1' },
           { label: 'App Rating', value: String(d.averageRating ? Number(d.averageRating).toFixed(1) : '0.0'), change: '', icon: Star, color: '#96CEB4' },
         ]);
+        setActivity(Array.isArray(d.activity) ? d.activity : []);
       }).catch(()=>{
         setStats([
           { label: 'Total Downloads', value: '0', change: '', icon: Download, color: '#FFD600' },
@@ -69,6 +94,7 @@ export default function Admin() {
     { id: 'developers', label: 'Developers', icon: Shield },
     { id: 'ai', label: 'AI Providers', icon: Bot },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
+    { id: 'notifications', label: 'Notifications', icon: Bell },
     { id: 'revenue', label: 'Revenue', icon: DollarSign },
     { id: 'uploads', label: 'Uploads', icon: Upload },
     { id: 'recycle', label: 'Recycle Bin', icon: Trash2 },
@@ -104,6 +130,7 @@ export default function Admin() {
             </div>
           )}
           {activeSection === 'ai' && (<div className="animate-fade-in"><AIProviderPanel /></div>)}
+          {activeSection === 'notifications' && (<div className="animate-fade-in"><NotificationComposer /></div>)}
           {activeSection === 'dashboard' && (
             <div className="space-y-8 animate-fade-in">
               <div><h1 className="text-2xl font-bold text-white">Dashboard Overview</h1><p className="text-rx-gray-medium mt-1">Welcome back! Here's what's happening with RX Store.</p></div>
@@ -121,19 +148,32 @@ export default function Admin() {
               </div>
               <div className="card p-6">
                 <h3 className="font-bold text-white mb-4 flex items-center gap-2"><Activity className="w-5 h-5 text-rx-yellow" /> Recent Activity</h3>
-                <div className="space-y-3">
-                  {[
-                    { action: 'Clinical Rx updated to v3.2.1', time: '2 hours ago', type: 'update' },
-                    { action: 'New user registration: Dr. Sarah Chen', time: '4 hours ago', type: 'user' },
-                    { action: 'CureLink reached 200K downloads', time: '1 day ago', type: 'milestone' },
-                    { action: 'New subscription: MediLearn Academy Pro', time: '1 day ago', type: 'revenue' },
-                    { action: 'PharmaGAME v2.5.0 deployed', time: '2 days ago', type: 'update' },
-                    { action: 'Security audit completed successfully', time: '3 days ago', type: 'security' },
-                  ].map((item, i) => (
-                    <div key={i} className="flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition-colors">
-                      <div className={`w-2 h-2 rounded-full flex-shrink-0 ${item.type === 'update' ? 'bg-blue-400' : item.type === 'user' ? 'bg-green-400' : item.type === 'revenue' ? 'bg-rx-yellow' : item.type === 'milestone' ? 'bg-purple-400' : 'bg-rx-gray-medium'}`} />
-                      <span className="text-sm text-rx-gray-medium flex-1">{item.action}</span>
-                      <span className="text-xs text-rx-gray-medium flex-shrink-0">{item.time}</span>
+                <div className="space-y-1.5">
+                  {activity.length === 0 && (
+                    <p className="text-sm text-rx-gray-medium py-3 text-center">No activity yet — installs, publishes and sign-ups appear here the moment they happen.</p>
+                  )}
+                  {activity.map((item: any) => (
+                    <div key={item.id} className="flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition-colors">
+                      <div className={`w-2 h-2 rounded-full flex-shrink-0 ${item.kind === 'release' ? 'bg-blue-400' : item.kind === 'download' ? 'bg-purple-400' : item.kind === 'user' ? 'bg-green-400' : item.kind === 'rollback' ? 'bg-amber-400' : 'bg-rx-gray-medium'}`} />
+                      {item.to === 'app' && item.slug ? (
+                        <Link to={`/app/${item.slug}`} className="text-sm text-rx-gray-medium hover:text-rx-yellow flex-1 transition-colors">
+                          {item.text}
+                        </Link>
+                      ) : item.to === 'section' ? (
+                        <button onClick={() => setActiveSection(item.slug)} className="text-sm text-rx-gray-medium hover:text-rx-yellow flex-1 text-left transition-colors">
+                          {item.text}
+                        </button>
+                      ) : (
+                        <span className="text-sm text-rx-gray-medium flex-1">{item.text}</span>
+                      )}
+                      <button
+                        onClick={() => publishAsNotice(item)}
+                        title="Broadcast this as a global notification"
+                        className="p-1.5 rounded-lg text-rx-gray-medium hover:text-rx-yellow hover:bg-rx-yellow/10 transition-colors flex-shrink-0"
+                      >
+                        <Megaphone className="w-4 h-4" />
+                      </button>
+                      <span className="text-xs text-rx-gray-medium flex-shrink-0">{ago(item.time)}</span>
                     </div>
                   ))}
                 </div>

@@ -140,13 +140,82 @@ export const adminRoutes = {
       env.DB.prepare(`SELECT SUM(amount) as total FROM payments WHERE status='completed'`).first(),
       env.DB.prepare(`SELECT AVG(rating) as avg FROM applications WHERE review_count>0`).first(),
     ]);
+    // Real recent activity: downloads + release events + new users, merged & sorted
+    const [dlRows, relRows, userRows] = await Promise.all([
+      env.DB.prepare(`SELECT d.id, d.platform, d.version, d.created_at, a.slug, a.name FROM downloads d LEFT JOIN applications a ON a.id = d.app_id ORDER BY d.created_at DESC LIMIT 8`).all().catch(() => ({ results: [] })),
+      env.DB.prepare(`SELECT r.id, r.version, r.status, r.published_at, r.updated_at, a.slug, a.name FROM releases r LEFT JOIN applications a ON a.id = r.application_id WHERE r.status IN ('published','rolled_back') ORDER BY COALESCE(r.published_at, r.updated_at) DESC LIMIT 6`).all().catch(() => ({ results: [] })),
+      env.DB.prepare(`SELECT id, name, email, created_at FROM users ORDER BY created_at DESC LIMIT 6`).all().catch(() => ({ results: [] })),
+    ]);
+    const activity: any[] = [];
+    for (const d of (dlRows as any)?.results || []) {
+      activity.push({
+        id: `dl_${d.id}`, kind: 'download', time: d.created_at,
+        text: `${d.name || 'An app'} ${d.version ? 'v' + d.version + ' ' : ''}downloaded${d.platform ? ' (' + d.platform + ')' : ''}`,
+        to: d.slug ? 'app' : '', slug: d.slug || '',
+      });
+    }
+    for (const r of (relRows as any)?.results || []) {
+      activity.push({
+        id: `rel_${r.id}`, kind: r.status === 'rolled_back' ? 'rollback' : 'release',
+        time: r.published_at || r.updated_at,
+        text: r.status === 'rolled_back'
+          ? `${r.name || 'An app'} v${r.version} rolled back`
+          : `${r.name || 'An app'} v${r.version} published`,
+        to: r.slug ? 'app' : '', slug: r.slug || '',
+      });
+    }
+    for (const u of (userRows as any)?.results || []) {
+      activity.push({
+        id: `usr_${u.id}`, kind: 'user', time: u.created_at,
+        text: `New user registration: ${u.name || u.email || u.id}`,
+        to: 'section', slug: 'users',
+      });
+    }
+    activity.sort((a, b) => String(b.time || '').localeCompare(String(a.time || '')));
     return {
       totalDownloads: (apps as any)?.total || 0,
       totalUsers: (users as any)?.count || 0,
       monthlyRevenue: (payments as any)?.total || 0,
       averageRating: (rating as any)?.avg || 0,
+      activity: activity.slice(0, 10),
     };
   },
+
+  // Send a notification to users — audience: all | selected users | users with an app installed
+  async sendNotification(request: Request, env: any) {
+    const body: any = await request.json().catch(() => ({}));
+    const { audience, userIds, appSlug, title, message, link, type } = body || {};
+    if (!title || !String(title).trim()) return { error: 'Title is required' };
+    if (!message || !String(message).trim()) return { error: 'Message is required' };
+    const targets = new Set<string>();
+    if (audience === 'users') {
+      const ids: string[] = Array.isArray(userIds) ? userIds : [];
+      for (const id of ids) targets.add(String(id));
+    } else if (audience === 'app') {
+      if (!appSlug) return { error: 'App is required for that audience' };
+      const rows: any = await env.DB.prepare(
+        `SELECT DISTINCT d.user_id FROM downloads d JOIN applications a ON a.id = d.app_id WHERE a.slug = ? AND d.user_id IS NOT NULL AND d.user_id != ''`
+      ).bind(appSlug).all().catch(() => ({ results: [] }));
+      for (const r of rows?.results || []) targets.add(String(r.user_id));
+      if (targets.size === 0) return { error: 'No users have that app installed yet (their downloads may predate account tracking).' };
+    } else {
+      const rows: any = await env.DB.prepare(`SELECT id FROM users`).all().catch(() => ({ results: [] }));
+      for (const r of rows?.results || []) targets.add(String(r.id));
+    }
+    if (targets.size === 0) return { error: 'No recipients match that audience' };
+    const nType = ['update', 'download', 'message', 'system', 'payment'].includes(type) ? type : 'message';
+    const stamp = Date.now();
+    let i = 0;
+    for (const uid of targets) {
+      await env.DB.prepare(
+        `INSERT INTO notifications (id, user_id, type, title, message, data, read) VALUES (?,?,?,?,?,?,0)`
+      ).bind(`n_${stamp}_${i++}_${Math.random().toString(36).slice(2, 6)}`, uid, nType, String(title).slice(0, 200), String(message).slice(0, 1000), JSON.stringify({ link: link || '' })).run().catch(() => {});
+    }
+    await env.DB.prepare(`INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?,?,?)`)
+      .bind(`log_${stamp}`, 'send_notification', 'notification', audience || 'all', JSON.stringify({ title, recipients: targets.size })).run().catch(() => {});
+    return { success: true, recipients: targets.size };
+  },
+
 
   async listUsers(request: Request, env: any) {
     const users = await env.DB.prepare(`SELECT id, name, email, role, created_at, last_login_at FROM users ORDER BY created_at DESC LIMIT 100`).all();
@@ -396,6 +465,19 @@ export const adminRoutes = {
     await mergeAppPlatforms(env, rel.application_id);
     await syncLegacyAppVersion(env, rel.application_id, rel, new URL(request.url).origin);
     await env.DB.prepare(`INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?, ?, ?)`).bind(`log_${Date.now()}`, 'publish_release', 'release', relId, JSON.stringify({ version: rel.version })).run().catch(()=>{});
+    // Auto-notify every user who has this app installed about the new version
+    try {
+      const appRow: any = await env.DB.prepare('SELECT slug, name FROM applications WHERE id=?').bind(rel.application_id).first();
+      const rows: any = await env.DB.prepare(`SELECT DISTINCT user_id FROM downloads WHERE app_id=? AND user_id IS NOT NULL AND user_id != ''`).bind(rel.application_id).all().catch(() => ({ results: [] }));
+      let i = 0;
+      for (const r of rows?.results || []) {
+        await env.DB.prepare(`INSERT INTO notifications (id,user_id,type,title,message,data,read) VALUES (?,?,?,?,?,?,0)`)
+          .bind(`n_${Date.now()}_${i++}_${Math.random().toString(36).slice(2,6)}`, r.user_id, 'update',
+            `New version: ${appRow?.name || 'App'} ${rel.version}`,
+            `Version ${rel.version} of ${appRow?.name || 'the app'} is live — open the app page to update.`,
+            JSON.stringify({ link: appRow?.slug ? `/app/${appRow.slug}` : '' })).run().catch(() => {});
+      }
+    } catch { /* notify is best-effort */ }
     return { success: true, id: relId, version: rel.version };
   },
 

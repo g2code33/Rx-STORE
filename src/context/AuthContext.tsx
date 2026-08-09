@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { User, Notification } from '../types';
-import { api, isApiConfigured, clearToken } from '../services/api';
+import { api, isApiConfigured, clearToken, API_URL } from '../services/api';
 
 interface AuthContextType {
   user: User | null;
@@ -200,6 +200,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setNotifications(loadNotifications(user));
   }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Logged-in users: live server feed (admin broadcasts, release alerts, update notices), polled
+  useEffect(() => {
+    if (!user?.id || !isApiConfigured()) return;
+    let stop = false;
+    const pull = async () => {
+      try {
+        const res = await fetch(`${API_URL}/notifications`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem('rx-store-token') || ''}` },
+        });
+        const j = await res.json();
+        if (!stop && res.ok && Array.isArray(j?.data?.notifications)) setNotifications(j.data.notifications);
+      } catch { /* keep last known list */ }
+    };
+    pull();
+    const t = setInterval(pull, 60_000);
+    return () => { stop = true; clearInterval(t); };
+  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Persist read-state per user so the badge survives reloads
   useEffect(() => {
     try { localStorage.setItem(notifKey(user), JSON.stringify(notifications)); } catch { /* quota */ }
@@ -209,10 +227,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setNotifications((prev) =>
       prev.map((n) => (n.id === id ? { ...n, read: true } : n))
     );
+    if (user?.id && isApiConfigured()) {
+      fetch(`${API_URL}/notifications/read`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('rx-store-token') || ''}` },
+        body: JSON.stringify({ ids: [id] }),
+      }).catch(() => {});
+    }
   };
 
   const markAllNotificationsRead = () => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    setNotifications((prev) => {
+      if (user?.id && isApiConfigured()) {
+        const ids = prev.filter((n) => !n.read).map((n) => n.id);
+        if (ids.length) {
+          fetch(`${API_URL}/notifications/read`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('rx-store-token') || ''}` },
+            body: JSON.stringify({ ids }),
+          }).catch(() => {});
+        }
+      }
+      return prev.map((n) => ({ ...n, read: true }));
+    });
   };
 
   return (

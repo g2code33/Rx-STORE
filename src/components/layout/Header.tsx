@@ -151,7 +151,11 @@ export default function Header() {
                       {notifications.map((notif) => (
                         <button
                           key={notif.id}
-                          onClick={() => markNotificationRead(notif.id)}
+                          onClick={() => {
+                            markNotificationRead(notif.id);
+                            const dest = (notif as any).link;
+                            if (dest) { setIsNotifOpen(false); navigate(dest); }
+                          }}
                           className={`w-full text-left p-4 border-b border-white/5 hover:bg-white/5 transition-colors ${
                             !notif.read ? 'bg-rx-yellow/5' : ''
                           }`}

@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Search, SlidersHorizontal, Grid3X3, List, X } from 'lucide-react';
 import { useApps } from '../context/AppContext';
 import { categories } from '../data/apps';
@@ -9,8 +10,18 @@ export default function Browse() {
   const [viewMode, setViewMode] = React.useState<'grid' | 'list'>('grid');
   const [sortBy, setSortBy] = React.useState<'popular' | 'rating' | 'newest' | 'name'>('popular');
 
+  // Deep links from the footer: /browse?featured=1 → only featured, ?sort=newest
+  const location = useLocation();
+  const [featuredOnly, setFeaturedOnly] = React.useState(false);
+  React.useEffect(() => {
+    const q = new URLSearchParams(location.search);
+    setFeaturedOnly(q.get('featured') === '1');
+    if (q.get('sort') === 'newest') setSortBy('newest');
+  }, [location.search]);
+
   const filteredApps = useMemo(() => {
     let result = getFilteredApps();
+    if (featuredOnly) result = result.filter((a: any) => a.isFeatured);
     switch (sortBy) {
       case 'rating':
         result = [...result].sort((a, b) => b.rating - a.rating);
@@ -134,11 +145,19 @@ export default function Browse() {
         )}
       </div>
 
-      <div className="mb-6">
+      <div className="mb-6 flex items-center gap-3 flex-wrap">
         <p className="text-sm text-rx-gray-medium">
           Showing <span className="text-white font-medium">{filteredApps.length}</span> application{filteredApps.length !== 1 ? 's' : ''}
           {searchQuery && <span> for "<span className="text-rx-yellow">{searchQuery}</span>"</span>}
         </p>
+        {featuredOnly && (
+          <button
+            onClick={() => { setFeaturedOnly(false); window.history.replaceState(null, '', '/browse'); }}
+            className="text-xs font-semibold bg-rx-yellow/15 text-rx-yellow px-2.5 py-1 rounded-full hover:bg-rx-yellow/25 transition-colors flex items-center gap-1"
+          >
+            ⭐ Featured only <X className="w-3 h-3" />
+          </button>
+        )}
       </div>
 
       {filteredApps.length > 0 ? (

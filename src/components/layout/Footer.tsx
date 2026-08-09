@@ -1,6 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { Github, Twitter, Linkedin, Mail, Heart } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { getPublicSettings } from '../../services/api';
 
 export default function Footer() {
@@ -50,25 +51,36 @@ export default function Footer() {
           <div>
             <h3 className="text-sm font-semibold text-white mb-4 uppercase tracking-wider">Platform</h3>
             <ul className="space-y-3">
-              {['Browse Apps', 'Categories', 'Featured', 'New Releases', 'Updates'].map((item) => (
-                <li key={item}>
-                  <Link to="/browse" className="text-sm text-rx-gray-medium hover:text-rx-yellow transition-colors">
-                    {item}
+              {([
+                { label: 'Browse Apps', to: '/browse' },
+                { label: 'Categories', to: '/categories' },
+                { label: 'Featured', to: '/browse?featured=1' },
+                { label: 'New Releases', to: '/browse?sort=newest' },
+                { label: 'Updates', to: '/profile' },
+              ]).map((item) => (
+                <li key={item.label}>
+                  <Link to={item.to} className="text-sm text-rx-gray-medium hover:text-rx-yellow transition-colors">
+                    {item.label}
                   </Link>
                 </li>
               ))}
             </ul>
           </div>
 
-          {/* Developers */}
+          {/* Developers — not launched yet */}
           <div>
             <h3 className="text-sm font-semibold text-white mb-4 uppercase tracking-wider">Developers</h3>
             <ul className="space-y-3">
               {['Developer Portal', 'API Documentation', 'Submit an App', 'SDK Downloads', 'Community Forum'].map((item) => (
                 <li key={item}>
-                  <a href="#" className="text-sm text-rx-gray-medium hover:text-rx-yellow transition-colors">
+                  <button
+                    onClick={() => toast(`${item} — coming soon 🚧`, { icon: '🛠️' })}
+                    className="text-sm text-rx-gray-medium/70 hover:text-rx-yellow transition-colors flex items-center gap-2"
+                    title="Not available yet"
+                  >
                     {item}
-                  </a>
+                    <span className="text-[9px] font-bold uppercase tracking-wider bg-rx-yellow/15 text-rx-yellow px-1.5 py-0.5 rounded">Soon</span>
+                  </button>
                 </li>
               ))}
             </ul>

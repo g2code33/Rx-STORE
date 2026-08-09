@@ -351,7 +351,12 @@ export default {
             if (f?.checksum) checksum = f.checksum;
           } catch {}
         }
-        try { await env.DB.prepare('INSERT INTO downloads (id, app_id, platform, version, created_at) VALUES (?,?,?, ?, datetime(\'now\'))').bind(`dl_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, app.id, platform, app.current_version).run(); await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run(); } catch {}
+        try {
+          let dlUser: string | null = null;
+          try { dlUser = JSON.parse(atob((request.headers.get('Authorization') || '').replace(/^Bearer /, '').split('.')[1] || ''))?.userId || null; } catch {}
+          await env.DB.prepare("INSERT INTO downloads (id, app_id, user_id, platform, version, created_at) VALUES (?,?,?,?,?, datetime('now'))").bind(`dl_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, app.id, dlUser, platform, app.current_version).run();
+          await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run();
+        } catch {}
         return json({ success:true, data:{ url, checksum, version: app.current_version, platform }},200,origin);
       } catch (e:any) { return json({ success:false, error:{ message:e.message }},500,origin); }
     }
@@ -427,6 +432,62 @@ export default {
       if (seg === 'forgot-password') { const d: any = await authRoutes.forgotPassword(normalizedRequest as any, env); if (d.code || d.error) return json({ success:false, error:{ code: d.code || 'ERROR', message: d.message || d.error } },400,origin); return json({ success:true, data:d },200,origin); }
       if (seg === 'reset-password') { const d: any = await authRoutes.resetPassword(normalizedRequest as any, env); if (d.code || d.error) return json({ success:false, error:{ code: d.code || 'ERROR', message: d.message || d.error } },400,origin); return json({ success:true, data:d },200,origin); }
     }
+    // Notifications — personal feed (stored rows + synthesized "update available" for installed apps)
+    if (path === '/notifications' && request.method === 'GET') {
+      const auth = request.headers.get('Authorization') || '';
+      let userId = '';
+      try { userId = JSON.parse(atob((auth.startsWith('Bearer ') ? auth.slice(7) : '').split('.')[1] || ''))?.userId || ''; } catch {}
+      if (!userId) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Sign in required' } }, 401, origin);
+      try {
+        const rows: any = await env.DB.prepare('SELECT id, type, title, message, data, read, created_at FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 50').bind(userId).all().catch(() => ({ results: [] }));
+        const items: any[] = (rows?.results || [])
+          .filter((n: any) => !(String(n.id).startsWith('upd_') && !n.title && !n.message)) // upd_ dismissal markers are internal
+          .map((n: any) => {
+            let data: any = {};
+            try { data = JSON.parse(n.data || '{}'); } catch {}
+            return { id: n.id, type: n.type, title: n.title, message: n.message, date: (n.created_at || '').slice(0, 10), read: !!n.read, link: data.link || '' };
+          });
+        const have = new Set(items.map((i) => i.id));
+        // Synthesize update-available entries from the user's downloaded apps (id includes version → new per release)
+        const mine: any = await env.DB.prepare(
+          `SELECT a.id, a.name, a.slug, a.current_version, MAX(d.created_at) as last_dl FROM downloads d JOIN applications a ON a.id = d.app_id WHERE d.user_id=? GROUP BY a.id`
+        ).bind(userId).all().catch(() => ({ results: [] }));
+        for (const m of mine?.results || []) {
+          const vid = `upd_${m.id}_${m.current_version}`;
+          if (!m.current_version || have.has(vid)) continue;
+          const dismiss: any = await env.DB.prepare('SELECT read FROM notifications WHERE user_id=? AND id=?').bind(userId, vid).first().catch(() => null);
+          if (dismiss?.read) continue; // user dismissed this version's notice
+          items.unshift({ id: vid, type: 'update', title: `Update available: ${m.name} ${m.current_version}`, message: `A newer version of ${m.name} is ready — open the app page to update.`, date: '', read: false, link: `/app/${m.slug}` });
+        }
+        return json({ success: true, data: { notifications: items.slice(0, 50) } }, 200, origin);
+      } catch (e: any) { return json({ success: false, error: { message: e.message } }, 500, origin); }
+    }
+    if (path === '/notifications/read' && request.method === 'POST') {
+      const auth = request.headers.get('Authorization') || '';
+      let userId = '';
+      try { userId = JSON.parse(atob((auth.startsWith('Bearer ') ? auth.slice(7) : '').split('.')[1] || ''))?.userId || ''; } catch {}
+      if (!userId) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Sign in required' } }, 401, origin);
+      const body: any = await request.json().catch(() => ({}));
+      const ids: string[] = Array.isArray(body?.ids) ? body.ids.slice(0, 100) : [];
+      for (const id of ids) {
+        if (String(id).startsWith('upd_')) {
+          // dismissal marker for synthesized update notices
+          await env.DB.prepare(`INSERT INTO notifications (id, user_id, type, title, message, data, read) VALUES (?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET read=1`)
+            .bind(String(id), userId, 'update', '', '', '{}').run().catch(() => {});
+        } else {
+          await env.DB.prepare('UPDATE notifications SET read=1 WHERE user_id=? AND id=?').bind(userId, String(id)).run().catch(() => {});
+        }
+      }
+      return json({ success: true, data: { read: ids.length } }, 200, origin);
+    }
+    if (path === '/admin/notifications/send' && request.method === 'POST') {
+      try {
+        const data = await (adminRoutes as any).sendNotification(normalizedRequest as any, env);
+        if ((data as any)?.error) return json({ success: false, error: { code: 'ERROR', message: (data as any).error } }, 400, origin);
+        return json({ success: true, data }, 200, origin);
+      } catch (e: any) { return json({ success: false, error: { message: e.message } }, 500, origin); }
+    }
+
     if (path === '/users/me' && request.method === 'GET') {
       const auth = request.headers.get('Authorization') || '';
       const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
