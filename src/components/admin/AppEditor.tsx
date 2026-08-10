@@ -19,6 +19,11 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
     gradient: app.gradient || 'from-rx-dark to-rx-dark-secondary',
     developer: app.developer || 'Calcitonin Technologies',
     website: (app as any).website || '',
+    androidPackageId: (app as any).androidPackageId || '',
+    windowsUninstallKey: (app as any).windowsUninstallKey || '',
+    windowsExecutable: (app as any).windowsExecutable || '',
+    linuxPackageName: (app as any).linuxPackageName || '',
+    linuxExecutable: (app as any).linuxExecutable || '',
     version: app.version || '1.0.0',
     size: app.size || '',
     rating: app.rating || 4.5,
@@ -48,6 +53,11 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
         long_description: form.longDescription,
         category: form.category,
         website,
+        android_package_id: form.androidPackageId.trim() || null,
+        windows_uninstall_key: form.windowsUninstallKey.trim() || null,
+        windows_executable: form.windowsExecutable.trim() || null,
+        linux_package_name: form.linuxPackageName.trim() || null,
+        linux_executable: form.linuxExecutable.trim() || null,
         tags: form.tags.split(',').map((s:string)=>s.trim()).filter(Boolean),
         icon: form.icon,
         color: form.color,
@@ -151,6 +161,16 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
           <div>
             <label className="text-xs text-rx-gray-medium">Website URL <span className="text-rx-gray-medium/60">(the ↗ button on the app page opens this)</span></label>
             <input value={form.website} onChange={e=>setForm({...form, website:e.target.value})} placeholder="https://yourapp.com" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-rx-gray-medium/60"/>
+          </div>
+          <div className="card p-4 space-y-3">
+            <div><p className="text-sm font-semibold text-white">Installed-app detection</p><p className="text-[11px] text-rx-gray-medium">Stable publisher identities let native RX Store show Open/Update instead of Get.</p></div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div><label className="text-xs text-rx-gray-medium">Android package ID</label><input value={form.androidPackageId} onChange={e=>setForm({...form,androidPackageId:e.target.value})} placeholder="com.company.app" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
+              <div><label className="text-xs text-rx-gray-medium">Windows uninstall registry key</label><input value={form.windowsUninstallKey} onChange={e=>setForm({...form,windowsUninstallKey:e.target.value})} placeholder="Company App or {GUID}" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
+              <div><label className="text-xs text-rx-gray-medium">Windows executable path/name</label><input value={form.windowsExecutable} onChange={e=>setForm({...form,windowsExecutable:e.target.value})} placeholder="C:\\Program Files\\App\\app.exe" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
+              <div><label className="text-xs text-rx-gray-medium">Linux package name</label><input value={form.linuxPackageName} onChange={e=>setForm({...form,linuxPackageName:e.target.value})} placeholder="clinical-rx" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
+              <div><label className="text-xs text-rx-gray-medium">Linux executable</label><input value={form.linuxExecutable} onChange={e=>setForm({...form,linuxExecutable:e.target.value})} placeholder="clinical-rx" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
+            </div>
           </div>
           <div>
             <label className="text-xs text-rx-gray-medium">Platforms *</label>

@@ -29,6 +29,12 @@ export interface App {
   requiresAuth?: boolean;
   /** The app's own website — opened by the ↗ button on the detail page. */
   website?: string;
+  /** Stable native identities used to detect/open an existing installation. */
+  androidPackageId?: string;
+  windowsUninstallKey?: string;
+  windowsExecutable?: string;
+  linuxPackageName?: string;
+  linuxExecutable?: string;
   status: 'active' | 'beta' | 'coming-soon';
 }
 

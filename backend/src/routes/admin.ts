@@ -600,7 +600,8 @@ export const adminRoutes = {
     const app: any = await env.DB.prepare(`SELECT id FROM applications WHERE slug=?`).bind(slug).first();
     if (!app) return { error: 'Application not found' };
     await ensureColumn(env, 'applications', 'website', 'TEXT');
-    const fields = ['name','description','long_description','category','tags','developer','icon','color','gradient','screenshots','features','release_notes','status','current_version','size_mb','rating','price_type','price_amount','platforms','is_featured','is_new','is_trending','release_date','last_updated','website'];
+    for (const column of ['android_package_id','windows_uninstall_key','windows_executable','linux_package_name','linux_executable']) await ensureColumn(env, 'applications', column, 'TEXT');
+    const fields = ['name','description','long_description','category','tags','developer','icon','color','gradient','screenshots','features','release_notes','status','current_version','size_mb','rating','price_type','price_amount','platforms','is_featured','is_new','is_trending','release_date','last_updated','website','android_package_id','windows_uninstall_key','windows_executable','linux_package_name','linux_executable'];
     const cols = await tableColumns(env, 'applications');
     const sets: string[] = [];
     const binds: any[] = [];
@@ -695,6 +696,7 @@ export const adminRoutes = {
     if (exists) slug = `${slug}-${Date.now().toString().slice(-4)}`;
     // Save everything the editor sends (like updateApp), tolerating columns missing on older prod DBs
     await ensureColumn(env, 'applications', 'website', 'TEXT');
+    for (const column of ['android_package_id','windows_uninstall_key','windows_executable','linux_package_name','linux_executable']) await ensureColumn(env, 'applications', column, 'TEXT');
     const cols = await tableColumns(env, 'applications');
     const candidate: Record<string, any> = {
       name: data.name || 'New App',
@@ -704,6 +706,11 @@ export const adminRoutes = {
       tags: JSON.stringify(data.tags || []),
       developer: data.developer || 'Calcitonin Technologies',
       website: data.website || null,
+      android_package_id: data.android_package_id || null,
+      windows_uninstall_key: data.windows_uninstall_key || null,
+      windows_executable: data.windows_executable || null,
+      linux_package_name: data.linux_package_name || null,
+      linux_executable: data.linux_executable || null,
       icon: data.icon || '📦',
       color: data.color || '#FFD600',
       gradient: data.gradient || null,

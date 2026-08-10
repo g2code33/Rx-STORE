@@ -21,6 +21,32 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 @CapacitorPlugin(name = "AppInstaller")
 public class AppInstallerPlugin extends Plugin {
     @PluginMethod
+    public void isInstalled(PluginCall call) {
+        String packageId = call.getString("packageId", "");
+        boolean installed = false;
+        if (!packageId.isEmpty()) {
+            try { getContext().getPackageManager().getPackageInfo(packageId, 0); installed = true; }
+            catch (Exception ignored) {}
+        }
+        JSObject result = new JSObject(); result.put("installed", installed); call.resolve(result);
+    }
+
+    @PluginMethod
+    public void openInstalled(PluginCall call) {
+        String packageId = call.getString("packageId", "");
+        Intent intent = getContext().getPackageManager().getLaunchIntentForPackage(packageId);
+        if (intent == null) { call.reject("Installed app has no launch activity"); return; }
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); getContext().startActivity(intent); call.resolve();
+    }
+
+    @PluginMethod
+    public void uninstallInstalled(PluginCall call) {
+        String packageId = call.getString("packageId", "");
+        Intent intent = new Intent(Intent.ACTION_DELETE, Uri.parse("package:" + packageId));
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); getContext().startActivity(intent); call.resolve();
+    }
+
+    @PluginMethod
     public void downloadAndInstall(PluginCall call) {
         String url = call.getString("url");
         String fileName = call.getString("fileName", "application.apk");

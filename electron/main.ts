@@ -2,6 +2,10 @@ import { app, BrowserWindow, ipcMain, protocol, net, shell, session, Notificatio
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chmod, access } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 import { autoUpdater } from 'electron-updater';
 
 let mainWindow: BrowserWindow | null = null;
@@ -151,6 +155,31 @@ function downloadNative(url: string, fileName: string, id: string) {
 }
 
 function initIpc() {
+  ipcMain.handle('native:detect', async (_event, identity: any) => {
+    try {
+      if (process.platform === 'win32') {
+        const executable = String(identity?.windowsExecutable || '');
+        if (executable) { try { await access(executable); return { installed: true, launchTarget: executable, source: 'executable' }; } catch {} }
+        const key = String(identity?.windowsUninstallKey || '').replace(/[^a-zA-Z0-9 _{}().-]/g, '');
+        if (key) {
+          const roots = ['HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall', 'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall', 'HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall'];
+          for (const root of roots) {
+            try { await execFileAsync('reg.exe', ['query', `${root}\\${key}`], { windowsHide: true }); return { installed: true, launchTarget: executable || '', source: 'registry' }; } catch {}
+          }
+        }
+      } else if (process.platform === 'linux') {
+        const packageName = String(identity?.linuxPackageName || '').replace(/[^a-zA-Z0-9+._-]/g, '');
+        const executable = String(identity?.linuxExecutable || '').replace(/[^a-zA-Z0-9+._/-]/g, '');
+        if (packageName) {
+          try { await execFileAsync('dpkg-query', ['-W', '-f=${Status}', packageName]); return { installed: true, launchTarget: executable, source: 'package' }; } catch {}
+        }
+        if (executable) {
+          try { const { stdout } = await execFileAsync('sh', ['-lc', `command -v -- "${executable}"`]); if (stdout.trim()) return { installed: true, launchTarget: stdout.trim(), source: 'executable' }; } catch {}
+        }
+      }
+    } catch {}
+    return { installed: false };
+  });
   ipcMain.handle('native:download', async (_event, input: { url: string; fileName?: string; id?: string }) =>
     downloadNative(input.url, input.fileName || 'download', input.id || 'download')
   );

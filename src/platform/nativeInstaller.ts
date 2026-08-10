@@ -1,6 +1,9 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
 
 interface AndroidInstallerPlugin {
+  isInstalled(input: { packageId: string }): Promise<{ installed: boolean }>;
+  openInstalled(input: { packageId: string }): Promise<void>;
+  uninstallInstalled(input: { packageId: string }): Promise<void>;
   downloadAndInstall(input: { url: string; fileName: string }): Promise<{ started?: boolean; permissionRequired?: boolean }>;
   openAppSettings(): Promise<void>;
 }
@@ -25,6 +28,14 @@ export const isDesktopShell = () => typeof window !== 'undefined' && !!window.rx
 export const isAndroidShell = () => Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
 export async function androidDownloadAndInstall(url: string, fileName: string) {
   return AndroidInstaller.downloadAndInstall({ url, fileName });
+}
+export const androidIsInstalled = (packageId: string) => AndroidInstaller.isInstalled({ packageId });
+export const androidOpen = (packageId: string) => AndroidInstaller.openInstalled({ packageId });
+export const androidUninstall = (packageId: string) => AndroidInstaller.uninstallInstalled({ packageId });
+
+export async function desktopDetect(identity: any) {
+  if (!window.rxDesktop) return { installed: false };
+  return window.rxDesktop.detectApp(identity);
 }
 export const getNativePackage = (slug: string) => read()[slug] || null;
 

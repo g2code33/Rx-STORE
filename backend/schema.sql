@@ -40,6 +40,11 @@ CREATE TABLE IF NOT EXISTS applications (
   developer_id TEXT REFERENCES users(id),
   -- The app's own website — opened by the ↗ button on the app detail page
   website TEXT,
+  android_package_id TEXT,
+  windows_uninstall_key TEXT,
+  windows_executable TEXT,
+  linux_package_name TEXT,
+  linux_executable TEXT,
   icon TEXT,
   color TEXT,
   gradient TEXT,
