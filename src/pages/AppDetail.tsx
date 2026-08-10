@@ -11,6 +11,7 @@ import PageBlocks from '../components/edit/PageBlocks';
 import { formatDownloadCount, formatDate, getRatingColor } from '../utils/helpers';
 import { normalizeWebsiteUrl } from '../utils/url';
 import toast from 'react-hot-toast';
+import { androidDownloadAndInstall, confirmDesktopInstalled, desktopDownload, desktopInstall, desktopOpen, desktopUninstall, getNativePackage, isAndroidShell, isDesktopShell, removeNativePackage, type NativePackageState } from '../platform/nativeInstaller';
 
 /** Internal paths navigate in-app, external URLs open a new tab, '#' stays inert. */
 function DetailLink({ to, className, children }: { to: string; className?: string; children: React.ReactNode }) {
@@ -33,7 +34,13 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   const [newComment, setNewComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [showDownload, setShowDownload] = useState(false);
+  const [nativePackage, setNativePackage] = useState<NativePackageState | null>(() => slug ? getNativePackage(slug) : null);
   const [lightbox, setLightbox] = useState<number | null>(null);
+  React.useEffect(() => {
+    const sync = () => setNativePackage(slug ? getNativePackage(slug) : null);
+    sync(); window.addEventListener('rx-native-package-change', sync);
+    return () => window.removeEventListener('rx-native-package-change', sync);
+  }, [slug]);
   // Screenshots whose objects are missing (404/403) get filtered out, never shown broken
   const [badShots, setBadShots] = useState<Set<number>>(() => new Set());
   const allShots: string[] = ((app?.screenshots as any[]) || []).filter((s: any) => typeof s === 'string' && !!s);
@@ -132,7 +139,35 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
         return;
       }
 
-      // Step 2: actually fetch the file to ensure it exists and is downloadable
+      // Android shell: use DownloadManager and immediately hand the completed
+      // APK to Android's protected installer. Android still shows its required
+      // confirmation screen and may first ask "Allow from this source".
+      if (isAndroidShell() && platform === 'android') {
+        const result = await androidDownloadAndInstall(dlUrl, j.data?.fileName || `${app.slug}-${j.data?.version || app.version}.apk`);
+        if (result.permissionRequired) toast('Enable “Allow from this source”, then tap Get again.', { icon: '🔐', duration: 7000 });
+        else toast.success('Downloading — Android will open the installer when ready');
+        setIsInstalling(false);
+        return;
+      }
+
+      // Desktop shell: download to the real Downloads folder and stop at a
+      // deliberate Install step. Never call a download "installed".
+      if (isDesktopShell()) {
+        toast(`Downloading ${app.name} (${platform})…`, { icon: '⬇️' });
+        const ext = platform === 'windows' ? '.exe' : platform.includes('appimage') ? '.AppImage' : platform.includes('linux') ? '.deb' : '';
+        await desktopDownload({
+          slug: app.slug,
+          url: dlUrl,
+          fileName: j.data?.fileName || `${app.slug}-${j.data?.version || app.version}${ext}`,
+          version: j.data?.version || app.version,
+          launchTarget: (app as any).website || undefined,
+        });
+        toast.success(`${app.name} downloaded — tap Install to continue`);
+        setIsInstalling(false);
+        return;
+      }
+
+      // Browser/PWA: fetch the file and hand it to the browser download UI.
       toast(`Downloading ${app.name} (${platform})...`, { icon: '⬇️' });
       const fileRes = await fetch(dlUrl);
       if (!fileRes.ok) throw new Error(`File not found on storage (${fileRes.status}) — upload may be incomplete. Please try again or contact admin.`);
@@ -149,8 +184,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
       a.remove();
       setTimeout(()=> URL.revokeObjectURL(blobUrl), 2000);
 
-      toast.success(`Installed ${app.name} for ${platform} — download verified and counted`);
-      installApp(app.id);
+      toast.success(`Downloaded ${app.name} for ${platform} — open the file to install`);
       setTimeout(()=> (window as any).rxRefreshApps?.(), 500);
     } catch (e:any) {
       toast.error(e.message || 'Install failed — not marked as complete. You can try again.');
@@ -158,10 +192,41 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
     setIsInstalling(false);
   };
 
-  const handleUninstall = () => {
-    if (!confirm(`Uninstall ${app.name}? This will remove the app and its data from your device.`)) return;
+  const handleNativeInstall = async () => {
+    if (!nativePackage) return;
+    setIsInstalling(true);
+    try {
+      await desktopInstall(nativePackage);
+      toast('Installer opened — approve the operating-system prompt to finish.', { icon: 'ℹ️', duration: 6000 });
+      if (confirm(`Did ${app.name} finish installing successfully?`)) {
+        const installed = confirmDesktopInstalled(nativePackage);
+        setNativePackage(installed); installApp(app.id);
+        toast.success(`${app.name} is ready`);
+      }
+    } catch (e: any) { toast.error(e.message || 'Could not open installer'); }
+    finally { setIsInstalling(false); }
+  };
+
+  const handleNativeOpen = async () => {
+    if (!nativePackage) return;
+    try { await desktopOpen(nativePackage); }
+    catch (e: any) { toast.error(e.message || 'Could not open application'); }
+  };
+
+  const handleUninstall = async () => {
+    if (!confirm(`Uninstall ${app.name}? Your operating system will ask you to confirm.`)) return;
+    if (isDesktopShell() && nativePackage) {
+      try {
+        await desktopUninstall();
+        toast('System app manager opened — remove the app there, then return here.', { icon: 'ℹ️', duration: 6000 });
+        if (confirm(`After completing the system uninstall, mark ${app.name} as removed from RX Store?`)) {
+          removeNativePackage(app.slug); uninstallApp(app.id); setNativePackage(null);
+        }
+      } catch (e: any) { toast.error(e.message || 'Could not open system app manager'); }
+      return;
+    }
     uninstallApp(app.id);
-    toast.success(`${app.name} has been uninstalled`);
+    toast.success(`${app.name} has been removed from RX Store`);
   };
 
   // The app's own website — set per app in the App Editor (Website URL field).
@@ -239,18 +304,24 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
               </div>
             </div>
             <div className="flex flex-col items-end gap-3 flex-shrink-0">
-              {isInstalled ? (
+              {isDesktopShell() && nativePackage?.phase === 'downloaded' ? (
+                <button onClick={handleNativeInstall} disabled={isInstalling} className="px-8 py-3.5 bg-rx-yellow text-rx-dark font-bold rounded-xl disabled:opacity-60 flex items-center gap-2 shadow-lg">
+                  <Download className="w-5 h-5" /> {isInstalling ? 'Opening installer…' : 'Install'}
+                </button>
+              ) : isDesktopShell() && nativePackage?.phase === 'installed' ? (
+                <div className="flex items-center gap-2 flex-wrap justify-end">
+                  <span className="flex items-center gap-1.5 text-green-300 text-sm"><Check className="w-4 h-4" /> Installed</span>
+                  <button onClick={handleNativeOpen} className="px-4 py-2.5 bg-green-500 text-white rounded-xl text-sm font-semibold">Open</button>
+                  <button onClick={handleUninstall} className="px-4 py-2.5 bg-white/10 text-white rounded-xl text-sm hover:bg-white/20">Uninstall</button>
+                </div>
+              ) : isInstalled ? (
                 <div className="flex items-center gap-3">
                   <span className="flex items-center gap-2 text-green-300 font-medium"><Check className="w-5 h-5" /> Installed</span>
                   <button onClick={handleUninstall} className="px-4 py-2.5 bg-white/10 backdrop-blur-sm text-white rounded-xl text-sm hover:bg-white/20 transition-all">Uninstall</button>
                 </div>
               ) : (
                 <button onClick={handleInstall} disabled={isInstalling} className="px-8 py-3.5 bg-white text-rx-dark font-bold rounded-xl hover:bg-white/90 transition-all active:scale-95 disabled:opacity-70 flex items-center gap-2 shadow-lg">
-                  {isInstalling ? (
-                    <><div className="w-4 h-4 border-2 border-rx-dark/30 border-t-rx-dark rounded-full animate-spin" />Installing...</>
-                  ) : (
-                    <><Download className="w-5 h-5" />{app.price === 'free' ? 'Install Free' : `Get — $${app.priceAmount}${app.price === 'subscription' ? '/mo' : ''}`}</>
-                  )}
+                  {isInstalling ? <><div className="w-4 h-4 border-2 border-rx-dark/30 border-t-rx-dark rounded-full animate-spin" />Downloading…</> : <><Download className="w-5 h-5" />{app.price === 'free' ? 'Get' : `Get — $${app.priceAmount}${app.price === 'subscription' ? '/mo' : ''}`}</>}
                 </button>
               )}
               <div className="flex items-center gap-2">

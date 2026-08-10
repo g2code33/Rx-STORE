@@ -3,7 +3,7 @@ import toast from 'react-hot-toast';
 import { Bell, X } from 'lucide-react';
 import { useContent } from '../../context/ContentContext';
 import { IntroAd, isAdLive } from '../home/introAds';
-import { notificationsUsable, checkPromoNow, promoIsFresh, Promo } from '../../promo';
+import { notificationsUsable, notificationPermission, requestNotificationPermission, checkPromoNow, promoIsFresh, Promo } from '../../promo';
 
 const DISMISSED_KEY = 'rx-promo-dismissed';
 
@@ -19,7 +19,7 @@ export default function PromoOptIn() {
   const [gone, setGone] = useState(false);
 
   if (gone || !ready || !notificationsUsable()) return null;
-  if (Notification.permission !== 'default') return null;
+  if (notificationPermission() !== 'default') return null;
   try {
     if (localStorage.getItem(DISMISSED_KEY) === '1') return null;
   } catch { /* private mode */ }
@@ -37,7 +37,7 @@ export default function PromoOptIn() {
   const enable = async () => {
     setBusy(true);
     try {
-      const p = await Notification.requestPermission();
+      const p = await requestNotificationPermission();
       if (p === 'granted') {
         toast.success("Deal alerts on — you'll hear about featured offers first.");
         // Deliver the promo that may already be waiting — now, not 30 min later.

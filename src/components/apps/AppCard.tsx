@@ -141,7 +141,7 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
             <span className="text-xs font-medium text-green-400 bg-green-400/10 px-2.5 py-1 rounded-lg">Installed</span>
           ) : (
             <button
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); const token=localStorage.getItem('rx-store-token'); if(!token){ window.location.href='/login'; return; } setShowDl(true); }}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); const token=localStorage.getItem('rx-store-token'); if(!token){ window.location.href='/login'; return; } if((window as any).rxDesktop?.isDesktop){ window.location.href=`/app/${app.slug}`; return; } setShowDl(true); }}
               className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-all ${app.price === 'free' ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-rx-yellow text-rx-dark hover:bg-rx-yellow-light'}`}
             >
               {app.price === 'free'
@@ -179,9 +179,8 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
         if(blob.size===0) throw new Error('File is empty');
         const blobUrl=URL.createObjectURL(blob);
         const a=document.createElement('a'); a.href=blobUrl; a.download=`${app.slug}-${app.version}-${platform}`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(blobUrl),2000);
-        installApp(app.id);
         window.dispatchEvent(new CustomEvent('rx-refresh'));
-        const {default:toast}=await import('react-hot-toast'); toast.success(`Installed ${app.name} for ${platform}`);
+        const {default:toast}=await import('react-hot-toast'); toast.success(`Downloaded ${app.name} for ${platform} — open the file to install`);
         setShowDl(false);
       }catch(e:any){ const {default:toast}=await import('react-hot-toast'); toast.error(e.message + ' — not marked as complete, you can try again'); }
     }} />}

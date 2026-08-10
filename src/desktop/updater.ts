@@ -47,6 +47,12 @@ declare global {
       checkForUpdates: () => Promise<{ state?: string; message?: string } | void>;
       installUpdate: () => Promise<void>;
       onUpdateStatus: (cb: (s: any) => void) => () => void;
+      downloadApp: (input: { url: string; fileName?: string; id?: string }) => Promise<{ path: string; fileName: string; size: number }>;
+      installApp: (filePath: string) => Promise<{ launched: boolean }>;
+      openApp: (target: string) => Promise<boolean>;
+      uninstallApp: () => Promise<boolean>;
+      showNotification: (input: { title: string; body?: string }) => Promise<boolean>;
+      onDownloadProgress: (cb: (s: any) => void) => () => void;
     };
   }
 }

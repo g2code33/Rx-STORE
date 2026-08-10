@@ -11,4 +11,14 @@ contextBridge.exposeInMainWorld('rxDesktop', {
     ipcRenderer.on('update:status', listener);
     return () => ipcRenderer.removeListener('update:status', listener);
   },
+  downloadApp: (input: { url: string; fileName?: string; id?: string }) => ipcRenderer.invoke('native:download', input),
+  installApp: (filePath: string) => ipcRenderer.invoke('native:install', filePath),
+  openApp: (target: string) => ipcRenderer.invoke('native:open', target),
+  uninstallApp: () => ipcRenderer.invoke('native:uninstall'),
+  showNotification: (input: { title: string; body?: string }) => ipcRenderer.invoke('native:notify', input),
+  onDownloadProgress: (cb: (s: any) => void) => {
+    const listener = (_e: any, s: any) => cb(s);
+    ipcRenderer.on('native-download:progress', listener);
+    return () => ipcRenderer.removeListener('native-download:progress', listener);
+  },
 });

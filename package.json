@@ -1,7 +1,7 @@
 {
   "name": "rx-store",
   "private": true,
-  "version": "1.0.6",
+  "version": "1.1.0",
   "description": "RX Store - Professional Digital Marketplace by Calcitonin Technologies",
   "author": {
     "name": "Calcitonin Technologies",
@@ -82,11 +82,12 @@
       "package.json"
     ],
     "win": {
+      "icon": "build/icon.png",
       "target": [
         "nsis"
       ],
       "artifactName": "RXStore-Setup-${version}.${ext}",
-      "signAndEditExecutable": false
+      "signAndEditExecutable": true
     },
     "nsis": {
       "oneClick": false,
@@ -96,6 +97,7 @@
       "script": "build/installer.nsi"
     },
     "linux": {
+      "icon": "build/icon.png",
       "target": [
         "AppImage",
         "deb"

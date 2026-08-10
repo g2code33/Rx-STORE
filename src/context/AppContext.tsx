@@ -23,10 +23,19 @@ interface AppContextType {
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
+const CATALOG_CACHE_KEY = 'rx-catalog-cache-v1';
+
+function readCatalogCache(): App[] {
+  try {
+    const cached = JSON.parse(localStorage.getItem(CATALOG_CACHE_KEY) || '{}');
+    return Array.isArray(cached.apps) ? cached.apps : [];
+  } catch { return []; }
+}
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  // Real data only — never seed from the mock dataset.
-  const [apps, setApps] = useState<App[]>([]);
+  // Show the last successful live catalog immediately, then refresh in the
+  // background. This is real API data—not a mock—and makes native startup fast.
+  const [apps, setApps] = useState<App[]>(readCatalogCache);
   // Start in the loading state when a live API is configured. This prevents a
   // misleading "no applications" flash while the native WebView starts up.
   const [isLoading, setIsLoading] = useState(() => isApiConfigured());
@@ -58,6 +67,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (data.apps && Array.isArray(data.apps)) {
         const normalized = (data.apps as any[]).map((a) => normalizeApp(a));
         setApps(normalized);
+        try { localStorage.setItem(CATALOG_CACHE_KEY, JSON.stringify({ at: Date.now(), apps: normalized })); } catch {}
       }
     } catch (e: any) {
       setError(e.message || 'Failed to load apps');

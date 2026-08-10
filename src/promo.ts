@@ -1,5 +1,7 @@
 import { API_URL, isApiConfigured } from './services/api';
 import { trackAd } from './components/home/introAds';
+import { Capacitor } from '@capacitor/core';
+import toast from 'react-hot-toast';
 
 /**
  * Promo notifications — PWA alerts tied to sponsored creatives.
@@ -32,8 +34,22 @@ const SEEN_KEY = 'rx-promo-seen';
 const FRESH_MS = 14 * 24 * 60 * 60 * 1000;
 let started = false;
 
+const NATIVE_PROMO_OPT_IN = 'rx-native-promo-opt-in';
 export function notificationsUsable(): boolean {
-  return typeof window !== 'undefined' && 'Notification' in window && 'serviceWorker' in navigator;
+  if (typeof window === 'undefined') return false;
+  if (window.rxDesktop?.isDesktop || Capacitor.isNativePlatform()) return true;
+  return 'Notification' in window;
+}
+export function notificationPermission(): NotificationPermission {
+  if (window.rxDesktop?.isDesktop) return 'granted';
+  if (Capacitor.isNativePlatform()) return localStorage.getItem(NATIVE_PROMO_OPT_IN) === '1' ? 'granted' : 'default';
+  return 'Notification' in window ? Notification.permission : 'denied';
+}
+export async function requestNotificationPermission(): Promise<NotificationPermission> {
+  if (window.rxDesktop?.isDesktop || Capacitor.isNativePlatform()) {
+    localStorage.setItem(NATIVE_PROMO_OPT_IN, '1'); return 'granted';
+  }
+  return Notification.requestPermission();
 }
 
 /** True while a promo is recent enough to alert about (14-day burst window). */
@@ -99,7 +115,7 @@ async function check() {
   // Not opted in? LEAVE IT UNSEEN — the moment the user enables deal alerts
   // (PromoOptIn → checkPromoNow) the pending promo lands right away. Marking
   // it seen here is what used to silently swallow every broadcast.
-  if (Notification.permission !== 'granted') return;
+  if (notificationPermission() !== 'granted') return;
   if (!promoIsFresh(promo)) return;
   await show(promo);
   // One device, one alert — marked only once it was actually delivered.
@@ -107,6 +123,16 @@ async function check() {
 }
 
 async function show(p: Promo) {
+  if (Capacitor.isNativePlatform()) {
+    toast(`${p.title}${p.body ? ` — ${p.body}` : ''}`, { icon: '🎁', duration: 10000 });
+    if (p.adId) trackAd(`promo:${p.adId}`, 'views');
+    return;
+  }
+  if (window.rxDesktop?.isDesktop) {
+    await window.rxDesktop.showNotification({ title: p.title, body: p.body || '' });
+    if (p.adId) trackAd(`promo:${p.adId}`, 'views');
+    return;
+  }
   const opts: NotificationOptions = {
     body: p.body || '',
     icon: p.iconUrl || '/icon-192.png',

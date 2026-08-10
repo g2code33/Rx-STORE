@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain, protocol, net, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, protocol, net, shell, session, Notification } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { chmod, access } from 'node:fs/promises';
 import { autoUpdater } from 'electron-updater';
 
 let mainWindow: BrowserWindow | null = null;
@@ -119,7 +120,67 @@ function createWindow(): BrowserWindow {
   return win;
 }
 
+function safeFileName(value: string) {
+  return path.basename(String(value || 'download')).replace(/[^a-z0-9._ -]/gi, '_').slice(0, 180) || 'download';
+}
+
+/** Download through Electron so the renderer stays responsive and can offer a real Install step. */
+function downloadNative(url: string, fileName: string, id: string) {
+  if (!mainWindow || mainWindow.isDestroyed()) throw new Error('RX Store window is unavailable');
+  const parsed = new URL(url);
+  if (parsed.protocol !== 'https:') throw new Error('Only secure HTTPS downloads are allowed');
+  return new Promise<{ path: string; fileName: string; size: number }>((resolve, reject) => {
+    const ses = session.defaultSession;
+    const listener = (_event: Electron.Event, item: Electron.DownloadItem) => {
+      const destination = path.join(app.getPath('downloads'), safeFileName(fileName || item.getFilename()));
+      item.setSavePath(destination);
+      item.on('updated', (_e, state) => {
+        const total = item.getTotalBytes();
+        const received = item.getReceivedBytes();
+        sendToRenderer('native-download:progress', { id, state, received, total, percent: total > 0 ? Math.round(received * 100 / total) : 0 });
+      });
+      item.once('done', (_e, state) => {
+        ses.removeListener('will-download', listener);
+        if (state === 'completed') resolve({ path: destination, fileName: path.basename(destination), size: item.getReceivedBytes() });
+        else reject(new Error(`Download ${state}`));
+      });
+    };
+    ses.once('will-download', listener);
+    mainWindow.webContents.downloadURL(parsed.toString());
+  });
+}
+
 function initIpc() {
+  ipcMain.handle('native:download', async (_event, input: { url: string; fileName?: string; id?: string }) =>
+    downloadNative(input.url, input.fileName || 'download', input.id || 'download')
+  );
+  ipcMain.handle('native:install', async (_event, filePath: string) => {
+    await access(filePath);
+    if (/\.appimage$/i.test(filePath)) await chmod(filePath, 0o755);
+    const error = await shell.openPath(filePath);
+    if (error) throw new Error(error);
+    return { launched: true };
+  });
+  ipcMain.handle('native:open', async (_event, target: string) => {
+    if (/^https?:\/\//i.test(target)) { await shell.openExternal(target); return true; }
+    const error = await shell.openPath(target);
+    if (error) throw new Error(error);
+    return true;
+  });
+  ipcMain.handle('native:uninstall', async () => {
+    if (process.platform === 'win32') await shell.openExternal('ms-settings:appsfeatures');
+    else {
+      const candidates = ['/usr/bin/gnome-software', '/usr/bin/plasma-discover'];
+      const manager = candidates.find((candidate) => { try { require('node:fs').accessSync(candidate); return true; } catch { return false; } });
+      if (manager) await shell.openPath(manager);
+      else await shell.openExternal('https://help.ubuntu.com/community/InstallingSoftware');
+    }
+    return true;
+  });
+  ipcMain.handle('native:notify', (_event, input: { title: string; body?: string }) => {
+    if (Notification.isSupported()) new Notification({ title: input.title || 'RX Store', body: input.body || '', icon: path.join(app.getAppPath(), 'build/icon.png') }).show();
+    return true;
+  });
   ipcMain.handle('update:check', async () => {
     if (!app.isPackaged) return { state: 'dev' };
     try {
