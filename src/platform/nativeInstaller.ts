@@ -1,7 +1,9 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
 
 interface AndroidInstallerPlugin {
-  isInstalled(input: { packageId: string }): Promise<{ installed: boolean }>;
+  getNetworkStatus(): Promise<{ connected: boolean; metered: boolean }>;
+  getHostVersion(): Promise<{ version: string }>;
+  isInstalled(input: { packageId: string }): Promise<{ installed: boolean; version?: string }>;
   openInstalled(input: { packageId: string }): Promise<void>;
   uninstallInstalled(input: { packageId: string }): Promise<void>;
   downloadAndInstall(input: { url: string; fileName: string }): Promise<{ started?: boolean; permissionRequired?: boolean }>;
@@ -29,6 +31,8 @@ export const isAndroidShell = () => Capacitor.isNativePlatform() && Capacitor.ge
 export async function androidDownloadAndInstall(url: string, fileName: string) {
   return AndroidInstaller.downloadAndInstall({ url, fileName });
 }
+export const androidNetworkStatus = () => AndroidInstaller.getNetworkStatus();
+export const androidHostVersion = () => AndroidInstaller.getHostVersion();
 export const androidIsInstalled = (packageId: string) => AndroidInstaller.isInstalled({ packageId });
 export const androidOpen = (packageId: string) => AndroidInstaller.openInstalled({ packageId });
 export const androidUninstall = (packageId: string) => AndroidInstaller.uninstallInstalled({ packageId });

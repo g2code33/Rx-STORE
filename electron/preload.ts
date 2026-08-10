@@ -6,6 +6,9 @@ contextBridge.exposeInMainWorld('rxDesktop', {
   appVersion: () => ipcRenderer.invoke('app:version'),
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
+  setUpdatePolicy: (policy: any) => ipcRenderer.invoke('update:policy', policy),
+  pauseUpdate: () => ipcRenderer.invoke('update:pause'),
+  resumeUpdate: () => ipcRenderer.invoke('update:resume'),
   onUpdateStatus: (cb: (s: any) => void) => {
     const listener = (_e: any, s: any) => cb(s);
     ipcRenderer.on('update:status', listener);

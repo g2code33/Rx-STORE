@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { RefreshCw, Rocket, X, AlertTriangle, ExternalLink } from 'lucide-react';
-import { useUpdateStatus, installNow, checkNow, isDesktopApp } from '../../desktop/updater';
+import { RefreshCw, Rocket, X, AlertTriangle, ExternalLink, Pause, Play } from 'lucide-react';
+import { useUpdateStatus, installNow, checkNow, isDesktopApp, pauseUpdate, resumeUpdate } from '../../desktop/updater';
 
 const mb = (b?: number) => (typeof b === 'number' && b > 0 ? `${(b / 1048576).toFixed(1)} MB` : '');
 
@@ -18,15 +18,18 @@ export default function UpdateBanner() {
   if (!s.banner || s.at <= dismissedAt) return null;
 
   const downloading = s.phase === 'downloading';
+  const paused = s.phase === 'paused';
   const busy = s.phase === 'available' || downloading;
   const ready = s.phase === 'downloaded';
   const failed = s.phase === 'error';
-  if (!busy && !ready && !failed) return null;
+  if (!busy && !paused && !ready && !failed) return null;
 
   const v = s.version ? ` v${s.version}` : '';
-  const title = failed ? 'Update check failed' : ready ? `Update${v} ready` : `Updating to${v}…`;
+  const title = failed ? 'Update check failed' : paused ? `Update${v} paused` : ready ? `Update${v} ready` : `Updating to${v}…`;
   const sub = failed
     ? s.message || 'Something went wrong while checking.'
+    : paused
+      ? 'Download is paused. Resume when your connection is ready.'
     : ready
       ? 'Restart RX Store to finish installing. Your apps and data carry over.'
       : downloading
@@ -68,6 +71,16 @@ export default function UpdateBanner() {
         {downloading && (
           <div className="mt-3 h-1.5 bg-white/10 rounded-full overflow-hidden">
             <div className="h-full bg-rx-yellow rounded-full transition-all duration-500" style={{ width: `${s.percent ?? 0}%` }} />
+          </div>
+        )}
+
+        {(downloading || paused) && (
+          <div className="mt-3">
+            {paused ? (
+              <button onClick={() => resumeUpdate()} className="btn-primary !py-2 !px-4 text-xs flex items-center gap-1.5"><Play className="w-3.5 h-3.5"/> Resume</button>
+            ) : (
+              <button onClick={() => pauseUpdate()} className="px-4 py-2 rounded-xl bg-white/10 text-white text-xs flex items-center gap-1.5 hover:bg-white/15"><Pause className="w-3.5 h-3.5"/> Pause</button>
+            )}
           </div>
         )}
 

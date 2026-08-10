@@ -19,6 +19,7 @@ export type UpdatePhase =
   | 'checking'
   | 'available'
   | 'downloading'
+  | 'paused'
   | 'downloaded'
   | 'up-to-date'
   | 'error';
@@ -46,8 +47,11 @@ declare global {
       appVersion: () => Promise<string>;
       checkForUpdates: () => Promise<{ state?: string; message?: string } | void>;
       installUpdate: () => Promise<void>;
+      setUpdatePolicy: (policy: { autoUpdate: boolean; allowMetered: boolean; isMetered: boolean }) => Promise<{ mayDownload: boolean }>;
+      pauseUpdate: () => Promise<boolean>;
+      resumeUpdate: () => Promise<boolean>;
       onUpdateStatus: (cb: (s: any) => void) => () => void;
-      detectApp: (identity: any) => Promise<{ installed: boolean; launchTarget?: string; source?: string }>;
+      detectApp: (identity: any) => Promise<{ installed: boolean; version?: string; launchTarget?: string; source?: string }>;
       downloadApp: (input: { url: string; fileName?: string; id?: string }) => Promise<{ path: string; fileName: string; size: number }>;
       installApp: (filePath: string) => Promise<{ launched: boolean }>;
       openApp: (target: string) => Promise<boolean>;
@@ -93,6 +97,9 @@ function init() {
           total: s.total,
           banner: true,
         });
+        break;
+      case 'paused':
+        setStatus({ phase: 'paused', banner: true });
         break;
       case 'downloaded':
         setStatus({ phase: 'downloaded', version: s.version, percent: 100, banner: true });
@@ -148,6 +155,19 @@ export async function checkNow() {
   }
 }
 
+export async function pauseUpdate() {
+  if (isDesktopApp()) { await window.rxDesktop!.pauseUpdate(); setStatus({ phase: 'paused', banner: true }); }
+}
+export async function resumeUpdate() {
+  if (isDesktopApp()) { await window.rxDesktop!.resumeUpdate(); setStatus({ phase: 'downloading', banner: true }); }
+}
+export async function applyUpdatePolicy(autoUpdate: boolean, allowMetered: boolean) {
+  if (!isDesktopApp()) return;
+  const connection: any = (navigator as any).connection;
+  const isMetered = !!connection?.saveData || connection?.type === 'cellular';
+  await window.rxDesktop!.setUpdatePolicy({ autoUpdate, allowMetered, isMetered });
+}
+
 /** Restart the app and swap in the downloaded update. */
 export async function installNow() {
   if (isDesktopApp()) await window.rxDesktop!.installUpdate();
@@ -183,6 +203,8 @@ export function describeStatus(s: UpdateStatus): StatusDescription {
       return { text: `Update${v} found — downloading in the background…`, tone: 'yellow', busy: true };
     case 'downloading':
       return { text: `Downloading update${v}… ${s.percent ?? 0}%`, tone: 'yellow', busy: true };
+    case 'paused':
+      return { text: `Update${v} paused. Resume whenever you are ready.`, tone: 'yellow', busy: false };
     case 'downloaded':
       return { text: `Update${v} is ready — restart to install.`, tone: 'green', busy: false };
     case 'up-to-date': {

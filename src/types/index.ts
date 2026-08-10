@@ -75,6 +75,7 @@ export interface User {
     emailNotifications: boolean;
     autoUpdate: boolean;
     wifiOnly: boolean;
+    mobileDataUpdates?: boolean;
   };
 }
 

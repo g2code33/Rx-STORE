@@ -13,6 +13,13 @@ import { normalizeWebsiteUrl } from '../utils/url';
 import toast from 'react-hot-toast';
 import { androidDownloadAndInstall, androidIsInstalled, androidOpen, androidUninstall, confirmDesktopInstalled, desktopDetect, desktopDownload, desktopInstall, desktopOpen, desktopUninstall, getNativePackage, isAndroidShell, isDesktopShell, removeNativePackage, type NativePackageState } from '../platform/nativeInstaller';
 
+function newerVersion(latest: string, installed?: string) {
+  if (!installed) return false;
+  const a=latest.split(/[.-]/).map(n=>parseInt(n,10)||0), b=installed.split(/[.-]/).map(n=>parseInt(n,10)||0);
+  for(let i=0;i<Math.max(a.length,b.length);i++){ if((a[i]||0)!==(b[i]||0)) return (a[i]||0)>(b[i]||0); }
+  return false;
+}
+
 /** Internal paths navigate in-app, external URLs open a new tab, '#' stays inert. */
 function DetailLink({ to, className, children }: { to: string; className?: string; children: React.ReactNode }) {
   if (/^https?:\/\//.test(to)) return <a href={to} target="_blank" rel="noreferrer" className={className}>{children}</a>;
@@ -41,7 +48,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
     sync(); window.addEventListener('rx-native-package-change', sync);
     return () => window.removeEventListener('rx-native-package-change', sync);
   }, [slug]);
-  const [systemInstalled, setSystemInstalled] = useState<{ installed: boolean; launchTarget?: string }>({ installed: false });
+  const [systemInstalled, setSystemInstalled] = useState<{ installed: boolean; version?: string; launchTarget?: string }>({ installed: false });
   React.useEffect(() => {
     if (!app) return;
     const detect = () => {
@@ -77,6 +84,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
 
   // Hooks first: `app` arrives a render later (context loads async), so no early return before this point.
   const isInstalled = app ? installedApps.includes(app.id) : false;
+  const updateAvailable = !!app && systemInstalled.installed && newerVersion(app.version, systemInstalled.version);
   const [liveReviews, setLiveReviews] = React.useState<any[] | null>(null);
   React.useEffect(() => {
     const API = (import.meta as any).env?.VITE_API_URL;
@@ -125,7 +133,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
 
   const handleInstall = async () => {
     if (!user) { toast.error('Please sign in to install applications'); return; }
-    if (isInstalled) return;
+    if (isInstalled && !updateAvailable) return;
     setShowDownload(true);
   };
   const doDownload = async (platform: string) => {
@@ -330,7 +338,8 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
             <div className="flex flex-col items-end gap-3 flex-shrink-0">
               {systemInstalled.installed ? (
                 <div className="flex items-center gap-2 flex-wrap justify-end">
-                  <span className="flex items-center gap-1.5 text-green-300 text-sm"><Check className="w-4 h-4" /> Detected</span>
+                  <span className={`flex items-center gap-1.5 text-sm ${updateAvailable ? 'text-rx-yellow' : 'text-green-300'}`}><Check className="w-4 h-4" /> {updateAvailable ? `Update available${systemInstalled.version ? ` · v${systemInstalled.version}` : ''}` : 'Detected'}</span>
+                  {updateAvailable && <button onClick={handleInstall} className="px-4 py-2.5 bg-rx-yellow text-rx-dark rounded-xl text-sm font-bold">Update</button>}
                   <button onClick={handleNativeOpen} className="px-4 py-2.5 bg-green-500 text-white rounded-xl text-sm font-semibold">Open</button>
                   <button onClick={handleUninstall} className="px-4 py-2.5 bg-white/10 text-white rounded-xl text-sm hover:bg-white/20">Uninstall</button>
                 </div>

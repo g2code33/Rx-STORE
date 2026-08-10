@@ -21,14 +21,36 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 @CapacitorPlugin(name = "AppInstaller")
 public class AppInstallerPlugin extends Plugin {
     @PluginMethod
+    public void getNetworkStatus(PluginCall call) {
+        android.net.ConnectivityManager cm = (android.net.ConnectivityManager) getContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+        boolean metered = cm != null && cm.isActiveNetworkMetered();
+        boolean connected = false;
+        if (cm != null && cm.getActiveNetwork() != null) {
+            android.net.NetworkCapabilities caps = cm.getNetworkCapabilities(cm.getActiveNetwork());
+            connected = caps != null && caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET);
+        }
+        JSObject result = new JSObject(); result.put("connected", connected); result.put("metered", metered); call.resolve(result);
+    }
+
+    @PluginMethod
+    public void getHostVersion(PluginCall call) {
+        String version = "";
+        try { version = getContext().getPackageManager().getPackageInfo(getContext().getPackageName(), 0).versionName; } catch (Exception ignored) {}
+        JSObject result = new JSObject(); result.put("version", version); call.resolve(result);
+    }
+
+    @PluginMethod
     public void isInstalled(PluginCall call) {
         String packageId = call.getString("packageId", "");
         boolean installed = false;
+        String version = "";
         if (!packageId.isEmpty()) {
-            try { getContext().getPackageManager().getPackageInfo(packageId, 0); installed = true; }
-            catch (Exception ignored) {}
+            try {
+                android.content.pm.PackageInfo info = getContext().getPackageManager().getPackageInfo(packageId, 0);
+                installed = true; version = info.versionName == null ? "" : info.versionName;
+            } catch (Exception ignored) {}
         }
-        JSObject result = new JSObject(); result.put("installed", installed); call.resolve(result);
+        JSObject result = new JSObject(); result.put("installed", installed); result.put("version", version); call.resolve(result);
     }
 
     @PluginMethod

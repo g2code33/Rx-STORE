@@ -5,13 +5,14 @@ import { useAuth } from '../context/AuthContext';
 import { useApps } from '../context/AppContext';
 import { formatDate } from '../utils/helpers';
 import AppLogo from '../components/apps/AppLogo';
-import { useUpdateStatus, describeStatus, checkNow, installNow, isDesktopApp } from '../desktop/updater';
+import { useUpdateStatus, describeStatus, checkNow, installNow, isDesktopApp, applyUpdatePolicy } from '../desktop/updater';
 import toast from 'react-hot-toast';
 
 const DEFAULT_PREFERENCES = {
   emailNotifications: true,
   autoUpdate: true,
   wifiOnly: false,
+  mobileDataUpdates: true,
 };
 
 /** Desktop-only self-update management: version, live status, manual check, restart-to-install. */
@@ -72,6 +73,11 @@ export default function Profile() {
     setPreferences({ ...DEFAULT_PREFERENCES, ...(user.preferences || {}) });
   }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  React.useEffect(() => {
+    const p = { ...DEFAULT_PREFERENCES, ...(user?.preferences || {}) };
+    void applyUpdatePolicy(p.autoUpdate, p.mobileDataUpdates !== false && !p.wifiOnly);
+  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!user) return <Navigate to="/login" replace />;
 
   const saveProfile = async () => {
@@ -92,6 +98,9 @@ export default function Profile() {
     setPreferences(next);
     try {
       await updateProfile({ preferences: next });
+      if (key === 'autoUpdate' || key === 'wifiOnly' || key === 'mobileDataUpdates') {
+        await applyUpdatePolicy(next.autoUpdate, next.mobileDataUpdates !== false && !next.wifiOnly);
+      }
     } catch (e: any) {
       setPreferences(preferences);
       toast.error(e?.message || 'Could not save preference');
@@ -296,8 +305,9 @@ export default function Profile() {
               <h3 className="font-semibold text-white">Preferences</h3>
               {[
                 { key: 'emailNotifications' as const, label: 'Email notifications', desc: 'Receive email updates about new apps' },
-                { key: 'autoUpdate' as const, label: 'Auto-update applications', desc: 'Automatically update installed apps' },
-                { key: 'wifiOnly' as const, label: 'Download over WiFi only', desc: 'Only download when connected to WiFi' },
+                { key: 'autoUpdate' as const, label: 'Auto-update RX Store', desc: 'Download RX Store desktop updates automatically' },
+                { key: 'wifiOnly' as const, label: 'Updates over Wi-Fi only', desc: 'Pause automatic updates on metered/mobile connections' },
+                { key: 'mobileDataUpdates' as const, label: 'Allow updates on mobile internet', desc: 'Use cellular or metered internet when Wi-Fi-only is off' },
               ].map((pref) => {
                 const on = preferences[pref.key];
                 return (

@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
-import { autoUpdater } from 'electron-updater';
+import { autoUpdater, CancellationToken } from 'electron-updater';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -40,11 +40,24 @@ function sendToRenderer(channel: string, payload: unknown) {
   }
 }
 
+let updateToken: CancellationToken | null = null;
+let updateIsAvailable = false;
+let updateIsPaused = false;
+let updatePolicy = { autoUpdate: true, allowMetered: true };
+
+function beginUpdateDownload() {
+  if (!app.isPackaged || !updateIsAvailable || updateIsPaused || updateToken) return;
+  updateToken = new CancellationToken();
+  autoUpdater.downloadUpdate(updateToken).catch((err: any) => {
+    if (!updateIsPaused) sendToRenderer('update:status', { state: 'error', message: err?.message || 'Update download failed' });
+  }).finally(() => { updateToken = null; });
+}
+
 function initUpdater() {
   if (!app.isPackaged) return; // only real updates when packaged
 
-  autoUpdater.autoDownload = true;          // silent self-update…
-  autoUpdater.autoInstallOnAppQuit = true;  // …installed on next quit
+  autoUpdater.autoDownload = false;         // policy + pause/resume control the transfer
+  autoUpdater.autoInstallOnAppQuit = true;  // installed on next quit
   autoUpdater.setFeedURL({
     provider: 'github',
     owner: UPDATE_OWNER,
@@ -52,13 +65,18 @@ function initUpdater() {
   });
 
   autoUpdater.on('checking-for-update', () => sendToRenderer('update:status', { state: 'checking' }));
-  autoUpdater.on('update-available', (info) => sendToRenderer('update:status', { state: 'available', version: info.version }));
+  autoUpdater.on('update-available', (info) => {
+    updateIsAvailable = true;
+    sendToRenderer('update:status', { state: 'available', version: info.version });
+    // Give the renderer a moment to restore the user's Wi-Fi/mobile-data policy.
+    if (updatePolicy.autoUpdate) setTimeout(() => beginUpdateDownload(), 2000);
+  });
   autoUpdater.on('update-not-available', (info) => sendToRenderer('update:status', { state: 'up-to-date', version: info.version }));
   autoUpdater.on('error', (err) => sendToRenderer('update:status', { state: 'error', message: err?.message || 'Update error' }));
   autoUpdater.on('download-progress', (p) =>
     sendToRenderer('update:status', { state: 'downloading', percent: Math.round(p.percent), transferred: p.transferred, total: p.total })
   );
-  autoUpdater.on('update-downloaded', (info) => sendToRenderer('update:status', { state: 'downloaded', version: info.version }));
+  autoUpdater.on('update-downloaded', (info) => { updateIsAvailable = false; updateIsPaused = false; sendToRenderer('update:status', { state: 'downloaded', version: info.version }); });
 
   autoUpdater.checkForUpdates().catch(() => {});
   // Re-check hourly while the app stays open
@@ -164,14 +182,18 @@ function initIpc() {
         if (key) {
           const roots = ['HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall', 'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall', 'HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall'];
           for (const root of roots) {
-            try { await execFileAsync('reg.exe', ['query', `${root}\\${key}`], { windowsHide: true }); return { installed: true, launchTarget: executable || '', source: 'registry' }; } catch {}
+            try {
+              const { stdout } = await execFileAsync('reg.exe', ['query', `${root}\\${key}`, '/v', 'DisplayVersion'], { windowsHide: true });
+              const version = stdout.match(/DisplayVersion\s+REG_\w+\s+(.+)/i)?.[1]?.trim() || '';
+              return { installed: true, version, launchTarget: executable || '', source: 'registry' };
+            } catch {}
           }
         }
       } else if (process.platform === 'linux') {
         const packageName = String(identity?.linuxPackageName || '').replace(/[^a-zA-Z0-9+._-]/g, '');
         const executable = String(identity?.linuxExecutable || '').replace(/[^a-zA-Z0-9+._/-]/g, '');
         if (packageName) {
-          try { await execFileAsync('dpkg-query', ['-W', '-f=${Status}', packageName]); return { installed: true, launchTarget: executable, source: 'package' }; } catch {}
+          try { const { stdout } = await execFileAsync('dpkg-query', ['-W', '-f=${Version}', packageName]); return { installed: true, version: stdout.trim(), launchTarget: executable, source: 'package' }; } catch {}
         }
         if (executable) {
           try { const { stdout } = await execFileAsync('sh', ['-lc', `command -v -- "${executable}"`]); if (stdout.trim()) return { installed: true, launchTarget: stdout.trim(), source: 'executable' }; } catch {}
@@ -208,6 +230,24 @@ function initIpc() {
   });
   ipcMain.handle('native:notify', (_event, input: { title: string; body?: string }) => {
     if (Notification.isSupported()) new Notification({ title: input.title || 'RX Store', body: input.body || '', icon: path.join(app.getAppPath(), 'build/icon.png') }).show();
+    return true;
+  });
+  ipcMain.handle('update:policy', (_event, policy: { autoUpdate?: boolean; allowMetered?: boolean; isMetered?: boolean }) => {
+    updatePolicy = { autoUpdate: policy.autoUpdate !== false, allowMetered: policy.allowMetered !== false };
+    const mayDownload = updatePolicy.autoUpdate && (updatePolicy.allowMetered || !policy.isMetered);
+    if (mayDownload) { updateIsPaused = false; beginUpdateDownload(); }
+    else if (updateToken) { updateIsPaused = true; updateToken.cancel(); sendToRenderer('update:status', { state: 'paused' }); }
+    return { mayDownload };
+  });
+  ipcMain.handle('update:pause', () => {
+    updateIsPaused = true;
+    if (updateToken) updateToken.cancel();
+    sendToRenderer('update:status', { state: 'paused' });
+    return true;
+  });
+  ipcMain.handle('update:resume', () => {
+    updateIsPaused = false; setTimeout(() => beginUpdateDownload(), 250);
+    sendToRenderer('update:status', { state: 'downloading', percent: 0 });
     return true;
   });
   ipcMain.handle('update:check', async () => {

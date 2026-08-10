@@ -46,6 +46,7 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Allows RX Store to hand downloaded APKs to Android's protected installer.
          The user must still explicitly enable "Allow from this source" and confirm. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />

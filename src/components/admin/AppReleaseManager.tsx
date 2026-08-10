@@ -10,7 +10,6 @@ const platforms = [
   { id: 'linux_appimage', label: 'Linux (AppImage)', ext: 'AppImage', accept: '.AppImage', icon: Laptop },
   { id: 'android', label: 'Android', ext: 'APK', accept: '.apk', icon: Smartphone },
   { id: 'ios', label: 'iOS', ext: 'IPA', accept: '.ipa', icon: Smartphone },
-  { id: 'web', label: 'Web', ext: 'ZIP', accept: '.zip', icon: Globe },
 ];
 
 type ReleaseRow = { id: string; version: string; status: string; channel: string; package_count?: number; package_platforms?: string };
@@ -222,6 +221,10 @@ export default function AppReleaseManager() {
 
         {/* 3. Platform pickers */}
         <div>
+          <div className="mb-3 p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 flex gap-3">
+            <Globe className="w-5 h-5 text-blue-300 flex-shrink-0" />
+            <div><p className="text-sm font-medium text-white">Web / PWA uses a live website link — no ZIP upload needed</p><p className="text-xs text-rx-gray-medium mt-0.5">Set <b className="text-white">Applications → Edit → Website URL</b> to the deployed HTTPS site (for example Cloudflare Pages). RX Store opens that URL directly; a dist ZIP stored in R2 is not a deployed website.</p>{app?.website && <a href={app.website} target="_blank" rel="noreferrer" className="text-xs text-blue-300 hover:underline mt-1 inline-block">Test {app.website} ↗</a>}</div>
+          </div>
           <label className="text-xs text-rx-gray-medium mb-2 block">Platform Binaries — each upload stores to R2 <code className="px-1 py-0.5 bg-white/10 rounded">apps/{appId || 'slug'}/{release?.version || version || 'x.y.z'}/{'{platform}'}/</code>, computes sha256, and writes a packages row for the release</label>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {platforms.map(p => {

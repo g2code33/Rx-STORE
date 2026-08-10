@@ -11,8 +11,10 @@ import GetAppBanner from './components/platform/GetAppBanner';
 import PwaInstallBanner from './components/platform/PwaInstallBanner';
 import { FaviconSync } from './icons/PlatformIcon';
 import { startPromoWatcher } from './promo';
-import { getPublicSettings } from './services/api';
+import { API_URL, getPublicSettings } from './services/api';
 import { useAuth } from './context/AuthContext';
+import { applyUpdatePolicy } from './desktop/updater';
+import { androidDownloadAndInstall, androidHostVersion, androidNetworkStatus, isAndroidShell } from './platform/nativeInstaller';
 import { EditModeContext, getBuilderCtx, subscribeBuilder } from './components/edit/EditMode';
 
 /**
@@ -105,11 +107,46 @@ function ScrollToTop() {
   return null;
 }
 
+function UpdatePolicySync() {
+  const { user } = useAuth();
+  React.useEffect(() => {
+    const p = user?.preferences;
+    void applyUpdatePolicy(p?.autoUpdate !== false, p?.mobileDataUpdates !== false && !p?.wifiOnly);
+  }, [user?.id, user?.preferences?.autoUpdate, user?.preferences?.wifiOnly, user?.preferences?.mobileDataUpdates]);
+  return null;
+}
+
+function AndroidAutoUpdateSync() {
+  const { user } = useAuth();
+  React.useEffect(() => {
+    if (!isAndroidShell() || !API_URL || user?.preferences?.autoUpdate === false) return;
+    const allowMobile = user?.preferences?.mobileDataUpdates !== false && !user?.preferences?.wifiOnly;
+    (async () => {
+      try {
+        const network = await androidNetworkStatus();
+        if (!network.connected || (network.metered && !allowMobile)) return;
+        const { version } = await androidHostVersion();
+        if (!version) return;
+        const r = await fetch(`${API_URL}/updates/check?app=rx-store&currentVersion=${encodeURIComponent(version)}&platform=android`);
+        const j = await r.json(); const d = j?.data;
+        if (!r.ok || !d?.updateAvailable || !d?.downloadURL) return;
+        const seenKey = `rx-android-update-started-${d.latestVersion}`;
+        if (sessionStorage.getItem(seenKey)) return;
+        sessionStorage.setItem(seenKey, '1');
+        await androidDownloadAndInstall(d.downloadURL, `rx-store-${d.latestVersion}.apk`);
+      } catch { /* update checks never block app startup */ }
+    })();
+  }, [user?.id, user?.preferences?.autoUpdate, user?.preferences?.wifiOnly, user?.preferences?.mobileDataUpdates]);
+  return null;
+}
+
 export default function App() {
   React.useEffect(() => startPromoWatcher(), []); // promo alerts (opt-in only)
   return (
     <div className="min-h-screen bg-rx-dark text-white flex flex-col">
       <ScrollToTop />
+      <UpdatePolicySync />
+      <AndroidAutoUpdateSync />
       <MaintenanceGate>
       <BuilderScope>
       <Toaster

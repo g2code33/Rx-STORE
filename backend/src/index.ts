@@ -371,7 +371,7 @@ export default {
         let platform = (new URL(request.url).searchParams.get('platform') || 'web').toLowerCase();
         if (platform === 'deb') platform = 'linux_deb';
         if (platform === 'appimage') platform = 'linux_appimage';
-        const app: any = await env.DB.prepare('SELECT id, current_version FROM applications WHERE slug=?').bind(slug).first();
+        const app: any = await env.DB.prepare('SELECT id, current_version, website FROM applications WHERE slug=?').bind(slug).first();
         if (!app) return json({ success:false, error:{ message:'App not found' }},404,origin);
         // Live admin toggles: downloads + maintenance
         if (await getSetting(env, 'downloads_open', '1') === '0') return json({ success:false, error:{ code:'DOWNLOADS_CLOSED', message:'Downloads are temporarily disabled by the administrator.' }},503,origin);
@@ -380,8 +380,9 @@ export default {
 
         // 1. PWA apps: web/pwa/ios open the deployment URL, not a file
         const pkgPwa: any = await env.DB.prepare(`SELECT deployment_url, package_type FROM packages WHERE application_id=? AND platform IN ('web','pwa') AND status='published' ORDER BY created_at DESC LIMIT 1`).bind(app.id).first().catch(()=>null);
-        if ((platform === 'web' || platform === 'pwa' || platform === 'ios') && pkgPwa?.deployment_url) {
-          return json({ success:true, data:{ url: pkgPwa.deployment_url, isPWA: true, deploymentUrl: pkgPwa.deployment_url, version: app.current_version, platform }},200,origin);
+        if (platform === 'web' || platform === 'pwa' || platform === 'ios') {
+          const deploymentUrl = pkgPwa?.deployment_url || (/^https:\/\//i.test(app.website || '') ? app.website : '');
+          if (deploymentUrl) return json({ success:true, data:{ url: deploymentUrl, isPWA: true, deploymentUrl, version: app.current_version, platform }},200,origin);
         }
 
         // 2. Package from the latest PUBLISHED release (uploads ↔ releases ↔ install pipeline)
