@@ -96,6 +96,20 @@
 }
 
 @layer utilities {
+  /* Keep the fixed header below phone notches/status bars. `viewport-fit=cover`
+     lets standalone PWAs use the full screen, so the safe-area inset must be
+     consumed by the app. Some Android launchers report zero; give standalone
+     mode a small minimum breathing space without moving normal browser/desktop. */
+  .rx-safe-header {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  @media (display-mode: standalone) {
+    .rx-safe-header {
+      padding-top: max(env(safe-area-inset-top, 0px), 8px);
+    }
+  }
+
   .text-balance {
     text-wrap: balance;
   }

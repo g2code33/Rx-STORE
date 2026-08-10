@@ -1,6 +1,6 @@
 /* RX Store service worker — minimal offline shell.
    Strategy: app shell & static assets = cache-first, API calls = network-only. */
-const CACHE = 'rx-store-v1';
+const CACHE = 'rx-store-v2';
 const SHELL = ['/', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/v1.png'];
 
 self.addEventListener('install', (e) => {
@@ -19,6 +19,20 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET') return;                 // never touch POST/PUT/etc.
   if (url.origin !== self.location.origin) return;        // API & external = network only
+
+  // Navigations are network-first so an installed PWA receives a newly
+  // deployed index/chunk map immediately instead of rendering an old shell.
+  if (e.request.mode === 'navigate') {
+    e.respondWith(
+      fetch(e.request)
+        .then((res) => {
+          if (res.ok) caches.open(CACHE).then((c) => c.put('/', res.clone()));
+          return res;
+        })
+        .catch(() => caches.match('/'))
+    );
+    return;
+  }
 
   e.respondWith(
     caches.match(e.request).then((hit) => {

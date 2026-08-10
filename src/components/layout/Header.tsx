@@ -71,7 +71,7 @@ export default function Header() {
   const installedNativeApp = isDesktopApp() || Capacitor.isNativePlatform();
 
   return (
-    <header ref={headerRef} className="fixed top-0 left-0 right-0 z-50 bg-rx-dark/80 backdrop-blur-xl border-b border-white/5">
+    <header ref={headerRef} className="rx-safe-header fixed top-0 left-0 right-0 z-50 bg-rx-dark/80 backdrop-blur-xl border-b border-white/5">
       {announcement && !announceDismissed && (
         <div className="bg-rx-yellow text-rx-dark text-center text-xs font-medium py-1.5 px-8 relative">
           <span>{announcement}</span>
