@@ -65,7 +65,7 @@
   },
   "build": {
     "appId": "com.calcitonin.rxstore",
-    "productName": "RX Store",
+    "productName": "RXStore",
     "directories": {
       "output": "release"
     },
@@ -91,6 +91,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
+      "shortcutName": "RX Store",
+      "uninstallDisplayName": "RX Store",
       "script": "build/installer.nsi"
     },
     "linux": {
@@ -100,6 +102,12 @@
       ],
       "category": "Utility",
       "executableName": "rx-store",
+      "desktop": {
+        "entry": {
+          "Name": "RX Store",
+          "Comment": "Professional Digital Marketplace by Calcitonin Technologies"
+        }
+      },
       "artifactName": "RX-Store-${version}.${ext}"
     },
     "deb": {

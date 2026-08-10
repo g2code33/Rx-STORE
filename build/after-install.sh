@@ -2,7 +2,9 @@
 # Finish the system-wide .deb installation.
 set -e
 
-APP_DIR='/opt/RX Store'
+# Keep the install path space-free. Chromium launches its zygote/sandbox by
+# executable path, and some Linux builds truncate a path at the first space.
+APP_DIR='/opt/RXStore'
 
 # Electron/Chromium refuses to launch when its SUID sandbox is present but does
 # not have the privileged ownership/mode it requires. electron-builder's .deb
