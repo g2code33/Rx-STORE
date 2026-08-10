@@ -43,6 +43,9 @@ function IosPwaGuide() {
       <p className="text-sm text-rx-gray-medium mt-2">
         Apple doesn't allow direct app installs from websites, so RX Store installs itself — 30 seconds:
       </p>
+      <a href="https://rx-store-web.pages.dev/" target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-rx-yellow hover:underline">
+        Open the official RX Store install page <ArrowRight className="w-4 h-4" />
+      </a>
       <ol className="mt-4 space-y-3 text-sm">
         <li className="flex items-start gap-3">
           <span className="w-6 h-6 rounded-full bg-rx-yellow text-rx-dark font-bold flex items-center justify-center flex-shrink-0 text-xs">1</span>
@@ -136,9 +139,9 @@ export default function GetApp() {
           </div>
           <div className="flex flex-col gap-2 w-full sm:w-auto">
             {primary.map((opt) => <DownloadBtn key={opt.id} opt={opt} big busy={busyId === opt.id} onGo={go} />)}
-            {device === 'mac' && pwaAvailable && (
+            {pwaAvailable && (
               <button onClick={installPwa} className="btn-primary text-base px-8 py-3.5 flex items-center gap-2 justify-center">
-                <Download className="w-5 h-5" /> Install web app
+                <Download className="w-5 h-5" /> Install web app directly
               </button>
             )}
             {primary.length > 0 && (

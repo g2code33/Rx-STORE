@@ -8,6 +8,7 @@ import { AIFloatingButton } from './components/ai/AIChat';
 import UpdateBanner from './components/desktop/UpdateBanner';
 import PromoOptIn from './components/promo/PromoOptIn';
 import GetAppBanner from './components/platform/GetAppBanner';
+import PwaInstallBanner from './components/platform/PwaInstallBanner';
 import { FaviconSync } from './icons/PlatformIcon';
 import { startPromoWatcher } from './promo';
 import { getPublicSettings } from './services/api';
@@ -150,6 +151,7 @@ export default function App() {
       <AIFloatingButton />
       <UpdateBanner />
       <PromoOptIn />
+      <PwaInstallBanner />
       <MobileTabBar />
       </BuilderScope>
       </MaintenanceGate>

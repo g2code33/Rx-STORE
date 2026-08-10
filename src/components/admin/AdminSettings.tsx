@@ -13,6 +13,7 @@ const TOGGLES: { key: string; label: string; desc: string; danger?: boolean }[] 
   { key: 'downloads_open', label: 'Downloads', desc: 'Master switch for installs. Turn off to stop all new downloads (e.g. while swapping binaries).' },
   { key: 'reviews_open', label: 'App reviews', desc: 'When off, users can read reviews but cannot post new ones.' },
   { key: 'ios_recommend_pwa', label: 'Recommend PWA on iPhone/iPad', desc: 'When on, visitors on iPhone & iPad are offered Web/PWA install (Safari → Add to Home Screen) as the recommended download instead of a native iOS package. Switch anytime — takes effect instantly.' },
+  { key: 'mobile_store_view', label: 'Mobile App Store view', desc: 'ON uses compact App Store-style rows on phones. OFF restores the classic large desktop-style cards for mobile users.' },
 ];
 
 function Toggle({ on, onChange, disabled }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
@@ -97,12 +98,12 @@ export default function AdminSettings() {
   };
 
   const doResetStats = async () => {
-    if (pwd.trim() !== 'iseedeAdpeople#233') { toast.error('Wrong password'); return; }
+    if (!pwd.trim()) { toast.error('Enter your admin account password'); return; }
     await call('/admin/reset-stats', { password: pwd });
     setShowResetModal(null); setPwd('');
   };
   const doResetApps = async () => {
-    if (pwd.trim() !== 'iseedeAdpeople#233') { toast.error('Wrong password'); return; }
+    if (!pwd.trim()) { toast.error('Enter your admin account password'); return; }
     if (!confirm('Delete ALL applications? This cannot be undone.')) return;
     await call('/admin/apps/reset', { password: pwd });
     setShowResetModal(null); setPwd('');

@@ -10,7 +10,7 @@ import AppLogo from './AppLogo';
 
 interface AppCardProps {
   app: App;
-  variant?: 'default' | 'featured' | 'compact' | 'horizontal';
+  variant?: 'default' | 'featured' | 'compact' | 'horizontal' | 'mobile-store';
 }
 
 export default function AppCard({ app, variant = 'default' }: AppCardProps) {
@@ -62,6 +62,27 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
         </h3>
         <p className="text-xs text-rx-gray-medium mt-0.5">{app.category}</p>
       </Link>
+    );
+  }
+
+  if (variant === 'mobile-store') {
+    return (
+      <div className="flex items-center gap-3 py-3.5 border-b border-white/10 last:border-0">
+        <Link to={`/app/${app.slug}`} className="flex items-center gap-3 flex-1 min-w-0 group">
+          <AppLogo app={app} size="w-[72px] h-[72px]" text="text-3xl" rounded="rounded-[18px]" className="shadow-lg flex-shrink-0" />
+          <div className="min-w-0 flex-1">
+            <h3 className="text-[15px] font-semibold text-white truncate group-hover:text-rx-yellow">{app.name}</h3>
+            <p className="text-xs text-rx-gray-medium truncate mt-0.5">{app.description}</p>
+            <div className="flex items-center gap-2 mt-1.5 text-[11px] text-rx-gray-medium">
+              {app.rating > 0 && <span className="flex items-center gap-0.5"><Star className="w-3 h-3 fill-current text-yellow-400" /> {app.rating}</span>}
+              <span className="capitalize">{app.category}</span>
+            </div>
+          </div>
+        </Link>
+        <Link to={`/app/${app.slug}`} className={`flex-shrink-0 min-w-[64px] text-center px-4 py-1.5 rounded-full text-xs font-bold ${isInstalled ? 'bg-white/10 text-green-400' : 'bg-rx-yellow text-rx-dark'}`}>
+          {isInstalled ? 'OPEN' : app.price === 'free' ? 'GET' : 'VIEW'}
+        </Link>
+      </div>
     );
   }
 

@@ -16,6 +16,7 @@ import { getSetting, getAllSettings, putSettings, SETTING_DEFAULTS, PUBLIC_SETTI
 import { getAllContent, putContent, getContentHistory, revertContent } from './services/content';
 import { trackAdEvent, getAdStats, createAdShare, listAdShares, revokeAdShare, getPublicShare } from './services/ads';
 import { updatesRoutes } from './routes/updates';
+import { verifyToken } from './services/auth';
 
 const router = new Router();
 
@@ -45,16 +46,11 @@ function json(data: any, status = 200, origin = '') {
 }
 
 // Decode the JWT payload and require the admin role (same decode pattern as /users/me)
-function isAdminRequest(request: Request): boolean {
+async function isAdminRequest(request: Request, env: Env): Promise<boolean> {
   const auth = request.headers.get('Authorization') || '';
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-  if (!token) return false;
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1] || ''));
-    return payload?.role === 'admin';
-  } catch {
-    return false;
-  }
+  if (!auth.startsWith('Bearer ')) return false;
+  try { return (await verifyToken(auth.slice(7), env.JWT_SECRET || '')).role === 'admin'; }
+  catch { return false; }
 }
 
 function withCors(res: Response, origin: string): Response {
@@ -81,7 +77,7 @@ export default {
     // Every /admin/* endpoint requires a valid admin JWT (production hardening —
     // previously PUT/DELETE apps, releases, uploads etc. were open to any request)
     if (path.startsWith('/admin')) {
-      if (!isAdminRequest(request)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+      if (!await isAdminRequest(request, env)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
     }
 
     if ((path === '/updates/check' || path === '/update/check' || path === '/api/updates/check' || path === '/api/update/check') && request.method === 'GET') {
@@ -91,20 +87,20 @@ export default {
     }
 
     if (path === '/admin/ai/settings' && (request.method === 'PUT' || request.method === 'POST')) {
-      if (!isAdminRequest(request)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+      if (!await isAdminRequest(request, env)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
       const data = await aiRoutes.updateSettings(normalizedRequest as any, env);
       if ((data as any)?.error) return json({ success: false, error: data }, 400, origin);
       return json({ success: true, data }, 200, origin);
     }
     // Admin: read full AI settings (unmasked keys) to pre-fill the Admin UI
     if (path === '/admin/ai/settings' && request.method === 'GET') {
-      if (!isAdminRequest(request)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+      if (!await isAdminRequest(request, env)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
       const data = await aiRoutes.getSettings(normalizedRequest as any, env);
       return json({ success: true, data }, 200, origin);
     }
     // Admin: test a provider key (typed in the form or stored) against the real provider
     if (path === '/admin/ai/test' && request.method === 'POST') {
-      if (!isAdminRequest(request)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+      if (!await isAdminRequest(request, env)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
       const data = await aiRoutes.test(normalizedRequest as any, env);
       if ((data as any)?.error && !(data as any)?.ok) return json({ success: false, error: data }, 400, origin);
       return json({ success: true, data }, 200, origin);
@@ -160,7 +156,7 @@ export default {
     }
     // Package upload for a release: stores to R2 + sha256 + packages row, keeps releases in sync
     if (path.match(/^\/admin\/releases\/[^\/]+\/upload$/) && request.method === 'POST') {
-      if (!isAdminRequest(request)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+      if (!await isAdminRequest(request, env)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
       try {
         const data = await (adminRoutes as any).uploadPackage(normalizedRequest as any, env);
         if ((data as any)?.error) return json({ success: false, error: { code: 'ERROR', message: (data as any).error } }, 400, origin);
@@ -169,7 +165,7 @@ export default {
     }
     // Chunked upload for big installers: start → part×N → complete (R2 multipart)
     if (path.match(/^\/admin\/releases\/[^\/]+\/upload\/(start|part|complete|abort)$/) && request.method === 'POST') {
-      if (!isAdminRequest(request)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+      if (!await isAdminRequest(request, env)) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
       const step = path.split('/').pop() as string;
       const fn = { start: 'uploadPackageStart', part: 'uploadPackagePart', complete: 'uploadPackageComplete', abort: 'uploadPackageAbort' }[step] as string;
       try {
@@ -379,7 +375,7 @@ export default {
         if (!app) return json({ success:false, error:{ message:'App not found' }},404,origin);
         // Live admin toggles: downloads + maintenance
         if (await getSetting(env, 'downloads_open', '1') === '0') return json({ success:false, error:{ code:'DOWNLOADS_CLOSED', message:'Downloads are temporarily disabled by the administrator.' }},503,origin);
-        if (!isAdminRequest(request) && await getSetting(env, 'maintenance_mode', '0') === '1') return json({ success:false, error:{ code:'MAINTENANCE', message:'RX Store is under maintenance. Please check back soon.' }},503,origin);
+        if (!await isAdminRequest(request, env) && await getSetting(env, 'maintenance_mode', '0') === '1') return json({ success:false, error:{ code:'MAINTENANCE', message:'RX Store is under maintenance. Please check back soon.' }},503,origin);
         const originUrl = new URL(request.url).origin;
 
         // 1. PWA apps: web/pwa/ios open the deployment URL, not a file
@@ -427,7 +423,7 @@ export default {
         }
         try {
           let dlUser: string | null = null;
-          try { dlUser = JSON.parse(atob((request.headers.get('Authorization') || '').replace(/^Bearer /, '').split('.')[1] || ''))?.userId || null; } catch {}
+          try { const t=(request.headers.get('Authorization')||'').replace(/^Bearer /,''); if(t) dlUser=(await verifyToken(t,env.JWT_SECRET))?.userId||null; } catch {}
           await env.DB.prepare("INSERT INTO downloads (id, app_id, user_id, platform, version, created_at) VALUES (?,?,?,?,?, datetime('now'))").bind(`dl_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, app.id, dlUser, platform, app.current_version).run();
           await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run();
         } catch {}
@@ -464,7 +460,7 @@ export default {
 
     if (path === '/apps' && request.method === 'GET') {
       // Live admin toggle: maintenance mode hides the catalog from non-admins
-      if (!isAdminRequest(request) && await getSetting(env, 'maintenance_mode', '0') === '1') {
+      if (!await isAdminRequest(request, env) && await getSetting(env, 'maintenance_mode', '0') === '1') {
         return json({ success: false, error: { code: 'MAINTENANCE', message: 'RX Store is under maintenance. Please check back soon.' } }, 503, origin);
       }
       try {
@@ -510,7 +506,7 @@ export default {
     if (path === '/notifications' && request.method === 'GET') {
       const auth = request.headers.get('Authorization') || '';
       let userId = '';
-      try { userId = JSON.parse(atob((auth.startsWith('Bearer ') ? auth.slice(7) : '').split('.')[1] || ''))?.userId || ''; } catch {}
+      try { if (auth.startsWith('Bearer ')) userId = (await verifyToken(auth.slice(7), env.JWT_SECRET))?.userId || ''; } catch {}
       if (!userId) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Sign in required' } }, 401, origin);
       try {
         const rows: any = await env.DB.prepare('SELECT id, type, title, message, data, read, created_at FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 50').bind(userId).all().catch(() => ({ results: [] }));
@@ -539,7 +535,7 @@ export default {
     if (path === '/notifications/read' && request.method === 'POST') {
       const auth = request.headers.get('Authorization') || '';
       let userId = '';
-      try { userId = JSON.parse(atob((auth.startsWith('Bearer ') ? auth.slice(7) : '').split('.')[1] || ''))?.userId || ''; } catch {}
+      try { if (auth.startsWith('Bearer ')) userId = (await verifyToken(auth.slice(7), env.JWT_SECRET))?.userId || ''; } catch {}
       if (!userId) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Sign in required' } }, 401, origin);
       const body: any = await request.json().catch(() => ({}));
       const ids: string[] = Array.isArray(body?.ids) ? body.ids.slice(0, 100) : [];
@@ -567,7 +563,7 @@ export default {
       const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
       if (!token) return json({ success:false, error:{ code:'UNAUTHORIZED', message:'Sign in required' }},401,origin);
       try {
-        const payload = JSON.parse(atob(token.split('.')[1] || ''));
+        const payload = await verifyToken(token, env.JWT_SECRET);
         const userId = payload.userId;
         const body: any = await normalizedRequest.json();
         const name = body.name === undefined ? null : String(body.name).trim();
@@ -593,7 +589,7 @@ export default {
       const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
       if (!token) return json({ success:false, error:{ code:'UNAUTHORIZED', message:'No token' }},401,origin);
       try {
-        const payload = JSON.parse(atob(token.split('.')[1] || ''));
+        const payload = await verifyToken(token, env.JWT_SECRET);
         const userId = payload.userId;
         const user: any = await env.DB.prepare('SELECT id, name, email, phone, avatar_url, role, preferences, created_at FROM users WHERE id = ?').bind(userId).first();
         if (!user) return json({ success:false, error:{ code:'NOT_FOUND', message:'User not found' }},404,origin);

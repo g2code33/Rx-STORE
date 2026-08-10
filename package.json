@@ -1,7 +1,7 @@
 {
   "name": "rx-store",
   "private": true,
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "RX Store - Professional Digital Marketplace by Calcitonin Technologies",
   "author": {
     "name": "Calcitonin Technologies",
@@ -18,7 +18,7 @@
     "build:electron": "node scripts/build-electron.mjs",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview --host 0.0.0.0 --port 5173",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "lint": "eslint . --ext ts,tsx --max-warnings 0",
     "dist": "npm run build:web && npm run build:electron && electron-builder --win --linux",
     "dist:win": "npm run build:web && npm run build:electron && electron-builder --win",
     "dist:linux": "npm run build:web && npm run build:electron && electron-builder --linux",

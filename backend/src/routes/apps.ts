@@ -2,6 +2,7 @@
  * Applications Routes — D1 (SQLite) compatible
  */
 import { getSetting } from '../services/settings';
+import { verifyToken } from '../services/auth';
 
 export const appsRoutes = {
   async list(request: Request, env: any) {
@@ -73,7 +74,7 @@ export const appsRoutes = {
       let uid: string | null = null;
       let uname = 'User';
       try {
-        const payload = JSON.parse(atob(auth.slice(7).split('.')[1]||''));
+        const payload = await verifyToken(auth.slice(7), env.JWT_SECRET);
         uid = payload.userId;
         const u: any = await env.DB.prepare('SELECT name FROM users WHERE id=?').bind(uid).first().catch(()=>null);
         if (u?.name) uname = u.name;

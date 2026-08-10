@@ -9,6 +9,7 @@ import { useCategories } from '../hooks/useCategories';
 import WelcomeIntro from '../components/home/WelcomeIntro';
 import PageBlocks from '../components/edit/PageBlocks';
 import PlatformIcon from '../icons/PlatformIcon';
+import { getPublicSettings } from '../services/api';
 
 const HOME_PLATFORM_FILTERS = [
   { id: 'all', label: 'All', icon: '✨' },
@@ -62,6 +63,15 @@ export default function Home() {
   const { get, getJSON } = useContent();
   const categories = useCategories();
   const [platform, setPlatform] = useState('all');
+  const [mobileStoreView, setMobileStoreView] = useState(false);
+  React.useEffect(() => {
+    let alive = true;
+    let enabled = true;
+    const apply = () => { if (alive) setMobileStoreView(enabled && window.innerWidth < 640); };
+    getPublicSettings().then((s) => { enabled = (s.mobile_store_view ?? '1') === '1'; apply(); });
+    window.addEventListener('resize', apply);
+    return () => { alive = false; window.removeEventListener('resize', apply); };
+  }, []);
   const platformApps = platform === 'all' ? apps : apps.filter((a: any) => (a.platforms || []).includes(platform));
   // Real trending: admin-flagged apps first, then by actual download count.
   const trending = [...apps]
@@ -112,13 +122,13 @@ export default function Home() {
           ))}
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+        <div className={mobileStoreView ? 'rounded-2xl bg-rx-dark-secondary/50 px-3 divide-y divide-white/5' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6'}>
           {isLoading && apps.length === 0
             ? Array.from({ length: 8 }).map((_, i) => (
                 <div key={i} className="card p-5 h-44 animate-pulse bg-rx-dark-tertiary/40" />
               ))
             : platformApps.slice(0, 8).map((app) => (
-                <AppCard key={app.id} app={app} />
+                <AppCard key={app.id} app={app} variant={mobileStoreView ? 'mobile-store' : 'default'} />
               ))}
           {!isLoading && platformApps.length === 0 && (
             error && apps.length === 0 ? (

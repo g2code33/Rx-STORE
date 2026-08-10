@@ -8,12 +8,21 @@ import { useContent } from '../context/ContentContext';
 import Editable from '../components/edit/Editable';
 import PageBlocks from '../components/edit/PageBlocks';
 import SearchBox from '../components/search/SearchBox';
+import { getPublicSettings } from '../services/api';
 
 export default function Browse() {
   const { apps, isLoading, error, refresh, searchQuery, setSearchQuery, selectedCategory, setSelectedCategory, selectedPlatform, setSelectedPlatform, getFilteredApps } = useApps();
   const categories = useCategories();
   const { get } = useContent();
   const [viewMode, setViewMode] = React.useState<'grid' | 'list'>('grid');
+  const [mobileStoreView, setMobileStoreView] = React.useState(false);
+  React.useEffect(() => {
+    let alive = true; let enabled = true;
+    const apply = () => { if (alive) setMobileStoreView(enabled && window.innerWidth < 640); };
+    getPublicSettings().then((s) => { enabled = (s.mobile_store_view ?? '1') === '1'; apply(); });
+    window.addEventListener('resize', apply);
+    return () => { alive = false; window.removeEventListener('resize', apply); };
+  }, []);
   const [sortBy, setSortBy] = React.useState<'popular' | 'rating' | 'newest' | 'name'>('popular');
 
   // Deep links: ?featured=1 → only featured, ?sort=newest, ?q=… → run that
@@ -168,9 +177,9 @@ export default function Browse() {
 
       {filteredApps.length > 0 ? (
         viewMode === 'grid' ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+          <div className={mobileStoreView ? 'rounded-2xl bg-rx-dark-secondary/50 px-3' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6'}>
             {filteredApps.map((app) => (
-              <AppCard key={app.id} app={app} />
+              <AppCard key={app.id} app={app} variant={mobileStoreView ? 'mobile-store' : 'default'} />
             ))}
           </div>
         ) : (

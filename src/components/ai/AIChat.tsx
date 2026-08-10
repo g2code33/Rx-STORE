@@ -222,7 +222,7 @@ export function AIFloatingButton() {
     <>
       <button
         onClick={() => setMode((m) => (m === 'open' ? 'minimized' : 'open'))}
-        className={`fixed bottom-6 right-6 z-40 w-14 h-14 rounded-2xl shadow-lg flex items-center justify-center transition-all duration-200 ${
+        className={`fixed bottom-20 right-4 sm:bottom-6 sm:right-6 z-[80] w-14 h-14 rounded-2xl shadow-lg flex items-center justify-center transition-all duration-200 ${
           open ? 'bg-white text-rx-dark rotate-90' : 'bg-rx-yellow text-rx-dark hover:shadow-glow hover:scale-105'
         }`}
         aria-label={open ? 'Minimize assistant' : 'Open RX Assistant'}
@@ -235,7 +235,7 @@ export function AIFloatingButton() {
         )}
       </button>
       {mode !== 'closed' && (
-        <div className={`fixed bottom-24 right-6 z-40 w-[min(92vw,380px)] animate-scale-in ${open ? '' : 'hidden'}`}>
+        <div className={`fixed bottom-36 right-3 sm:bottom-24 sm:right-6 z-[80] w-[calc(100vw-1.5rem)] max-w-[380px] max-h-[calc(100dvh-10rem)] animate-scale-in ${open ? '' : 'hidden'}`}>
           <AIChatPanel
             onClose={() => setMode('closed')}
             onMinimize={() => { setActive(true); setMode('minimized'); }}

@@ -4,7 +4,18 @@
  */
 
 import { getSetting } from '../services/settings';
-import { hashPassword } from '../services/auth';
+import { hashPassword, verifyPassword, verifyToken } from '../services/auth';
+
+async function validAdminPassword(request: Request, env: any, password: unknown): Promise<boolean> {
+  const auth = request.headers.get('Authorization') || '';
+  if (!auth.startsWith('Bearer ') || typeof password !== 'string') return false;
+  try {
+    const payload = await verifyToken(auth.slice(7), env.JWT_SECRET);
+    if (payload.role !== 'admin') return false;
+    const user: any = await env.DB.prepare('SELECT password_hash FROM users WHERE id=? AND role=?').bind(payload.userId, 'admin').first();
+    return !!user?.password_hash && await verifyPassword(password, user.password_hash);
+  } catch { return false; }
+}
 
 // Live column list for a table (cached per request) — prod DBs evolve via ALTER
 // migrations, so writes must tolerate columns that don't exist yet
@@ -333,8 +344,7 @@ export const adminRoutes = {
   async resetStats(request: Request, env: any) {
     const body: any = await request.json().catch(()=>({}));
     const pwd = body?.password || new URL(request.url).searchParams.get('password');
-    const clean = String(pwd||'').trim();
-    if (clean !== 'iseedeAdpeople#233') return { error: 'Invalid reset password. Required: iseedeAdpeople#233' };
+    if (!await validAdminPassword(request, env, pwd)) return { error: 'Invalid admin password' };
     await env.DB.prepare(`UPDATE applications SET download_count=0, review_count=0, rating=0`).run().catch(()=>{});
     await env.DB.prepare(`DELETE FROM downloads`).run().catch(()=>{});
     await env.DB.prepare(`DELETE FROM reviews`).run().catch(()=>{});
@@ -345,7 +355,7 @@ export const adminRoutes = {
   async resetApps(request: Request, env: any) {
     const body: any = await request.json().catch(()=>({}));
     const pwd = body?.password;
-    if (String(pwd||'').trim() !== 'iseedeAdpeople#233') return { error: 'Invalid password' };
+    if (!await validAdminPassword(request, env, pwd)) return { error: 'Invalid admin password' };
     await env.DB.prepare(`DELETE FROM applications`).run().catch(()=>{});
     await env.DB.prepare(`DELETE FROM app_versions`).run().catch(()=>{});
     await env.DB.prepare(`DELETE FROM versions`).run().catch(()=>{});
@@ -567,7 +577,7 @@ export const adminRoutes = {
     const parts = new URL(request.url).pathname.split('/');
     const relId = parts[3] || parts[parts.length-2];
     const body: any = await request.json().catch(()=>({}));
-    if (String(body?.password||'').trim() !== 'iseedeAdpeople#233') return { error: 'Invalid password for rollback' };
+    if (!await validAdminPassword(request, env, body?.password)) return { error: 'Invalid admin password for rollback' };
     const rel: any = await env.DB.prepare(`SELECT * FROM releases WHERE id=?`).bind(relId).first();
     if (!rel) return { error: 'Release not found' };
     // Find previous published version for same app

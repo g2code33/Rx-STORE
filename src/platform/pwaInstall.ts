@@ -36,7 +36,7 @@ export function subscribePwaInstall(l: Listener): () => void {
 export async function promptPwaInstall(): Promise<boolean> {
   if (!deferred) return false;
   try {
-    deferred.prompt();
+    await deferred.prompt();
     const choice = await deferred.userChoice;
     deferred = null;
     return choice?.outcome === 'accepted';

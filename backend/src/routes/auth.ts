@@ -51,8 +51,8 @@ export const authRoutes = {
       } else throw e;
     }
 
-    const token = generateToken({ userId: id, role: 'user' }, env.JWT_SECRET);
-    const refreshToken = generateRefreshToken({ userId: id }, env.JWT_SECRET);
+    const token = await generateToken({ userId: id, role: 'user' }, env.JWT_SECRET);
+    const refreshToken = await generateRefreshToken({ userId: id }, env.JWT_SECRET);
     return { user: { id, name: name.trim(), email: email.trim().toLowerCase(), phone: phoneNorm, role: 'user', avatar: '👤', joinDate: new Date().toISOString().slice(0,10), downloadedApps: [], subscriptions: [], notifications: [] }, token, refreshToken };
   },
 
@@ -78,8 +78,8 @@ export const authRoutes = {
     if (!user || !(await verifyPassword(password as string, user.password_hash))) {
       return { code: 'UNAUTHORIZED', message: 'Invalid email/phone or password. Please check and try again.' };
     }
-    const token = generateToken({ userId: user.id, role: user.role }, env.JWT_SECRET);
-    const refreshToken = generateRefreshToken({ userId: user.id }, env.JWT_SECRET);
+    const token = await generateToken({ userId: user.id, role: user.role }, env.JWT_SECRET);
+    const refreshToken = await generateRefreshToken({ userId: user.id }, env.JWT_SECRET);
     await env.DB.prepare(`UPDATE users SET last_login_at = datetime('now') WHERE id = ?`).bind(user.id).run().catch(()=>{});
     return {
       user: {

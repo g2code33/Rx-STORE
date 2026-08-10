@@ -14,6 +14,7 @@ export const SETTING_DEFAULTS: Record<string, string> = {
   downloads_open: '1',
   reviews_open: '1',
   ios_recommend_pwa: '1',
+  mobile_store_view: '1',
   storage_quota_gb: '10',
 };
 
@@ -25,6 +26,7 @@ export const PUBLIC_SETTING_KEYS = [
   'maintenance_mode',
   'ai_enabled',
   'ios_recommend_pwa',
+  'mobile_store_view',
 ];
 
 let cache: { at: number; map: Record<string, string> } | null = null;
