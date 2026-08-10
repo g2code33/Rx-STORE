@@ -96,7 +96,12 @@ function createWindow(): BrowserWindow {
   if (isDev() && process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    win.loadURL('app://rxstore/index.html').catch((err) => {
+    // Keep the visible pathname at `/` so React Router matches the Home route.
+    // `/index.html` loaded the shell but matched no route, producing the exact
+    // header + empty body + footer screen seen in packaged desktop builds.
+    // The version query also bypasses any stale service-worker navigation cache
+    // left by older releases; the renderer removes that cache after startup.
+    win.loadURL(`app://rxstore/?appVersion=${encodeURIComponent(app.getVersion())}`).catch((err) => {
       console.error('[rx-store] load failed:', err);
     });
   }
