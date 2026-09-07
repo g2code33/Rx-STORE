@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Star, Download, ArrowLeft, Share2, ExternalLink, Check, ChevronRight, Shield, Clock, Monitor, Calendar, Tag, ThumbsUp } from 'lucide-react';
 import DownloadModal from '../components/apps/DownloadModal';
@@ -11,7 +11,7 @@ import PageBlocks from '../components/edit/PageBlocks';
 import { formatDownloadCount, formatDate, getRatingColor } from '../utils/helpers';
 import { normalizeWebsiteUrl } from '../utils/url';
 import toast from 'react-hot-toast';
-import { androidDownloadAndInstall, androidOpen, androidUninstall, confirmDesktopInstalled, desktopDownload, desktopInstall, desktopOpen, desktopUninstall, getNativePackage, isAndroidShell, isDesktopShell, removeNativePackage, type NativePackageState } from '../platform/nativeInstaller';
+import { androidDownloadAndInstall, androidOpen, androidOnDownloadProgress, androidStopDownloadProgress, androidUninstall, confirmDesktopInstalled, desktopDownload, desktopInstall, desktopOpen, desktopUninstall, getNativePackage, isAndroidShell, isDesktopShell, removeNativePackage, type NativePackageState } from '../platform/nativeInstaller';
 import { useInstalledState } from '../platform/nativeDetection';
 
 /** Human-readable byte count (auto-detected package size). */
@@ -70,6 +70,18 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   // Web/PWA degrades to DETECTION_UNAVAILABLE and falls back to the store's own
   // installed record below. The hook re-detects on tab focus and exposes refresh.
   const { state: detectedState, detection: systemInstalled, installed: osInstalled, refresh: refreshDetection } = useInstalledState(app as any);
+  // In-page install/download state machine (Play-Store-style).
+  type DownloadPhase = 'idle' | 'downloading' | 'installing';
+  const [dlPhase, setDlPhase] = useState<DownloadPhase>('idle');
+  const [dlProgress, setDlProgress] = useState<{ received: number; total: number; percent: number }>({ received: 0, total: 0, percent: 0 });
+  const dlHandleRef = useRef<{ remove: () => void } | null>(null);
+  // Once the OS reports the app as installed, clear the transient installing UI
+  // so the Open/Uninstall buttons take over.
+  React.useEffect(() => {
+    if (osInstalled && dlPhase !== 'idle') setDlPhase('idle');
+  }, [osInstalled, dlPhase]);
+  // Clean up any live Android download-progress listener on unmount.
+  React.useEffect(() => () => androidStopDownloadProgress(dlHandleRef.current), []);
   // Screenshots whose objects are missing (404/403) get filtered out, never shown broken
   const [badShots, setBadShots] = useState<Set<number>>(() => new Set());
   const allShots: string[] = ((app?.screenshots as any[]) || []).filter((s: any) => typeof s === 'string' && !!s);
@@ -145,6 +157,9 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   const doDownload = async (platform: string) => {
     setIsInstalling(true);
     setShowDownload(false);
+    // Start the in-page progress UI for every download.
+    setDlPhase('downloading');
+    setDlProgress({ received: 0, total: 0, percent: 0 });
     try {
       const API = (import.meta as any).env?.VITE_API_URL;
       const token = localStorage.getItem('rx-store-token')||'';
@@ -153,6 +168,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
         installApp(app.id);
         toast.success(`${app.name} installed`);
         setIsInstalling(false);
+        setDlPhase('idle');
         return;
       }
       // Step 1: get download URL from API (counts as download + increments)
@@ -166,42 +182,88 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
         window.open(dlUrl, '_blank');
         toast.success(`Opening ${app.name} PWA`);
         setIsInstalling(false);
+        setDlPhase('idle');
         return;
       }
 
-      // Android shell: use DownloadManager and immediately hand the completed
-      // APK to Android's protected installer. Android still shows its required
-      // confirmation screen and may first ask "Allow from this source".
+      // Android shell: DownloadManager with live in-page progress. When the APK
+      // finishes, the OS installer opens; on return the detection refresh shows
+      // Open/Uninstall. Android still shows its required confirmation screen and
+      // may first ask "Allow from this source".
       if (isAndroidShell() && platform === 'android') {
+        const handle = await androidOnDownloadProgress((d) => {
+          if (d.status === 'complete') {
+            setDlPhase('installing');
+            setDlProgress({ received: d.receivedBytes, total: d.totalBytes, percent: 100 });
+          } else if (d.status === 'error') {
+            setDlPhase('idle');
+            toast.error(d.error || 'Download failed — try again.');
+            androidStopDownloadProgress(handle);
+          } else {
+            setDlPhase('downloading');
+            setDlProgress({ received: d.receivedBytes, total: d.totalBytes, percent: d.percent });
+          }
+        });
+        dlHandleRef.current = handle;
         const result = await androidDownloadAndInstall(dlUrl, j.data?.fileName || `${app.slug}-${j.data?.version || app.version}.apk`);
-        if (result.permissionRequired) toast('Enable “Allow from this source”, then tap Get again.', { icon: '🔐', duration: 7000 });
-        else toast.success('Downloading — Android will open the installer when ready');
+        if (result.permissionRequired) {
+          setDlPhase('idle');
+          androidStopDownloadProgress(handle);
+          toast('Enable “Allow from this source”, then tap Get again.', { icon: '🔐', duration: 7000 });
+        }
         setIsInstalling(false);
         return;
       }
 
-      // Desktop shell: download to the real Downloads folder and stop at a
-      // deliberate Install step. Never call a download "installed".
+      // Desktop shell: download to the real Downloads folder, streaming progress
+      // to the in-page bar, then stop at a deliberate Install step.
       if (isDesktopShell()) {
-        toast(`Downloading ${app.name} (${platform})…`, { icon: '⬇️' });
-        const ext = platform === 'windows' ? '.exe' : platform.includes('appimage') ? '.AppImage' : platform.includes('linux') ? '.deb' : '';
-        await desktopDownload({
-          slug: app.slug,
-          url: dlUrl,
-          fileName: j.data?.fileName || `${app.slug}-${j.data?.version || app.version}${ext}`,
-          version: j.data?.version || app.version,
-          launchTarget: (app as any).website || undefined,
+        const removeProgress = window.rxDesktop?.onDownloadProgress?.((p) => {
+          if (p.state === 'progressing' || p.state === 'downloading') {
+            setDlPhase('downloading');
+            setDlProgress({ received: p.received || 0, total: p.total || 0, percent: p.percent || 0 });
+          }
         });
+        try {
+          const ext = platform === 'windows' ? '.exe' : platform.includes('appimage') ? '.AppImage' : platform.includes('linux') ? '.deb' : '';
+          await desktopDownload({
+            slug: app.slug,
+            url: dlUrl,
+            fileName: j.data?.fileName || `${app.slug}-${j.data?.version || app.version}${ext}`,
+            version: j.data?.version || app.version,
+            launchTarget: (app as any).website || undefined,
+          });
+        } finally {
+          removeProgress?.();
+        }
+        setDlPhase('idle');
         toast.success(`${app.name} downloaded — tap Install to continue`);
         setIsInstalling(false);
         return;
       }
 
-      // Browser/PWA: fetch the file and hand it to the browser download UI.
-      toast(`Downloading ${app.name} (${platform})...`, { icon: '⬇️' });
+      // Browser/PWA: stream the file so the progress bar fills, then hand it to
+      // the browser download UI.
       const fileRes = await fetch(dlUrl);
       if (!fileRes.ok) throw new Error(`File not found on storage (${fileRes.status}) — upload may be incomplete. Please try again or contact admin.`);
-      const blob = await fileRes.blob();
+      const totalBytes = parseInt(fileRes.headers.get('content-length') || '0', 10) || 0;
+      const reader = fileRes.body?.getReader();
+      const chunks: BlobPart[] = [];
+      let received = 0;
+      if (reader) {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.length;
+          setDlPhase('downloading');
+          setDlProgress({ received, total: totalBytes, percent: totalBytes ? Math.round((received / totalBytes) * 100) : 0 });
+        }
+      } else {
+        const blob = await fileRes.blob();
+        chunks.push(blob); received = blob.size;
+      }
+      const blob = new Blob(chunks, { type: fileRes.headers.get('content-type') || '' });
       if (blob.size === 0) throw new Error('Downloaded file is empty — upload may be incomplete');
 
       // Step 3: trigger browser download with verified blob
@@ -214,9 +276,11 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
       a.remove();
       setTimeout(()=> URL.revokeObjectURL(blobUrl), 2000);
 
+      setDlPhase('idle');
       toast.success(`Downloaded ${app.name} for ${platform} — open the file to install`);
       setTimeout(()=> (window as any).rxRefreshApps?.(), 500);
     } catch (e:any) {
+      setDlPhase('idle');
       toast.error(e.message || 'Install failed — not marked as complete. You can try again.');
     }
     setIsInstalling(false);
@@ -355,31 +419,53 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
               )}
             </div>
             <div className="flex flex-col items-end gap-3 flex-shrink-0">
-              {osInstalled ? (
+              {dlPhase !== 'idle' ? (
+                <div className="w-[240px] max-w-[260px]">
+                  {dlPhase === 'downloading' ? (
+                    <>
+                      <div className="flex items-center justify-between text-xs mb-1">
+                        <span className="text-white/80 font-medium flex items-center gap-1.5"><Download className="w-3.5 h-3.5 text-rx-yellow" /> Downloading…</span>
+                        <span className="text-rx-yellow font-bold tabular-nums">{dlProgress.percent}%</span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+                        <div className="h-full bg-rx-yellow rounded-full transition-[width] duration-200 ease-out" style={{ width: `${Math.min(Math.max(dlProgress.percent, 0), 100)}%` }} />
+                      </div>
+                      <div className="text-[11px] text-rx-gray-medium mt-1 tabular-nums">
+                        {dlProgress.total ? `${formatBytes(dlProgress.received)} of ${formatBytes(dlProgress.total)}` : `${formatBytes(dlProgress.received)} downloaded`}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex items-center gap-2 text-sm text-white/80">
+                      <div className="w-4 h-4 border-2 border-rx-yellow border-t-transparent rounded-full animate-spin" />
+                      <span>Installing… approve the OS prompt</span>
+                    </div>
+                  )}
+                </div>
+              ) : osInstalled ? (
                 <div className="flex items-center gap-2 flex-wrap justify-end">
-                  <span className={`flex items-center gap-1.5 text-sm ${nativeUpdateAvailable ? 'text-rx-yellow' : 'text-green-300'}`}><Check className="w-4 h-4" /> {nativeUpdateAvailable ? `Update available${systemInstalled?.version ? ` · v${systemInstalled?.version}` : ''}` : 'Detected'}</span>
-                  {nativeUpdateAvailable && <button onClick={handleInstall} className="px-4 py-2.5 bg-rx-yellow text-rx-dark rounded-xl text-sm font-bold">Update</button>}
-                  <button onClick={handleNativeOpen} className="px-4 py-2.5 bg-green-500 text-white rounded-xl text-sm font-semibold">Open</button>
-                  <button onClick={handleUninstall} className="px-4 py-2.5 bg-white/10 text-white rounded-xl text-sm hover:bg-white/20">Uninstall</button>
+                  <span className={`flex items-center gap-1.5 text-sm ${nativeUpdateAvailable ? 'text-rx-yellow' : 'text-green-300'}`}><Check className="w-4 h-4" /> {nativeUpdateAvailable ? `Update available${systemInstalled?.version ? ` · v${systemInstalled?.version}` : ''}` : 'Installed'}</span>
+                  {nativeUpdateAvailable && <button onClick={handleInstall} className="px-4 py-2.5 bg-rx-yellow text-rx-dark rounded-xl text-sm font-bold hover:bg-rx-yellow-light transition-colors">Update</button>}
+                  <button onClick={handleNativeOpen} className="px-4 py-2.5 bg-green-500 text-white rounded-xl text-sm font-semibold hover:bg-green-400 transition-colors">Open</button>
+                  <button onClick={handleUninstall} className="px-4 py-2.5 bg-white/10 text-white rounded-xl text-sm hover:bg-white/20 transition-colors">Uninstall</button>
                 </div>
               ) : isDesktopShell() && nativePackage?.phase === 'downloaded' ? (
-                <button onClick={handleNativeInstall} disabled={isInstalling} className="px-8 py-3.5 bg-rx-yellow text-rx-dark font-bold rounded-xl disabled:opacity-60 flex items-center gap-2 shadow-lg">
+                <button onClick={handleNativeInstall} disabled={isInstalling} className="px-8 py-3.5 bg-rx-yellow text-rx-dark font-bold rounded-xl disabled:opacity-60 flex items-center gap-2 shadow-lg hover:bg-rx-yellow-light transition-colors">
                   <Download className="w-5 h-5" /> {isInstalling ? 'Opening installer…' : 'Install'}
                 </button>
               ) : isDesktopShell() && nativePackage?.phase === 'installed' ? (
                 <div className="flex items-center gap-2 flex-wrap justify-end">
                   <span className="flex items-center gap-1.5 text-green-300 text-sm"><Check className="w-4 h-4" /> Installed</span>
-                  <button onClick={handleNativeOpen} className="px-4 py-2.5 bg-green-500 text-white rounded-xl text-sm font-semibold">Open</button>
-                  <button onClick={handleUninstall} className="px-4 py-2.5 bg-white/10 text-white rounded-xl text-sm hover:bg-white/20">Uninstall</button>
+                  <button onClick={handleNativeOpen} className="px-4 py-2.5 bg-green-500 text-white rounded-xl text-sm font-semibold hover:bg-green-400 transition-colors">Open</button>
+                  <button onClick={handleUninstall} className="px-4 py-2.5 bg-white/10 text-white rounded-xl text-sm hover:bg-white/20 transition-colors">Uninstall</button>
                 </div>
               ) : isInstalled ? (
                 <div className="flex items-center gap-3">
                   <span className="flex items-center gap-2 text-green-300 font-medium"><Check className="w-5 h-5" /> Installed</span>
-                  <button onClick={handleUninstall} className="px-4 py-2.5 bg-white/10 backdrop-blur-sm text-white rounded-xl text-sm hover:bg-white/20 transition-all">Uninstall</button>
+                  <button onClick={handleUninstall} className="px-4 py-2.5 bg-white/10 backdrop-blur-sm text-white rounded-xl text-sm hover:bg-white/20 transition-colors">Uninstall</button>
                 </div>
               ) : (
                 <button onClick={handleInstall} disabled={isInstalling} className="px-8 py-3.5 bg-white text-rx-dark font-bold rounded-xl hover:bg-white/90 transition-all active:scale-95 disabled:opacity-70 flex items-center gap-2 shadow-lg">
-                  {isInstalling ? <><div className="w-4 h-4 border-2 border-rx-dark/30 border-t-rx-dark rounded-full animate-spin" />Downloading…</> : <><Download className="w-5 h-5" />{app.price === 'free' ? 'Get' : `Get — $${app.priceAmount}${app.price === 'subscription' ? '/mo' : ''}`}</>}
+                  <Download className="w-5 h-5" />{app.price === 'free' ? 'Get' : `Get — $${app.priceAmount}${app.price === 'subscription' ? '/mo' : ''}`}
                 </button>
               )}
               <div className="flex items-center gap-2">

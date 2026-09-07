@@ -1,5 +1,25 @@
 apply plugin: 'com.android.application'
 
+// ---------- Version source of truth ----------
+// The store's version lives in the ROOT package.json. Read it here so the APK's
+// versionName matches the release and versionCode monotonically increases —
+// otherwise Android treats an updated APK as the same version and in-place
+// updates fail (the old version keeps being reported after install).
+def rxVersionName = "1.0.0"
+def rxVersionCode = 2
+try {
+    def pkg = new groovy.json.JsonSlurper().parseText(file('../../package.json').text)
+    rxVersionName = (pkg.version ?: "1.0.0")
+    def parts = rxVersionName.findAll(/\d+/)*.toInteger()
+    rxVersionCode = parts.size() >= 3
+        ? (parts[0] * 10000 + parts[1] * 100 + parts[2])
+        : (parts.size() >= 2 ? (parts[0] * 10000 + parts[1] * 100) : 1)
+    // versionCode must be >= 2 and increase on every bump.
+    rxVersionCode = Math.max(rxVersionCode, 2)
+} catch (Exception ignored) {
+    logger.warn("Could not read root package.json — using fallback version $rxVersionName")
+}
+
 android {
     namespace = "com.calcitonin.rxstore"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -25,8 +45,8 @@ android {
         applicationId "com.calcitonin.rxstore"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 11
-        versionName "1.2.1"
+        versionCode rxVersionCode
+        versionName rxVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

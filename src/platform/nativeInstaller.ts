@@ -1,5 +1,14 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
 
+export interface AndroidDownloadProgress {
+  status: 'downloading' | 'complete' | 'error';
+  percent: number;
+  receivedBytes: number;
+  totalBytes: number;
+  fileUri?: string;
+  error?: string;
+}
+
 interface AndroidInstallerPlugin {
   getNetworkStatus(): Promise<{ connected: boolean; metered: boolean }>;
   getHostVersion(): Promise<{ version: string }>;
@@ -8,6 +17,7 @@ interface AndroidInstallerPlugin {
   uninstallInstalled(input: { packageId: string }): Promise<void>;
   downloadAndInstall(input: { url: string; fileName: string }): Promise<{ started?: boolean; permissionRequired?: boolean }>;
   openAppSettings(): Promise<void>;
+  addListener(eventName: 'downloadProgress', listener: (data: AndroidDownloadProgress) => void): Promise<{ remove: () => void }>;
 }
 const AndroidInstaller = registerPlugin<AndroidInstallerPlugin>('AppInstaller');
 
@@ -36,6 +46,12 @@ export const androidHostVersion = () => AndroidInstaller.getHostVersion();
 export const androidIsInstalled = (packageId: string) => AndroidInstaller.isInstalled({ packageId });
 export const androidOpen = (packageId: string) => AndroidInstaller.openInstalled({ packageId });
 export const androidUninstall = (packageId: string) => AndroidInstaller.uninstallInstalled({ packageId });
+/** Live download progress from the Android DownloadManager (in-page progress bar). */
+export const androidOnDownloadProgress = (cb: (d: AndroidDownloadProgress) => void) =>
+  AndroidInstaller.addListener('downloadProgress', cb);
+export const androidStopDownloadProgress = (handle: { remove: () => void } | null) => {
+  try { handle?.remove?.(); } catch { /* ignore */ }
+};
 
 export interface DesktopDetectionResult {
   installed: boolean;

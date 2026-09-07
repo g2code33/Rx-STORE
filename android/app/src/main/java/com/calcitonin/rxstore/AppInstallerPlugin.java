@@ -1,13 +1,14 @@
 package com.calcitonin.rxstore;
 
 import android.app.DownloadManager;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 
 import com.getcapacitor.JSObject;
@@ -76,6 +77,70 @@ public class AppInstallerPlugin extends Plugin {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); getContext().startActivity(intent); call.resolve();
     }
 
+    // Poll the DownloadManager and emit live progress to the webview so the app
+    // page can show a Play-Store-style progress bar ("downloaded so far").
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Runnable[] progressPoller = { null };
+
+    private void emitProgress(DownloadManager manager, long id) {
+        DownloadManager.Query q = new DownloadManager.Query().setFilterById(id);
+        try (Cursor c = manager.query(q)) {
+            if (c != null && c.moveToFirst()) {
+                int status = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
+                long received = 0, total = 0;
+                try { received = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)); } catch (Exception ignored) {}
+                try { total = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)); } catch (Exception ignored) {}
+
+                if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                    JSObject done = new JSObject();
+                    done.put("status", "complete");
+                    done.put("percent", 100);
+                    done.put("receivedBytes", received);
+                    done.put("totalBytes", total);
+                    try { done.put("fileUri", manager.getUriForDownloadedFile(id).toString()); } catch (Exception ignored) {}
+                    notifyListeners("downloadProgress", done, true);
+                    openInstaller(manager, id);
+                    progressPoller[0] = null;
+                    return;
+                }
+                if (status == DownloadManager.STATUS_FAILED) {
+                    JSObject err = new JSObject();
+                    err.put("status", "error");
+                    try {
+                        err.put("error", "Download failed (reason " + c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON)) + ")");
+                    } catch (Exception ignored) { err.put("error", "Download failed"); }
+                    notifyListeners("downloadProgress", err, true);
+                    progressPoller[0] = null;
+                    return;
+                }
+
+                int percent = total > 0 ? (int) Math.min(99, received * 100 / total) : 0;
+                JSObject p = new JSObject();
+                p.put("status", "downloading");
+                p.put("percent", percent);
+                p.put("receivedBytes", received);
+                p.put("totalBytes", total);
+                notifyListeners("downloadProgress", p, true);
+            }
+        } catch (Exception ignored) {}
+        if (progressPoller[0] != null) handler.postDelayed(progressPoller[0], 500);
+    }
+
+    private void startProgressPolling(DownloadManager manager, long id) {
+        if (progressPoller[0] != null) handler.removeCallbacks(progressPoller[0]);
+        progressPoller[0] = () -> emitProgress(manager, id);
+        handler.post(progressPoller[0]);
+    }
+
+    private void openInstaller(DownloadManager manager, long id) {
+        Uri apk = manager.getUriForDownloadedFile(id);
+        if (apk == null) return;
+        Intent install = new Intent(Intent.ACTION_VIEW);
+        install.setDataAndType(apk, "application/vnd.android.package-archive");
+        install.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try { getContext().startActivity(install); } catch (Exception ignored) {}
+    }
+
     @PluginMethod
     public void downloadAndInstall(PluginCall call) {
         String url = call.getString("url");
@@ -96,29 +161,16 @@ public class AppInstallerPlugin extends Plugin {
         DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
         request.setTitle(fileName);
         request.setDescription("Downloading from RX Store");
-        request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+        // VISIBILITY_VISIBLE (not VISIBILITY_VISIBLE_NOTIFY_COMPLETED) keeps the
+        // download indicator lightweight; the in-page progress bar carries the UX.
+        request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE);
         request.setMimeType("application/vnd.android.package-archive");
         request.setDestinationInExternalFilesDir(getContext(), Environment.DIRECTORY_DOWNLOADS, fileName.replaceAll("[^a-zA-Z0-9._-]", "_"));
         long id = manager.enqueue(request);
 
-        BroadcastReceiver receiver = new BroadcastReceiver() {
-            @Override public void onReceive(Context context, Intent intent) {
-                if (intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1) != id) return;
-                Uri apk = manager.getUriForDownloadedFile(id);
-                if (apk != null) {
-                    Intent install = new Intent(Intent.ACTION_VIEW);
-                    install.setDataAndType(apk, "application/vnd.android.package-archive");
-                    install.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                    context.startActivity(install);
-                }
-                try { context.unregisterReceiver(this); } catch (Exception ignored) {}
-            }
-        };
-        IntentFilter filter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
-        if (Build.VERSION.SDK_INT >= 33) getContext().registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        else getContext().registerReceiver(receiver, filter);
         JSObject result = new JSObject(); result.put("started", true); result.put("downloadId", id);
         call.resolve(result);
+        startProgressPolling(manager, id);
     }
 
     @PluginMethod
