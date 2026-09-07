@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('rxDesktop', {
     return () => ipcRenderer.removeListener('update:status', listener);
   },
   detectApp: (identity: any) => ipcRenderer.invoke('native:detect', identity),
+  invalidateDetect: (appId?: string) => ipcRenderer.invoke('native:invalidate-detect', appId),
   downloadApp: (input: { url: string; fileName?: string; id?: string }) => ipcRenderer.invoke('native:download', input),
   installApp: (filePath: string) => ipcRenderer.invoke('native:install', filePath),
   openApp: (target: string) => ipcRenderer.invoke('native:open', target),

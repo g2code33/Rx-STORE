@@ -39,6 +39,9 @@ public class AppInstallerPlugin extends Plugin {
         JSObject result = new JSObject(); result.put("version", version); call.resolve(result);
     }
 
+    // Real Android package detection by the stable package ID (never display name).
+    // Returns a normalized shape so the store frontend can reason about it the
+    // same way it does desktop detections.
     @PluginMethod
     public void isInstalled(PluginCall call) {
         String packageId = call.getString("packageId", "");
@@ -50,7 +53,12 @@ public class AppInstallerPlugin extends Plugin {
                 installed = true; version = info.versionName == null ? "" : info.versionName;
             } catch (Exception ignored) {}
         }
-        JSObject result = new JSObject(); result.put("installed", installed); result.put("version", version); call.resolve(result);
+        JSObject result = new JSObject();
+        result.put("installed", installed);
+        result.put("version", version);
+        result.put("packageId", packageId);
+        result.put("platform", "android");
+        call.resolve(result);
     }
 
     @PluginMethod

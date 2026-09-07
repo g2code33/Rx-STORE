@@ -165,11 +165,31 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
           <div className="card p-4 space-y-3">
             <div><p className="text-sm font-semibold text-white">Installed-app detection</p><p className="text-[11px] text-rx-gray-medium">Stable publisher identities let native RX Store show Open/Update instead of Get.</p></div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div><label className="text-xs text-rx-gray-medium">Android package ID</label><input value={form.androidPackageId} onChange={e=>setForm({...form,androidPackageId:e.target.value})} placeholder="com.company.app" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
-              <div><label className="text-xs text-rx-gray-medium">Windows uninstall registry key</label><input value={form.windowsUninstallKey} onChange={e=>setForm({...form,windowsUninstallKey:e.target.value})} placeholder="Company App or {GUID}" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
-              <div><label className="text-xs text-rx-gray-medium">Windows executable path/name</label><input value={form.windowsExecutable} onChange={e=>setForm({...form,windowsExecutable:e.target.value})} placeholder="C:\\Program Files\\App\\app.exe" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
-              <div><label className="text-xs text-rx-gray-medium">Linux package name</label><input value={form.linuxPackageName} onChange={e=>setForm({...form,linuxPackageName:e.target.value})} placeholder="clinical-rx" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
-              <div><label className="text-xs text-rx-gray-medium">Linux executable</label><input value={form.linuxExecutable} onChange={e=>setForm({...form,linuxExecutable:e.target.value})} placeholder="clinical-rx" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
+              <div className="space-y-1">
+                <label className="text-xs text-rx-gray-medium">Android package ID</label>
+                <input value={form.androidPackageId} onChange={e=>setForm({...form,androidPackageId:e.target.value})} placeholder="com.company.app" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/>
+                <p className="text-[11px] text-rx-gray-medium">Stable Android application package identifier, e.g. <code className="px-1 bg-white/10 rounded">com.example.app</code>.</p>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-rx-gray-medium">Windows uninstall registry key</label>
+                <input value={form.windowsUninstallKey} onChange={e=>setForm({...form,windowsUninstallKey:e.target.value})} placeholder="Company App or {GUID}" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/>
+                <p className="text-[11px] text-rx-gray-medium">Optional stable Windows uninstall registry identifier used to detect an installed application.</p>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-rx-gray-medium">Windows executable path/name</label>
+                <input value={form.windowsExecutable} onChange={e=>setForm({...form,windowsExecutable:e.target.value})} placeholder="C:\\Program Files\\App\\app.exe" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/>
+                <p className="text-[11px] text-rx-gray-medium">Optional executable name/path used as an additional Windows detection method.</p>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-rx-gray-medium">Linux package name</label>
+                <input value={form.linuxPackageName} onChange={e=>setForm({...form,linuxPackageName:e.target.value})} placeholder="clinical-rx" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/>
+                <p className="text-[11px] text-rx-gray-medium">Linux package identifier used to detect installed packages.</p>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-rx-gray-medium">Linux executable</label>
+                <input value={form.linuxExecutable} onChange={e=>setForm({...form,linuxExecutable:e.target.value})} placeholder="clinical-rx" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/>
+                <p className="text-[11px] text-rx-gray-medium">Executable name used as a fallback Linux detection method.</p>
+              </div>
             </div>
           </div>
           <div>

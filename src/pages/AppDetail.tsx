@@ -11,14 +11,8 @@ import PageBlocks from '../components/edit/PageBlocks';
 import { formatDownloadCount, formatDate, getRatingColor } from '../utils/helpers';
 import { normalizeWebsiteUrl } from '../utils/url';
 import toast from 'react-hot-toast';
-import { androidDownloadAndInstall, androidIsInstalled, androidOpen, androidUninstall, confirmDesktopInstalled, desktopDetect, desktopDownload, desktopInstall, desktopOpen, desktopUninstall, getNativePackage, isAndroidShell, isDesktopShell, removeNativePackage, type NativePackageState } from '../platform/nativeInstaller';
-
-function newerVersion(latest: string, installed?: string) {
-  if (!installed) return false;
-  const a=latest.split(/[.-]/).map(n=>parseInt(n,10)||0), b=installed.split(/[.-]/).map(n=>parseInt(n,10)||0);
-  for(let i=0;i<Math.max(a.length,b.length);i++){ if((a[i]||0)!==(b[i]||0)) return (a[i]||0)>(b[i]||0); }
-  return false;
-}
+import { androidDownloadAndInstall, androidOpen, androidUninstall, confirmDesktopInstalled, desktopDownload, desktopInstall, desktopOpen, desktopUninstall, getNativePackage, isAndroidShell, isDesktopShell, removeNativePackage, type NativePackageState } from '../platform/nativeInstaller';
+import { useInstalledState } from '../platform/nativeDetection';
 
 /** Internal paths navigate in-app, external URLs open a new tab, '#' stays inert. */
 function DetailLink({ to, className, children }: { to: string; className?: string; children: React.ReactNode }) {
@@ -48,22 +42,10 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
     sync(); window.addEventListener('rx-native-package-change', sync);
     return () => window.removeEventListener('rx-native-package-change', sync);
   }, [slug]);
-  const [systemInstalled, setSystemInstalled] = useState<{ installed: boolean; version?: string; launchTarget?: string }>({ installed: false });
-  React.useEffect(() => {
-    if (!app) return;
-    const detect = () => {
-      if (isDesktopShell()) {
-        desktopDetect({ windowsUninstallKey: app.windowsUninstallKey, windowsExecutable: app.windowsExecutable, linuxPackageName: app.linuxPackageName, linuxExecutable: app.linuxExecutable })
-          .then(setSystemInstalled).catch(() => {});
-      } else if (isAndroidShell() && app.androidPackageId) {
-        androidIsInstalled(app.androidPackageId).then(setSystemInstalled).catch(() => {});
-      }
-    };
-    detect();
-    const onVisible = () => { if (document.visibilityState === 'visible') detect(); };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [app?.slug]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Real OS-agnostic detection (Electron desktop + Android Capacitor shell).
+  // Web/PWA degrades to DETECTION_UNAVAILABLE and falls back to the store's own
+  // installed record below. The hook re-detects on tab focus and exposes refresh.
+  const { state: detectedState, detection: systemInstalled, installed: osInstalled, refresh: refreshDetection } = useInstalledState(app as any);
   // Screenshots whose objects are missing (404/403) get filtered out, never shown broken
   const [badShots, setBadShots] = useState<Set<number>>(() => new Set());
   const allShots: string[] = ((app?.screenshots as any[]) || []).filter((s: any) => typeof s === 'string' && !!s);
@@ -84,7 +66,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
 
   // Hooks first: `app` arrives a render later (context loads async), so no early return before this point.
   const isInstalled = app ? installedApps.includes(app.id) : false;
-  const updateAvailable = !!app && systemInstalled.installed && newerVersion(app.version, systemInstalled.version);
+  const nativeUpdateAvailable = detectedState === 'UPDATE_AVAILABLE';
   const [liveReviews, setLiveReviews] = React.useState<any[] | null>(null);
   React.useEffect(() => {
     const API = (import.meta as any).env?.VITE_API_URL;
@@ -133,7 +115,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
 
   const handleInstall = async () => {
     if (!user) { toast.error('Please sign in to install applications'); return; }
-    if (isInstalled && !updateAvailable) return;
+    if (isInstalled && !nativeUpdateAvailable) return;
     setShowDownload(true);
   };
   const doDownload = async (platform: string) => {
@@ -225,6 +207,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
       if (confirm(`Did ${app.name} finish installing successfully?`)) {
         const installed = confirmDesktopInstalled(nativePackage);
         setNativePackage(installed); installApp(app.id);
+        void refreshDetection();
         toast.success(`${app.name} is ready`);
       }
     } catch (e: any) { toast.error(e.message || 'Could not open installer'); }
@@ -234,7 +217,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   const handleNativeOpen = async () => {
     try {
       if (isAndroidShell() && app.androidPackageId) { await androidOpen(app.androidPackageId); return; }
-      if (systemInstalled.launchTarget && window.rxDesktop) { await window.rxDesktop.openApp(systemInstalled.launchTarget); return; }
+      if (systemInstalled?.executable && window.rxDesktop) { await window.rxDesktop.openApp(systemInstalled.executable); return; }
       if (nativePackage) { await desktopOpen(nativePackage); return; }
       throw new Error('The publisher has not configured a launch target');
     } catch (e: any) { toast.error(e.message || 'Could not open application'); }
@@ -247,12 +230,13 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
       catch (e: any) { toast.error(e.message || 'Could not open Android uninstaller'); }
       return;
     }
-    if (isDesktopShell() && (nativePackage || systemInstalled.installed)) {
+    if (isDesktopShell() && (nativePackage || osInstalled)) {
       try {
         await desktopUninstall();
         toast('System app manager opened — remove the app there, then return here.', { icon: 'ℹ️', duration: 6000 });
         if (confirm(`After completing the system uninstall, mark ${app.name} as removed from RX Store?`)) {
           removeNativePackage(app.slug); uninstallApp(app.id); setNativePackage(null);
+          void refreshDetection();
         }
       } catch (e: any) { toast.error(e.message || 'Could not open system app manager'); }
       return;
@@ -336,10 +320,10 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
               </div>
             </div>
             <div className="flex flex-col items-end gap-3 flex-shrink-0">
-              {systemInstalled.installed ? (
+              {osInstalled ? (
                 <div className="flex items-center gap-2 flex-wrap justify-end">
-                  <span className={`flex items-center gap-1.5 text-sm ${updateAvailable ? 'text-rx-yellow' : 'text-green-300'}`}><Check className="w-4 h-4" /> {updateAvailable ? `Update available${systemInstalled.version ? ` · v${systemInstalled.version}` : ''}` : 'Detected'}</span>
-                  {updateAvailable && <button onClick={handleInstall} className="px-4 py-2.5 bg-rx-yellow text-rx-dark rounded-xl text-sm font-bold">Update</button>}
+                  <span className={`flex items-center gap-1.5 text-sm ${nativeUpdateAvailable ? 'text-rx-yellow' : 'text-green-300'}`}><Check className="w-4 h-4" /> {nativeUpdateAvailable ? `Update available${systemInstalled?.version ? ` · v${systemInstalled?.version}` : ''}` : 'Detected'}</span>
+                  {nativeUpdateAvailable && <button onClick={handleInstall} className="px-4 py-2.5 bg-rx-yellow text-rx-dark rounded-xl text-sm font-bold">Update</button>}
                   <button onClick={handleNativeOpen} className="px-4 py-2.5 bg-green-500 text-white rounded-xl text-sm font-semibold">Open</button>
                   <button onClick={handleUninstall} className="px-4 py-2.5 bg-white/10 text-white rounded-xl text-sm hover:bg-white/20">Uninstall</button>
                 </div>

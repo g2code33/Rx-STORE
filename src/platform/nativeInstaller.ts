@@ -37,9 +37,22 @@ export const androidIsInstalled = (packageId: string) => AndroidInstaller.isInst
 export const androidOpen = (packageId: string) => AndroidInstaller.openInstalled({ packageId });
 export const androidUninstall = (packageId: string) => AndroidInstaller.uninstallInstalled({ packageId });
 
+export interface DesktopDetectionResult {
+  installed: boolean;
+  version?: string;
+  launchTarget?: string;
+  executable?: string;
+  source?: string;
+  platform?: 'windows' | 'linux';
+}
+
 export async function desktopDetect(identity: any) {
   if (!window.rxDesktop) return { installed: false };
-  return window.rxDesktop.detectApp(identity);
+  // Include appId so the main process can cache per-app detection results.
+  return window.rxDesktop.detectApp({ ...identity, appId: identity?.appId || identity?.slug });
+}
+export async function desktopInvalidateDetect(appId?: string) {
+  if (window.rxDesktop?.invalidateDetect) await window.rxDesktop.invalidateDetect(appId);
 }
 export const getNativePackage = (slug: string) => read()[slug] || null;
 

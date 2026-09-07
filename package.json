@@ -27,7 +27,9 @@
     "mobile:android": "npm run build:web && cap sync android && cap open android",
     "release:patch": "npm version patch --no-git-tag-version && git add -A && git commit -m \"release: v$(node -p \"require(\\\"./package.json\\\").version\")\" && git push origin main",
     "release:minor": "npm version minor --no-git-tag-version && git add -A && git commit -m \"release: v$(node -p \"require(\\\"./package.json\\\").version\")\" && git push origin main",
-    "release:major": "npm version major --no-git-tag-version && git add -A && git commit -m \"release: v$(node -p \"require(\\\"./package.json\\\").version\")\" && git push origin main"
+    "release:major": "npm version major --no-git-tag-version && git add -A && git commit -m \"release: v$(node -p \"require(\\\"./package.json\\\").version\")\" && git push origin main",
+    "test": "node --experimental-strip-types --test src/platform/detect.test.ts",
+    "test:detect": "node --experimental-strip-types --test src/platform/detect.test.ts"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",

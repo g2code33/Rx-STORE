@@ -51,7 +51,8 @@ declare global {
       pauseUpdate: () => Promise<boolean>;
       resumeUpdate: () => Promise<boolean>;
       onUpdateStatus: (cb: (s: any) => void) => () => void;
-      detectApp: (identity: any) => Promise<{ installed: boolean; version?: string; launchTarget?: string; source?: string }>;
+      detectApp: (identity: any) => Promise<{ installed: boolean; version?: string; launchTarget?: string; source?: string; platform?: 'windows' | 'linux' }>;
+      invalidateDetect: (appId?: string) => Promise<boolean>;
       downloadApp: (input: { url: string; fileName?: string; id?: string }) => Promise<{ path: string; fileName: string; size: number }>;
       installApp: (filePath: string) => Promise<{ launched: boolean }>;
       openApp: (target: string) => Promise<boolean>;

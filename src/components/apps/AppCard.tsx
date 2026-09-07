@@ -7,7 +7,7 @@ import { formatDownloadCount, getRatingColor } from '../../utils/helpers';
 import { useApps } from '../../context/AppContext';
 import { useEditMode } from '../edit/EditMode';
 import AppLogo from './AppLogo';
-import { androidIsInstalled, desktopDetect, isAndroidShell, isDesktopShell } from '../../platform/nativeInstaller';
+import { useInstalledState } from '../../platform/nativeDetection';
 
 interface AppCardProps {
   app: App;
@@ -18,12 +18,11 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
   const { installedApps, installApp } = useApps();
   const [showDl, setShowDl] = useState(false);
   const isInstalled = installedApps.includes(app.id);
-  const [detected, setDetected] = React.useState(false);
-  React.useEffect(() => {
-    if (isDesktopShell()) desktopDetect({ windowsUninstallKey: app.windowsUninstallKey, windowsExecutable: app.windowsExecutable, linuxPackageName: app.linuxPackageName, linuxExecutable: app.linuxExecutable }).then(r=>setDetected(r.installed)).catch(()=>{});
-    else if (isAndroidShell() && app.androidPackageId) androidIsInstalled(app.androidPackageId).then(r=>setDetected(r.installed)).catch(()=>{});
-  }, [app.slug]); // eslint-disable-line react-hooks/exhaustive-deps
-  const present = isInstalled || detected;
+  // Real OS detection (desktop + Android). Web/PWA -> DETECTION_UNAVAILABLE.
+  const { state: detectedState, installed: osInstalled } = useInstalledState(app);
+  const present = isInstalled || osInstalled;
+  const isUpdate = detectedState === 'UPDATE_AVAILABLE';
+  const cardAction = isUpdate ? 'Update' : present ? 'Open' : 'Get';
   const edit = useEditMode(); // Live Website Builder: pencil opens the full AppEditor
 
   if (variant === 'horizontal') {
@@ -86,8 +85,8 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
             </div>
           </div>
         </Link>
-        <Link to={`/app/${app.slug}`} className={`flex-shrink-0 min-w-[64px] text-center px-4 py-1.5 rounded-full text-xs font-bold ${present ? 'bg-white/10 text-green-400' : 'bg-rx-yellow text-rx-dark'}`}>
-          {present ? 'OPEN' : app.price === 'free' ? 'GET' : 'VIEW'}
+        <Link to={`/app/${app.slug}`} className={`flex-shrink-0 min-w-[64px] text-center px-4 py-1.5 rounded-full text-xs font-bold ${present ? (isUpdate ? 'bg-rx-yellow text-rx-dark' : 'bg-white/10 text-green-400') : 'bg-rx-yellow text-rx-dark'}`}>
+          {cardAction === 'Get' && app.price !== 'free' && app.price !== 'subscription' ? 'VIEW' : cardAction.toUpperCase()}
         </Link>
       </div>
     );
@@ -166,7 +165,7 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
           </div>
 
           {present ? (
-            <span className="text-xs font-medium text-green-400 bg-green-400/10 px-2.5 py-1 rounded-lg">Open</span>
+            <span className={`text-xs font-medium px-2.5 py-1 rounded-lg ${isUpdate ? 'text-rx-yellow bg-rx-yellow/10' : 'text-green-400 bg-green-400/10'}`}>{isUpdate ? 'Update' : 'Open'}</span>
           ) : (
             <button
               onClick={(e) => { e.preventDefault(); e.stopPropagation(); const token=localStorage.getItem('rx-store-token'); if(!token){ window.location.href='/login'; return; } if((window as any).rxDesktop?.isDesktop){ window.location.href=`/app/${app.slug}`; return; } setShowDl(true); }}

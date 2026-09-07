@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, protocol, net, shell, session, Notificatio
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chmod, access } from 'node:fs/promises';
+import { accessSync, existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -172,35 +173,220 @@ function downloadNative(url: string, fileName: string, id: string) {
   });
 }
 
-function initIpc() {
-  ipcMain.handle('native:detect', async (_event, identity: any) => {
-    try {
-      if (process.platform === 'win32') {
-        const executable = String(identity?.windowsExecutable || '');
-        if (executable) { try { await access(executable); return { installed: true, launchTarget: executable, source: 'executable' }; } catch {} }
-        const key = String(identity?.windowsUninstallKey || '').replace(/[^a-zA-Z0-9 _{}().-]/g, '');
-        if (key) {
-          const roots = ['HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall', 'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall', 'HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall'];
-          for (const root of roots) {
-            try {
-              const { stdout } = await execFileAsync('reg.exe', ['query', `${root}\\${key}`, '/v', 'DisplayVersion'], { windowsHide: true });
-              const version = stdout.match(/DisplayVersion\s+REG_\w+\s+(.+)/i)?.[1]?.trim() || '';
-              return { installed: true, version, launchTarget: executable || '', source: 'registry' };
-            } catch {}
-          }
-        }
-      } else if (process.platform === 'linux') {
-        const packageName = String(identity?.linuxPackageName || '').replace(/[^a-zA-Z0-9+._-]/g, '');
-        const executable = String(identity?.linuxExecutable || '').replace(/[^a-zA-Z0-9+._/-]/g, '');
-        if (packageName) {
-          try { const { stdout } = await execFileAsync('dpkg-query', ['-W', '-f=${Version}', packageName]); return { installed: true, version: stdout.trim(), launchTarget: executable, source: 'package' }; } catch {}
-        }
-        if (executable) {
-          try { const { stdout } = await execFileAsync('sh', ['-lc', `command -v -- "${executable}"`]); if (stdout.trim()) return { installed: true, launchTarget: stdout.trim(), source: 'executable' }; } catch {}
-        }
+// ---------------------------------------------------------------------------
+// Installed-application detection (Windows + Linux).
+//
+// Security: every external process is launched with `execFile` and an ARGUMENTS
+// ARRAY (never a shell string), so application metadata (registry key, package
+// name, executable name) can never be interpreted by a shell. Executable file
+// version is read through PowerShell with the path passed via an environment
+// variable — the path is never interpolated into the command string. Nothing
+// here ever executes the target application; it only reads registry metadata,
+// package-manager metadata, or file metadata.
+// ---------------------------------------------------------------------------
+
+const DETECT_TTL_MS = 60_000;
+const detectCache = new Map<string, { at: number; result: unknown }>();
+
+const UNINSTALL_ROOTS = [
+  'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  'HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+];
+
+interface DetectedApp {
+  installed: boolean;
+  version?: string;
+  executable?: string;
+  platform: 'windows' | 'linux';
+  source: string;
+}
+
+/** Read every value of a Windows registry subkey (safe, no shell). */
+async function readRegistryKey(keyPath: string): Promise<Record<string, string>> {
+  const values: Record<string, string> = {};
+  try {
+    // Query the whole subkey (no /v) — exit 0 means the subkey exists.
+    const { stdout } = await execFileAsync('reg.exe', ['query', keyPath], { windowsHide: true });
+    for (const line of stdout.split(/\r?\n/)) {
+      const m = line.match(/^\s*([^\s]+)\s+(REG_\w+)\s+(.+)$/i);
+      if (m) values[m[1]] = m[3].trim();
+    }
+  } catch {
+    // subkey absent, access denied, or reg.exe missing -> empty result
+  }
+  return values;
+}
+
+/** Read the file version metadata of an executable (path via env; never interpolated). */
+async function windowsFileVersion(exePath: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        'if (Test-Path $env:RX_EXE_PATH) { ([System.Diagnostics.FileVersionInfo]::GetVersionInfo($env:RX_EXE_PATH)).ProductVersion }',
+      ],
+      { windowsHide: true, env: { ...process.env, RX_EXE_PATH: exePath } },
+    );
+    return stdout.trim();
+  } catch {
+    return '';
+  }
+}
+
+/** Locate an executable on PATH without a shell (pure fs scan). */
+function whichInPath(name: string, ext = ''): string {
+  const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  const candidates = ext ? [name, `${name}${ext}`] : [name, `${name}${ext}`];
+  for (const dir of dirs) {
+    for (const candidate of candidates) {
+      const full = path.join(dir, candidate);
+      try {
+        accessSync(full);
+        return full;
+      } catch {
+        // not found in this dir
       }
-    } catch {}
-    return { installed: false };
+    }
+  }
+  return '';
+}
+
+/** Resolve an executable reference to an absolute path, or ''. */
+async function resolveWindowsExecutable(execName: string): Promise<string> {
+  const name = String(execName || '').trim();
+  if (!name) return '';
+  if (path.isAbsolute(name) || /^[a-zA-Z]:\\/.test(name)) {
+    try {
+      await access(name);
+      return name;
+    } catch {
+      return '';
+    }
+  }
+  // relative executable name -> PATH lookup via where (no shell)
+  try {
+    const { stdout } = await execFileAsync('where.exe', [name], { windowsHide: true });
+    const first = stdout.split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+    return first || '';
+  } catch {
+    return '';
+  }
+}
+
+/** Windows detection: registry uninstall entry + executable, with version. */
+async function detectWindows(identity: any): Promise<DetectedApp> {
+  const key = String(identity?.windowsUninstallKey || '').trim();
+  const execName = String(identity?.windowsExecutable || '').trim();
+
+  let foundByKey = false;
+  let registryVersion = '';
+  let installLocation = '';
+
+  if (key) {
+    // A fully-qualified uninstall key is used verbatim; a bare subkey name is
+    // tried under each of the 32/64-bit uninstall roots.
+    const isAbsoluteKey = /^[A-Za-z]:|^(HKEY_|HKLM|HKCU)/i.test(key) || key.includes('\\') && key.toLowerCase().startsWith('software');
+    const keyPaths = isAbsoluteKey
+      ? [key]
+      : UNINSTALL_ROOTS.map((root) => `${root}\\${key}`);
+
+    for (const keyPath of keyPaths) {
+      const values = await readRegistryKey(keyPath);
+      if (Object.keys(values).length > 0) {
+        foundByKey = true;
+        registryVersion = values.DisplayVersion || values.Version || '';
+        installLocation = values.InstallLocation || values.InstallDir || (values.DisplayIcon || '').replace(/^"?(.+?)(?:,[\d]+)?"?$/, '$1').trim() || '';
+        break;
+      }
+    }
+  }
+
+  let executable = '';
+  if (execName) {
+    // Prefer a resolved absolute path over the registry's install location.
+    executable = await resolveWindowsExecutable(execName);
+  }
+  if (!executable && installLocation && existsSync(installLocation)) {
+    executable = installLocation;
+  }
+
+  let version = registryVersion;
+  if (!version && executable) {
+    version = await windowsFileVersion(executable);
+  }
+
+  const installed = foundByKey || !!executable;
+  return {
+    installed,
+    version: version || undefined,
+    executable: executable || undefined,
+    platform: 'windows',
+    source: foundByKey ? 'registry' : executable ? 'executable' : 'none',
+  };
+}
+
+/** Linux detection: dpkg package database + PATH executable (no shell). */
+async function detectLinux(identity: any): Promise<DetectedApp> {
+  const pkg = String(identity?.linuxPackageName || '').trim();
+  const exec = String(identity?.linuxExecutable || '').trim();
+
+  let foundByPackage = false;
+  let packageVersion = '';
+
+  if (pkg) {
+    try {
+      // -f=${Version} prints only the installed version; exit 0 => installed.
+      const { stdout } = await execFileAsync('dpkg-query', ['-W', '-f=${Version}', pkg]);
+      packageVersion = stdout.trim();
+      foundByPackage = true;
+    } catch {
+      // package not installed, or dpkg unavailable — fall through to executable
+    }
+  }
+
+  let executable = '';
+  if (exec) {
+    executable = whichInPath(exec);
+  }
+
+  const installed = foundByPackage || !!executable;
+  return {
+    installed,
+    version: packageVersion || undefined,
+    executable: executable || undefined,
+    platform: 'linux',
+    source: foundByPackage ? 'package' : executable ? 'executable' : 'none',
+  };
+}
+
+function initIpc() {
+  ipcMain.handle('native:detect', async (_event, payload: any) => {
+    const identity = payload || {};
+    const appId = String(identity.appId || identity.slug || 'unknown').slice(0, 120);
+    const cached = detectCache.get(appId);
+    if (cached && Date.now() - cached.at < DETECT_TTL_MS) return cached.result;
+
+    let result: DetectedApp = { installed: false, platform: process.platform === 'win32' ? 'windows' : 'linux', source: 'none' };
+    try {
+      if (process.platform === 'win32') result = await detectWindows(identity);
+      else if (process.platform === 'linux') result = await detectLinux(identity);
+      // mac / other: no native detection — report not installed.
+    } catch {
+      result = { installed: false, platform: process.platform === 'win32' ? 'windows' : 'linux', source: 'error' };
+    }
+
+    detectCache.set(appId, { at: Date.now(), result });
+    return result;
+  });
+
+  ipcMain.handle('native:invalidate-detect', (_event, appId?: string) => {
+    if (appId) detectCache.delete(String(appId));
+    else detectCache.clear();
+    return true;
   });
   ipcMain.handle('native:download', async (_event, input: { url: string; fileName?: string; id?: string }) =>
     downloadNative(input.url, input.fileName || 'download', input.id || 'download')
@@ -213,8 +399,13 @@ function initIpc() {
     return { launched: true };
   });
   ipcMain.handle('native:open', async (_event, target: string) => {
-    if (/^https?:\/\//i.test(target)) { await shell.openExternal(target); return true; }
-    const error = await shell.openPath(target);
+    const t = String(target || '');
+    if (/^https?:\/\//i.test(t)) { await shell.openExternal(t); return true; }
+    // Only ever open a local path that actually exists. This guards against
+    // launching a path supplied by an untrusted/remote source without a
+    // positive detection behind it (we only open detection-derived targets).
+    if (!existsSync(t)) throw new Error('The installed application executable could not be found.');
+    const error = await shell.openPath(t);
     if (error) throw new Error(error);
     return true;
   });
