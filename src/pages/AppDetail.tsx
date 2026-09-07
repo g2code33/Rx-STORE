@@ -14,6 +14,30 @@ import toast from 'react-hot-toast';
 import { androidDownloadAndInstall, androidOpen, androidUninstall, confirmDesktopInstalled, desktopDownload, desktopInstall, desktopOpen, desktopUninstall, getNativePackage, isAndroidShell, isDesktopShell, removeNativePackage, type NativePackageState } from '../platform/nativeInstaller';
 import { useInstalledState } from '../platform/nativeDetection';
 
+/** Human-readable byte count (auto-detected package size). */
+function formatBytes(bytes?: number): string {
+  if (!bytes || bytes <= 0) return '—';
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  if (mb >= 1) return `${mb >= 100 ? mb.toFixed(0) : mb.toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+/** Friendly label for a stored package platform id. */
+function formatSizeLabel(platform: string): string {
+  switch (platform) {
+    case 'windows': return 'Windows';
+    case 'linux_deb': return 'Linux (DEB)';
+    case 'linux_appimage': return 'Linux (AppImage)';
+    case 'flatpak': return 'Linux (Flatpak)';
+    case 'linux': return 'Linux';
+    case 'android': return 'Android';
+    case 'macos': return 'macOS';
+    case 'ios': return 'iOS';
+    case 'web': return 'Web';
+    default: return platform;
+  }
+}
+
 /** Internal paths navigate in-app, external URLs open a new tab, '#' stays inert. */
 function DetailLink({ to, className, children }: { to: string; className?: string; children: React.ReactNode }) {
   if (/^https?:\/\//.test(to)) return <a href={to} target="_blank" rel="noreferrer" className={className}>{children}</a>;
@@ -318,6 +342,17 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
                   <span key={p} className="px-3 py-1 bg-white/10 backdrop-blur-sm text-white/90 text-xs rounded-lg capitalize">{p}</span>
                 ))}
               </div>
+              {(app.sizes && Object.keys(app.sizes).length > 0) && (
+                <div className="mt-3 space-y-1">
+                  <p className="text-[11px] text-rx-gray-medium uppercase tracking-wide">Auto-detected size</p>
+                  {Object.entries(app.sizes).map(([platform, bytes]) => (
+                    <div key={platform} className="flex items-center justify-between text-xs">
+                      <span className="capitalize text-rx-gray-medium">{formatSizeLabel(platform)}</span>
+                      <span className="text-white font-medium">{formatBytes(bytes)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="flex flex-col items-end gap-3 flex-shrink-0">
               {osInstalled ? (

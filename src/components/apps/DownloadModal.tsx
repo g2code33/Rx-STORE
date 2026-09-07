@@ -24,6 +24,15 @@ const platforms = [
   { id: 'linux', label: 'Linux', ext: 'DEB', icon: Laptop, desc: 'Linux • DEB / AppImage / Flatpak' },
 ];
 
+/** Human-readable byte count for an auto-detected package size. */
+function fmtSize(bytes?: number): string {
+  if (!bytes || bytes <= 0) return '';
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  if (mb >= 1) return `${mb >= 100 ? mb.toFixed(0) : mb.toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
 export default function DownloadModal({ app, onClose, onDownload }: Props) {
   // Admin toggle (Admin → Settings → "Recommend PWA on iPhone/iPad") — when on,
   // Apple devices get the Web/PWA install as the recommended option, not iOS.
@@ -107,7 +116,7 @@ export default function DownloadModal({ app, onClose, onDownload }: Props) {
                   <div className="w-12 h-12 rounded-xl bg-rx-yellow/20 flex items-center justify-center"><recP.icon className="w-6 h-6 text-rx-yellow"/></div>
                   <div className="flex-1">
                     <p className="font-semibold text-white flex items-center gap-2">{recP.label} <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-rx-gray-medium">{recP.ext}</span> <span className="text-[10px] px-1.5 py-0.5 rounded bg-rx-yellow text-rx-dark">Recommended</span></p>
-                    <p className="text-xs text-rx-gray-medium">{recP.desc}</p>
+                    <p className="text-xs text-rx-gray-medium">{recP.desc}{isAvailable && app.sizes?.[recP.id] ? ` · ${fmtSize(app.sizes[recP.id])}` : ''}</p>
                   </div>
                   {isAvailable ? <Download className="w-5 h-5 text-rx-yellow"/> : <span className="text-xs text-amber-300">Unavailable — use Web/PWA</span>}
                 </button>
@@ -132,7 +141,7 @@ export default function DownloadModal({ app, onClose, onDownload }: Props) {
                   return (
                     <button key={p.id} onClick={()=> isAvailable && onDownload(p.id)} disabled={!isAvailable} className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left ${!isAvailable ? 'bg-rx-dark/30 border-white/5 opacity-50' : 'bg-rx-dark hover:bg-rx-dark-tertiary border-white/10'}`}>
                       <div className="w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center"><PlatformIcon id={DL_ICON[p.id] || 'web'} className="text-xl leading-none" imgClassName="w-6 h-6" /></div>
-                      <div className="flex-1"><p className="text-sm text-white">{p.label} <span className="text-[10px] px-1 py-0.5 rounded bg-white/10 text-rx-gray-medium">{p.ext}</span></p><p className="text-xs text-rx-gray-medium">{isAvailable ? p.desc : 'Unavailable'}</p></div>
+                      <div className="flex-1"><p className="text-sm text-white">{p.label} <span className="text-[10px] px-1 py-0.5 rounded bg-white/10 text-rx-gray-medium">{p.ext}</span> {isAvailable && app.sizes?.[p.id] ? <span className="text-[10px] px-1 py-0.5 rounded bg-rx-yellow/20 text-rx-yellow">{fmtSize(app.sizes[p.id])}</span> : null}</p><p className="text-xs text-rx-gray-medium">{isAvailable ? p.desc : 'Unavailable'}</p></div>
                       {isAvailable ? <Download className="w-4 h-4 text-rx-gray-medium"/> : <span className="text-xs text-amber-300">—</span>}
                     </button>
                   );

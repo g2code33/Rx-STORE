@@ -151,6 +151,23 @@ async function mergeAppPlatforms(env: any, appId: string) {
   } catch {}
 }
 
+// Auto-derive size_mb from the ACTUAL published package files (largest platform
+// in MB, rounded up). Size is never manually configured — it tracks whatever was
+// uploaded/published, so a new upload or update automatically changes it.
+async function updateAppSizeFromPackages(env: any, appId: string): Promise<void> {
+  try {
+    const rows: any = await env.DB.prepare(
+      `SELECT p.file_size FROM packages p JOIN releases r ON r.id = p.release_id
+       WHERE p.application_id = ? AND p.status='published' AND r.status='published' AND p.file_size > 0
+       ORDER BY COALESCE(r.published_at, r.updated_at, r.created_at) ASC`
+    ).bind(appId).all();
+    let max = 0;
+    for (const r of rows.results || []) if ((r.file_size || 0) > max) max = r.file_size;
+    const mb = max ? Math.max(1, Math.ceil(max / (1024 * 1024))) : null;
+    await env.DB.prepare(`UPDATE applications SET size_mb=? WHERE id=?`).bind(mb, appId).run();
+  } catch {}
+}
+
 // Mirror a release's packages into the legacy app_versions row — keeps /updates/check
 // and old clients working with {url, size, checksum, fileName} per platform
 async function syncLegacyAppVersion(env: any, appId: string, rel: any, origin: string) {
@@ -556,6 +573,8 @@ export const adminRoutes = {
     // Install modal reads applications.platforms; old clients read app_versions — keep both in sync
     await mergeAppPlatforms(env, rel.application_id);
     await syncLegacyAppVersion(env, rel.application_id, rel, new URL(request.url).origin);
+    // Size is auto-derived from the uploaded binaries for this release
+    await updateAppSizeFromPackages(env, rel.application_id);
     await env.DB.prepare(`INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?, ?, ?)`).bind(`log_${Date.now()}`, 'publish_release', 'release', relId, JSON.stringify({ version: rel.version })).run().catch(()=>{});
     // Auto-notify every user who has this app installed about the new version
     try {
@@ -589,6 +608,7 @@ export const adminRoutes = {
     // Optionally set prev as latest
     await env.DB.prepare(`UPDATE applications SET current_version=? WHERE id=?`).bind(prev.version, rel.application_id).run();
     await syncLegacyAppVersion(env, rel.application_id, prev, new URL(request.url).origin);
+    await updateAppSizeFromPackages(env, rel.application_id);
     await env.DB.prepare(`INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?, ?, ?)`).bind(`log_${Date.now()}`, 'rollback_release', 'release', relId, JSON.stringify({ from: rel.version, to: prev.version })).run().catch(()=>{});
     return { success: true, rolledBack: rel.version, now: prev.version };
   },

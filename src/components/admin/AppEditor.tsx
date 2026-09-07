@@ -25,7 +25,6 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
     linuxPackageName: (app as any).linuxPackageName || '',
     linuxExecutable: (app as any).linuxExecutable || '',
     version: app.version || '1.0.0',
-    size: app.size || '',
     rating: app.rating || 4.5,
     price: app.price || 'free',
     priceAmount: app.priceAmount || '',
@@ -64,7 +63,8 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
         gradient: form.gradient,
         developer: form.developer,
         current_version: form.version,
-        size_mb: form.size ? parseInt(String(form.size).replace(/[^0-9]/g,'')) || null : null,
+        // Size is auto-detected from the uploaded binaries (App Release Manager) —
+        // never configured manually.
         rating: parseFloat(form.rating) || 0,
         price_type: form.price,
         price_amount: form.priceAmount ? parseFloat(form.priceAmount) : null,
@@ -131,7 +131,7 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
             </div>
             <div><label className="text-xs text-rx-gray-medium">Price Amount</label><input value={form.priceAmount} onChange={e=>setForm({...form, priceAmount:e.target.value})} placeholder="29.99" className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
             <div><label className="text-xs text-rx-gray-medium">Version</label><input value={form.version} onChange={e=>setForm({...form, version:e.target.value})} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
-            <div><label className="text-xs text-rx-gray-medium">Size (e.g. 148 MB)</label><input value={form.size} onChange={e=>setForm({...form, size:e.target.value})} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/></div>
+
             <div><label className="text-xs text-rx-gray-medium">Logo (image file or URL / emoji)</label>
               <div className="flex gap-2">
                 <input value={form.icon} onChange={e=>setForm({...form, icon:e.target.value})} placeholder="https://.../logo.png or 📦" className="flex-1 bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"/>

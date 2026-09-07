@@ -35,6 +35,13 @@ export interface App {
   windowsExecutable?: string;
   linuxPackageName?: string;
   linuxExecutable?: string;
+  /**
+   * Auto-detected binary size in bytes per platform (from the actual uploaded
+   * package file). Never manually configured — changes automatically when a new
+   * build / update is published. Keys are platform ids (windows, linux_deb,
+   * linux_appimage, android, ios, macos, web, flatpak).
+   */
+  sizes?: Record<string, number>;
   status: 'active' | 'beta' | 'coming-soon';
 }
 

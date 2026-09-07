@@ -111,6 +111,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     windowsExecutable: a.windowsExecutable || a.windows_executable || '',
     linuxPackageName: a.linuxPackageName || a.linux_package_name || '',
     linuxExecutable: a.linuxExecutable || a.linux_executable || '',
+    sizes: a.sizes && typeof a.sizes === 'object' ? a.sizes : undefined,
     rating: a.rating ?? 0,
     reviewCount: a.reviewCount ?? a.review_count ?? 0,
     downloadCount: a.downloadCount ?? a.download_count ?? 0,
