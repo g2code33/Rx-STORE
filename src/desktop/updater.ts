@@ -54,6 +54,7 @@ declare global {
       detectApp: (identity: any) => Promise<{ installed: boolean; version?: string; launchTarget?: string; executable?: string; uninstallString?: string; quietUninstallString?: string; source?: string; platform?: 'windows' | 'linux' }>;
       invalidateDetect: (appId?: string) => Promise<boolean>;
       downloadApp: (input: { url: string; fileName?: string; id?: string }) => Promise<{ path: string; fileName: string; size: number }>;
+      hashFile: (filePath: string) => Promise<{ sha256: string; size: number }>;
       installApp: (filePath: string) => Promise<{ launched: boolean }>;
       openApp: (target: string) => Promise<boolean>;
       uninstallApp: (input?: { appSlug?: string; target?: string; platform?: 'windows' | 'linux' | 'android' | 'web' }) => Promise<boolean>;

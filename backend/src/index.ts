@@ -396,7 +396,12 @@ export default {
            ORDER BY r.published_at DESC LIMIT 1`
         ).bind(app.id, ...plats).first().catch(()=>null);
         if (pkg?.storage_key && pkg?.package_type !== 'pwa') {
-          try { await env.DB.prepare('INSERT INTO downloads (id, app_id, platform, version, created_at) VALUES (?,?,?,?,datetime(\'now\'))').bind(`dl_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, app.id, platform, pkg.version || app.current_version).run(); await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run(); } catch {}
+          // Record the download for the authenticated user (never as an
+          // installation). user_id is derived from the token, never from the
+          // client body — a download record is NOT an installation record.
+          let dlUser: string | null = null;
+          try { const t = (request.headers.get('Authorization') || '').replace(/^Bearer /, ''); if (t) dlUser = (await verifyToken(t, env.JWT_SECRET))?.userId || null; } catch {}
+          try { await env.DB.prepare('INSERT INTO downloads (id, user_id, app_id, platform, version, created_at) VALUES (?,?,?,?,?,datetime(\'now\'))').bind(`dl_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, dlUser, app.id, platform, pkg.version || app.current_version).run(); await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run(); } catch {}
           return json({ success:true, data:{ url: `${originUrl}/r2/${pkg.storage_key}`, checksum: pkg.sha256, size: pkg.file_size, fileName: pkg.filename, version: pkg.version || app.current_version, platform }},200,origin);
         }
 

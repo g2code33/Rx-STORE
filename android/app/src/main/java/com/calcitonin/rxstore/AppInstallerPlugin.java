@@ -11,6 +11,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 
+import java.io.FileInputStream;
+import java.security.MessageDigest;
+
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -97,7 +100,11 @@ public class AppInstallerPlugin extends Plugin {
                     done.put("percent", 100);
                     done.put("receivedBytes", received);
                     done.put("totalBytes", total);
-                    try { done.put("fileUri", manager.getUriForDownloadedFile(id).toString()); } catch (Exception ignored) {}
+                    try {
+                        Uri apk = manager.getUriForDownloadedFile(id);
+                        done.put("fileUri", apk.toString());
+                        done.put("sha256", sha256OfFile(new java.io.File(apk.getPath())));
+                    } catch (Exception ignored) {}
                     notifyListeners("downloadProgress", done, true);
                     openInstaller(manager, id);
                     progressPoller[0] = null;
@@ -130,6 +137,20 @@ public class AppInstallerPlugin extends Plugin {
         if (progressPoller[0] != null) handler.removeCallbacks(progressPoller[0]);
         progressPoller[0] = () -> emitProgress(manager, id);
         handler.post(progressPoller[0]);
+    }
+
+    /** Compute the SHA-256 (lowercase hex) of a local file, or '' on error. */
+    private String sha256OfFile(java.io.File f) {
+        if (f == null || !f.exists()) return "";
+        try (FileInputStream in = new FileInputStream(f)) {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) != -1) md.update(buf, 0, n);
+            StringBuilder sb = new StringBuilder();
+            for (byte b : md.digest()) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (Exception ignored) { return ""; }
     }
 
     private void openInstaller(DownloadManager manager, long id) {

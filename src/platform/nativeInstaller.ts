@@ -6,6 +6,7 @@ export interface AndroidDownloadProgress {
   receivedBytes: number;
   totalBytes: number;
   fileUri?: string;
+  sha256?: string;
   error?: string;
 }
 

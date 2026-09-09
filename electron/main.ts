@@ -3,6 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chmod, access } from 'node:fs/promises';
 import { accessSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -598,6 +599,16 @@ function initIpc() {
     const error = await shell.openPath(filePath);
     if (error) throw new Error(error);
     return { launched: true };
+  });
+  // Compute SHA-256 + size of a downloaded artifact in the MAIN process so the
+  // renderer never needs arbitrary file-read privileges, and checksum
+  // verification is considered trusted. Used before any install.
+  ipcMain.handle('native:hash-file', async (_event, filePath: string) => {
+    const p = String(filePath || '');
+    if (!p || !existsSync(p)) throw new Error('Artifact file not found');
+    const buffer = require('node:fs').readFileSync(p);
+    const sha256 = createHash('sha256').update(buffer).digest('hex');
+    return { sha256, size: buffer.length };
   });
   ipcMain.handle('native:open', async (_event, target: string) => {
     const t = String(target || '');

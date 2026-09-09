@@ -11,9 +11,13 @@ import PageBlocks from '../components/edit/PageBlocks';
 import { formatDownloadCount, formatDate, getRatingColor } from '../utils/helpers';
 import { normalizeWebsiteUrl } from '../utils/url';
 import toast from 'react-hot-toast';
-import { androidDownloadAndInstall, androidOnDownloadProgress, androidStopDownloadProgress, confirmDesktopInstalled, desktopDownload, desktopInstall, getNativePackage, isAndroidShell, isDesktopShell, removeNativePackage, type NativePackageState } from '../platform/nativeInstaller';
+import { androidStopDownloadProgress, confirmDesktopInstalled, desktopInstall, getNativePackage, isAndroidShell, isDesktopShell, removeNativePackage, type NativePackageState } from '../platform/nativeInstaller';
+import { getRuntimePlatform } from '../native/deviceIdentity';
 import { useInstalledState } from '../platform/nativeDetection';
 import { getNativeRuntime } from '../native/runtime';
+import { useInstallTransaction } from '../native/useInstallTransaction';
+import { resolvePlatformForDevice } from '../native/installCoordinator';
+import type { PackageResolution } from '../native/installCoordinator';
 import { mapDetectionToInstall } from '../platform/detect';
 import { useDevices } from '../context/DeviceContext';
 
@@ -73,16 +77,15 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   // Web/PWA degrades to DETECTION_UNAVAILABLE and falls back to the store's own
   // installed record below. The hook re-detects on tab focus and exposes refresh.
   const { state: detectedState, detection: systemInstalled, installed: osInstalled, refresh: refreshDetection } = useInstalledState(app as any);
-  // In-page install/download state machine (Play-Store-style).
-  type DownloadPhase = 'idle' | 'downloading' | 'installing';
-  const [dlPhase, setDlPhase] = useState<DownloadPhase>('idle');
-  const [dlProgress, setDlProgress] = useState<{ received: number; total: number; percent: number }>({ received: 0, total: 0, percent: 0 });
+  // Central install/update transaction (the single source of truth for the
+  // Get/Download/Verify/Install state machine — never inferred per-component).
+  const { tx: installTx, busy: txBusy, label: txLabel, start: startTransaction, reset: resetTransaction } = useInstallTransaction();
+  // Keep the working native install step (desktop "Install" button) separate.
   const dlHandleRef = useRef<{ remove: () => void } | null>(null);
-  // Once the OS reports the app as installed, clear the transient installing UI
-  // so the Open/Uninstall buttons take over.
+  // Once the OS reports the app as installed, clear the transient installing UI.
   React.useEffect(() => {
-    if (osInstalled && dlPhase !== 'idle') setDlPhase('idle');
-  }, [osInstalled, dlPhase]);
+    if (osInstalled && txBusy) resetTransaction();
+  }, [osInstalled, txBusy, resetTransaction]); // eslint-disable-line react-hooks/exhaustive-deps
   // Clean up any live Android download-progress listener on unmount.
   React.useEffect(() => () => androidStopDownloadProgress(dlHandleRef.current), []);
   // Screenshots whose objects are missing (404/403) get filtered out, never shown broken
@@ -182,9 +185,6 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   const doDownload = async (platform: string) => {
     setIsInstalling(true);
     setShowDownload(false);
-    // Start the in-page progress UI for every download.
-    setDlPhase('downloading');
-    setDlProgress({ received: 0, total: 0, percent: 0 });
     try {
       const API = (import.meta as any).env?.VITE_API_URL;
       const token = localStorage.getItem('rx-store-token')||'';
@@ -193,122 +193,55 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
         installApp(app.id);
         toast.success(`${app.name} installed`);
         setIsInstalling(false);
-        setDlPhase('idle');
         return;
       }
-      // Step 1: get download URL from API (counts as download + increments)
       const r = await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/download?platform=${platform}`, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} });
       const j = await r.json().catch(()=>null);
       if (!r.ok || !j?.success) throw new Error(j?.error?.message || 'Download failed');
 
-      const dlUrl = j?.data?.url;
-      const isPWA = j?.data?.isPWA;
-      if (isPWA && dlUrl) {
-        window.open(dlUrl, '_blank');
+      const data = j?.data || {};
+      if (data.isPWA && data.url) {
+        window.open(data.url, '_blank');
         toast.success(`Opening ${app.name} PWA`);
         setIsInstalling(false);
-        setDlPhase('idle');
         return;
       }
 
-      // Android shell: DownloadManager with live in-page progress. When the APK
-      // finishes, the OS installer opens; on return the detection refresh shows
-      // Open/Uninstall. Android still shows its required confirmation screen and
-      // may first ask "Allow from this source".
-      if (isAndroidShell() && platform === 'android') {
-        const handle = await androidOnDownloadProgress((d) => {
-          if (d.status === 'complete') {
-            setDlPhase('installing');
-            setDlProgress({ received: d.receivedBytes, total: d.totalBytes, percent: 100 });
-          } else if (d.status === 'error') {
-            setDlPhase('idle');
-            toast.error(d.error || 'Download failed — try again.');
-            androidStopDownloadProgress(handle);
-          } else {
-            setDlPhase('downloading');
-            setDlProgress({ received: d.receivedBytes, total: d.totalBytes, percent: d.percent });
-          }
-        });
-        dlHandleRef.current = handle;
-        const result = await androidDownloadAndInstall(dlUrl, j.data?.fileName || `${app.slug}-${j.data?.version || app.version}.apk`);
-        if (result.permissionRequired) {
-          setDlPhase('idle');
-          androidStopDownloadProgress(handle);
-          toast('Enable “Allow from this source”, then tap Get again.', { icon: '🔐', duration: 7000 });
-        }
-        setIsInstalling(false);
-        return;
+      // Build authoritative package metadata (url, size, sha256, version, platform).
+      const pkg: PackageResolution = {
+        platform: resolvePlatformForDevice(getRuntimePlatform(), data.platform || platform),
+        url: data.url,
+        fileName: data.fileName || `${app.slug}-${data.version || app.version}${platform === 'windows' ? '.exe' : platform.includes('appimage') ? '.AppImage' : platform.includes('linux') || platform === 'linux_deb' || platform === 'linux_appimage' ? '.deb' : '.apk'}`,
+        version: data.version || app.version,
+        size: data.size,
+        sha256: data.checksum || data.sha256,
+        isPwa: !!data.isPWA,
+      };
+
+      // Run the full transaction pipeline: download → verify size+SHA-256 →
+      // install → detect → sync. Never treats a download as installed.
+      const result = await startTransaction(app, pkg, {
+        isUpdate: isInstalled && nativeUpdateAvailable,
+        previousVersion: systemInstalled?.version,
+      });
+      if (result.state === 'INSTALLED') {
+        installApp(app.id);
+        toast.success(`${app.name} is ready`);
+        void refreshDetection();
+      } else if (result.state === 'VERIFICATION_FAILED') {
+        toast.error(result.message || 'Checksum verification failed — the download was discarded.');
+      } else if (result.state === 'DOWNLOAD_FAILED') {
+        toast.error('Download failed — check your connection and try again.');
+      } else if (result.state === 'INSTALLATION_NOT_DETECTED') {
+        toast.error('Installation was not detected. If it succeeded, tap the Install button again to re-check.', { duration: 6000 });
+      } else if (result.state === 'INSTALL_FAILED') {
+        toast.error('The installer could not be launched.');
       }
-
-      // Desktop shell: download to the real Downloads folder, streaming progress
-      // to the in-page bar, then stop at a deliberate Install step.
-      if (isDesktopShell()) {
-        const removeProgress = window.rxDesktop?.onDownloadProgress?.((p) => {
-          if (p.state === 'progressing' || p.state === 'downloading') {
-            setDlPhase('downloading');
-            setDlProgress({ received: p.received || 0, total: p.total || 0, percent: p.percent || 0 });
-          }
-        });
-        try {
-          const ext = platform === 'windows' ? '.exe' : platform.includes('appimage') ? '.AppImage' : platform.includes('linux') ? '.deb' : '';
-          await desktopDownload({
-            slug: app.slug,
-            url: dlUrl,
-            fileName: j.data?.fileName || `${app.slug}-${j.data?.version || app.version}${ext}`,
-            version: j.data?.version || app.version,
-            launchTarget: (app as any).website || undefined,
-          });
-        } finally {
-          removeProgress?.();
-        }
-        setDlPhase('idle');
-        toast.success(`${app.name} downloaded — tap Install to continue`);
-        setIsInstalling(false);
-        return;
-      }
-
-      // Browser/PWA: stream the file so the progress bar fills, then hand it to
-      // the browser download UI.
-      const fileRes = await fetch(dlUrl);
-      if (!fileRes.ok) throw new Error(`File not found on storage (${fileRes.status}) — upload may be incomplete. Please try again or contact admin.`);
-      const totalBytes = parseInt(fileRes.headers.get('content-length') || '0', 10) || 0;
-      const reader = fileRes.body?.getReader();
-      const chunks: BlobPart[] = [];
-      let received = 0;
-      if (reader) {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-          received += value.length;
-          setDlPhase('downloading');
-          setDlProgress({ received, total: totalBytes, percent: totalBytes ? Math.round((received / totalBytes) * 100) : 0 });
-        }
-      } else {
-        const blob = await fileRes.blob();
-        chunks.push(blob); received = blob.size;
-      }
-      const blob = new Blob(chunks, { type: fileRes.headers.get('content-type') || '' });
-      if (blob.size === 0) throw new Error('Downloaded file is empty — upload may be incomplete');
-
-      // Step 3: trigger browser download with verified blob
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = `${app.slug}-${app.version}-${platform}` + (dlUrl.split('.').pop()?.split('?')[0] ? '.'+dlUrl.split('.').pop()!.split('?')[0] : '');
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(()=> URL.revokeObjectURL(blobUrl), 2000);
-
-      setDlPhase('idle');
-      toast.success(`Downloaded ${app.name} for ${platform} — open the file to install`);
-      setTimeout(()=> (window as any).rxRefreshApps?.(), 500);
     } catch (e:any) {
-      setDlPhase('idle');
       toast.error(e.message || 'Install failed — not marked as complete. You can try again.');
+    } finally {
+      setIsInstalling(false);
     }
-    setIsInstalling(false);
   };
 
   const handleNativeInstall = async () => {
@@ -456,25 +389,25 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
               )}
             </div>
             <div className="flex flex-col items-end gap-3 flex-shrink-0">
-              {dlPhase !== 'idle' ? (
+              {txBusy ? (
                 <div className="w-[240px] max-w-[260px]">
-                  {dlPhase === 'downloading' ? (
+                  {(installTx.state === 'DOWNLOADING' || installTx.state === 'DOWNLOAD_STARTED') ? (
                     <>
                       <div className="flex items-center justify-between text-xs mb-1">
                         <span className="text-white/80 font-medium flex items-center gap-1.5"><Download className="w-3.5 h-3.5 text-rx-yellow" /> Downloading…</span>
-                        <span className="text-rx-yellow font-bold tabular-nums">{dlProgress.percent}%</span>
+                        <span className="text-rx-yellow font-bold tabular-nums">{installTx.progress.percent}%</span>
                       </div>
                       <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
-                        <div className="h-full bg-rx-yellow rounded-full transition-[width] duration-200 ease-out" style={{ width: `${Math.min(Math.max(dlProgress.percent, 0), 100)}%` }} />
+                        <div className="h-full bg-rx-yellow rounded-full transition-[width] duration-200 ease-out" style={{ width: `${Math.min(Math.max(installTx.progress.percent, 0), 100)}%` }} />
                       </div>
                       <div className="text-[11px] text-rx-gray-medium mt-1 tabular-nums">
-                        {dlProgress.total ? `${formatBytes(dlProgress.received)} of ${formatBytes(dlProgress.total)}` : `${formatBytes(dlProgress.received)} downloaded`}
+                        {installTx.progress.total ? `${formatBytes(installTx.progress.received)} of ${formatBytes(installTx.progress.total)}` : `${formatBytes(installTx.progress.received)} downloaded`}
                       </div>
                     </>
                   ) : (
                     <div className="flex items-center gap-2 text-sm text-white/80">
                       <div className="w-4 h-4 border-2 border-rx-yellow border-t-transparent rounded-full animate-spin" />
-                      <span>Installing… approve the OS prompt</span>
+                      <span>{txLabel}</span>
                     </div>
                   )}
                 </div>

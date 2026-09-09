@@ -113,12 +113,16 @@ export function createNativeRuntime(): NativeRuntime {
         await androidOpen(app.androidPackageId);
         return;
       }
-      // Desktop: launch a positively-detected executable/launcher. URLs (PWA /
-      // website) are opened separately by the caller via the same target when it
-      // is a URL — the Electron main process routes URLs to the system browser.
+      // Desktop: launch a POSITIVELY-DETECTED native executable/launcher ONLY.
+      // For a NATIVE application we must never fall back to opening its website
+      // when no native executable could be detected. A website is only opened
+      // when the application is explicitly a web/PWA app OR when the resolved
+      // target is a URL and detection was unavailable.
       if (isDesktopShell()) {
-        const launchTarget = target || (await detectInstalledApp(app))?.executable;
-        if (/^https?:\/\//i.test(launchTarget || '')) {
+        const detected = await detectInstalledApp(app);
+        const launchTarget = target || detected?.executable;
+        // Explicit URL targets (PWA / website) route to the system browser.
+        if (/^https?:\/\//i.test((launchTarget || '')) && !detected?.installed) {
           await desktopOpenTarget(launchTarget!);
           return;
         }
@@ -135,15 +139,19 @@ export function createNativeRuntime(): NativeRuntime {
         return androidDownloadAndInstall(url, fileName);
       }
       // Desktop: download to the real Downloads folder then expose an Install step.
+      // We deliberately DO NOT default launchTarget to app.website — a native
+      // app's Open must resolve to its detected executable, never a website.
       if (isDesktopShell()) {
         await desktopDownload({
           slug: app.slug,
           url,
           fileName,
           version: app.version,
-          launchTarget: (app as any).website || undefined,
+          // Only a known web/PWA app gets a website launch target.
+          launchTarget: app.platforms?.includes('web') && !app.androidPackageId && !app.windowsExecutable && !app.linuxExecutable
+            ? (app as any).website || undefined
+            : undefined,
         });
-        // desktopDownload returns the stored NativePackageState.
         return { started: true, permissionRequired: false };
       }
       // Web/PWA: the browser handles the download.
