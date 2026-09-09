@@ -208,6 +208,37 @@ export const api = {
       return request<any>(`/payments/verify/${reference}`, { method: 'GET' });
     },
   },
+
+  devices: {
+    /** Register/upsert the current device for the signed-in user. */
+    async register(device: {
+      deviceId: string; deviceName: string; platform?: string; deviceType?: string; osVersion?: string; rxStoreVersion?: string; appVersion?: string;
+    }) {
+      return request<{ device: any }>('/devices/register', { method: 'POST', body: JSON.stringify(device) });
+    },
+    /** Update `last_seen_at` (and version) for the current device. */
+    async heartbeat(deviceId: string, rxStoreVersion?: string, appVersion?: string) {
+      return request<{ updated: boolean }>('/devices/heartbeat', { method: 'POST', body: JSON.stringify({ deviceId, rxStoreVersion, appVersion }) });
+    },
+    /** List the user's own devices. */
+    async list() {
+      return request<{ devices: any[] }>('/devices', { method: 'GET' });
+    },
+    /** Revoke one of the user's devices. */
+    async revoke(deviceId: string) {
+      return request<{ revoked: boolean; deviceId: string }>(`/devices/${deviceId}/revoke`, { method: 'POST' });
+    },
+    /** Report the current device's installation state for a single app. */
+    async reportInstallation(payload: {
+      deviceId: string; appSlug: string; installed: boolean; installedVersion?: string; status?: string; detectionSource?: string; platform?: string;
+    }) {
+      return request<{ installation: any }>('/devices/installations', { method: 'POST', body: JSON.stringify(payload) });
+    },
+    /** List the user's installations across all their devices. */
+    async listInstallations() {
+      return request<{ installations: any[] }>('/devices/installations', { method: 'GET' });
+    },
+  },
 };
 
 export { API_URL };

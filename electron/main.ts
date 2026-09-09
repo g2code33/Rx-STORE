@@ -198,6 +198,14 @@ interface DetectedApp {
   installed: boolean;
   version?: string;
   executable?: string;
+  /** Windows registry UninstallString (registered uninstaller), if any. */
+  uninstallString?: string;
+  /** Windows registry QuietUninstallString (silent uninstaller), if any. */
+  quietUninstallString?: string;
+  /** Linux package identifier (Debian/dpkg) or Flatpak app id, if detected. */
+  packageName?: string;
+  /** Linux AppImage path managed by RX Store, if positively owned. */
+  appImagePath?: string;
   platform: 'windows' | 'linux';
   source: string;
 }
@@ -277,14 +285,42 @@ async function resolveWindowsExecutable(execName: string): Promise<string> {
   }
 }
 
-/** Windows detection: registry uninstall entry + executable, with version. */
+/** Parse a possibly-quoted Windows registry value into an executable + args array. */
+function parseWindowsCommand(raw: string): { exe: string; args: string[] } {
+  const s = String(raw || '').trim();
+  if (!s) return { exe: '', args: [] };
+  // A single quoted path (optionally with args): "C:\x\uninstall.exe" /S
+  const m = s.match(/^"([^"]+)"(\s+.*)?$/);
+  if (m) {
+    const exe = m[1];
+    const rest = (m[2] || '').trim();
+    const args = rest ? rest.split(/\s+/).filter(Boolean) : [];
+    return { exe, args };
+  }
+  // No quotes: first token is the executable, rest are args.
+  const tokens = s.split(/\s+/).filter(Boolean);
+  return { exe: tokens[0] || '', args: tokens.slice(1) };
+}
+
+/** Resolve a Windows launch executable from the registry's DisplayIcon/InstallLocation. */
+function executableFromRegistry(values: Record<string, string>): string {
+  // DisplayIcon is often the exe path (optionally followed by ",index").
+  const fromIcon = (values.DisplayIcon || '').replace(/^"?(.+?)(?:,[\d]+)?"?$/, '$1').trim();
+  if (fromIcon && existsSync(fromIcon)) return fromIcon;
+  const fromLocation = values.InstallLocation || values.InstallDir || '';
+  if (fromLocation && existsSync(fromLocation)) return fromLocation;
+  return '';
+}
+
+/** Windows detection: registry uninstall entry + executable, with version + uninstall metadata. */
 async function detectWindows(identity: any): Promise<DetectedApp> {
   const key = String(identity?.windowsUninstallKey || '').trim();
   const execName = String(identity?.windowsExecutable || '').trim();
 
   let foundByKey = false;
   let registryVersion = '';
-  let installLocation = '';
+  let uninstallString = '';
+  let quietUninstallString = '';
 
   if (key) {
     // A fully-qualified uninstall key is used verbatim; a bare subkey name is
@@ -299,7 +335,8 @@ async function detectWindows(identity: any): Promise<DetectedApp> {
       if (Object.keys(values).length > 0) {
         foundByKey = true;
         registryVersion = values.DisplayVersion || values.Version || '';
-        installLocation = values.InstallLocation || values.InstallDir || (values.DisplayIcon || '').replace(/^"?(.+?)(?:,[\d]+)?"?$/, '$1').trim() || '';
+        uninstallString = values.UninstallString || '';
+        quietUninstallString = values.QuietUninstallString || '';
         break;
       }
     }
@@ -310,8 +347,19 @@ async function detectWindows(identity: any): Promise<DetectedApp> {
     // Prefer a resolved absolute path over the registry's install location.
     executable = await resolveWindowsExecutable(execName);
   }
-  if (!executable && installLocation && existsSync(installLocation)) {
-    executable = installLocation;
+
+  // Fall back to the registry-located executable when the admin did not supply a
+  // windowsExecutable, or when the configured name did not resolve.
+  if (!executable && key) {
+    for (const keyPath of (key.includes('\\') && key.toLowerCase().startsWith('software')
+      ? [key]
+      : UNINSTALL_ROOTS.map((root) => `${root}\\${key}`))) {
+      const values = await readRegistryKey(keyPath);
+      if (Object.keys(values).length > 0) {
+        const found = executableFromRegistry(values);
+        if (found) { executable = found; break; }
+      }
+    }
   }
 
   let version = registryVersion;
@@ -324,12 +372,65 @@ async function detectWindows(identity: any): Promise<DetectedApp> {
     installed,
     version: version || undefined,
     executable: executable || undefined,
+    uninstallString: uninstallString || undefined,
+    quietUninstallString: quietUninstallString || undefined,
     platform: 'windows',
     source: foundByKey ? 'registry' : executable ? 'executable' : 'none',
   };
 }
 
-/** Linux detection: dpkg package database + PATH executable (no shell). */
+/** Safe, small .desktop parser: returns { name, exec, icon, noDisplay }. */
+interface DesktopEntry { name: string; exec: string; icon: string; noDisplay: boolean; }
+function parseDesktopEntry(content: string): DesktopEntry {
+  let name = '', exec = '', icon = '', noDisplay = false;
+  for (const raw of content.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#') || line.startsWith('[')) continue;
+    const eq = line.indexOf('=');
+    if (eq < 0) continue;
+    const k = line.slice(0, eq).trim();
+    const v = line.slice(eq + 1).trim();
+    if (k === 'Name') name = v;
+    else if (k === 'Exec') exec = v;
+    else if (k === 'Icon') icon = v;
+    else if (k === 'NoDisplay' && v === 'true') noDisplay = true;
+  }
+  return { name, exec, icon, noDisplay };
+}
+
+/** Normalize a desktop Exec line to the base command name (field codes stripped). */
+function execBaseCommand(exec: string): string {
+  const cmd = String(exec || '').replace(/%[fFuUdDnNickvm]/g, '').trim();
+  // Return the first token (the executable/command), never a shell line.
+  const parts = cmd.split(/\s+/).filter(Boolean);
+  return parts[0] || '';
+}
+
+/** Read all .desktop entries from the standard locations (safe file reads only). */
+function readDesktopEntries(): DesktopEntry[] {
+  const dirs = [
+    '/usr/share/applications',
+    path.join(process.env.HOME || '', '.local/share/applications'),
+  ];
+  const out: DesktopEntry[] = [];
+  for (const dir of dirs) {
+    let files: string[] = [];
+    try {
+      files = require('node:fs').readdirSync(dir).filter((f: string) => f.endsWith('.desktop'));
+    } catch {
+      continue; // dir missing / unreadable
+    }
+    for (const f of files) {
+      try {
+        const content = require('node:fs').readFileSync(path.join(dir, f), 'utf8');
+        out.push(parseDesktopEntry(content));
+      } catch { /* skip unreadable */ }
+    }
+  }
+  return out;
+}
+
+/** Linux detection: dpkg package database, PATH executable, and .desktop launchers. */
 async function detectLinux(identity: any): Promise<DetectedApp> {
   const pkg = String(identity?.linuxPackageName || '').trim();
   const exec = String(identity?.linuxExecutable || '').trim();
@@ -353,14 +454,114 @@ async function detectLinux(identity: any): Promise<DetectedApp> {
     executable = whichInPath(exec);
   }
 
-  const installed = foundByPackage || !!executable;
+  // .desktop fallback: match the configured linuxExecutable (or package name) to
+  // a launchable desktop entry. We read the REAL launcher `Exec` (parsed safely,
+  // never executed here) so `Open` runs the launcher, not an internal binary.
+  let desktopLauncher = '';
+  if (!executable && (exec || pkg)) {
+    const entries = readDesktopEntries().filter((e) => !e.noDisplay);
+    const match = entries.find((e) => {
+      const base = execBaseCommand(e.exec).toLowerCase();
+      return (exec && base === exec.toLowerCase()) || (pkg && (base === pkg.toLowerCase() || base.includes(pkg.toLowerCase())));
+    }) || entries.find((e) => e.name && exec && e.name.toLowerCase().includes(exec.toLowerCase()));
+    if (match && match.exec) desktopLauncher = match.exec;
+  }
+
+  const installed = foundByPackage || !!executable || !!desktopLauncher;
   return {
     installed,
     version: packageVersion || undefined,
-    executable: executable || undefined,
+    // Prefer the PATH-resolved executable; fall back to the .desktop Exec.
+    executable: (executable || (desktopLauncher ? execBaseCommand(desktopLauncher) : '')) || undefined,
+    packageName: pkg || undefined,
     platform: 'linux',
-    source: foundByPackage ? 'package' : executable ? 'executable' : 'none',
+    source: foundByPackage ? 'package' : executable ? 'executable' : desktopLauncher ? 'desktop' : 'none',
   };
+}
+
+/** Safely spawn a detected application/launcher detached, without a shell. */
+function launchDetached(target: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const t = String(target || '').trim();
+    // On Windows, .bat/.cmd launchers must be run via cmd as a single argument —
+    // this is still an arguments array, never string concatenation.
+    const lower = t.toLowerCase();
+    if (process.platform === 'win32' && (lower.endsWith('.bat') || lower.endsWith('.cmd'))) {
+      const child = execFile('cmd.exe', ['/d', '/s', '/c', t], { detached: true, stdio: 'ignore', windowsHide: false }, (err) => {
+        if (err && (err as any).code !== 'ENOENT') reject(err); else resolve();
+      });
+      child.unref();
+      return;
+    }
+    if (process.platform === 'win32' && lower.endsWith('.lnk')) {
+      // Ensure link targets are resolved through PowerShell (path via env only).
+      resolveWindowsShortcut(t).then(() => resolve(), () => resolve());
+      return;
+    }
+    try {
+      const child = execFile(t, [], { detached: true, stdio: 'ignore', windowsHide: false }, (err) => {
+        if (err) reject(err); else resolve();
+      });
+      child.unref();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+/** Resolve a .lnk shortcut to its absolute target, then launch it. */
+async function resolveWindowsShortcut(shortcutPath: string): Promise<void> {
+  // CreateObject("WScript.Shell") is the standard, safe COM resolver. The path is
+  // passed via env so it is never interpolated into the command string.
+  const cmd = `$w = New-Object -ComObject WScript.Shell; $s = $w.CreateShortcut($env:RX_LNK); [System.Diagnostics.Process]::Start($s.TargetPath)`;
+  await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', cmd], {
+    windowsHide: false,
+    env: { ...process.env, RX_LNK: shortcutPath },
+  }).catch(() => { /* best-effort: if resolution fails, fall through */ });
+}
+
+/** Invoke a Windows registered uninstaller (from UninstallString) detached. */
+async function uninstallWindows(uninstallString: string): Promise<boolean> {
+  const { exe, args } = parseWindowsCommand(uninstallString);
+  if (!exe) throw new Error('Invalid uninstaller command.');
+  if (!existsSync(exe)) throw new Error('The registered uninstaller was not found on disk.');
+  // Run detached so Windows can show its normal confirmation / privilege UI.
+  await new Promise<void>((resolve, reject) => {
+    const child = execFile(exe, args, { detached: true, stdio: 'ignore', windowsHide: false }, (err) => {
+      // Detached GUI processes return 0 immediately; ENOENT/real errors reject.
+      resolve();
+    });
+    child.unref();
+  });
+  return true;
+}
+
+/** Invoke a Linux uninstall for a detected package/AppImage. */
+async function uninstallLinux(target: string): Promise<boolean> {
+  const t = String(target || '').trim();
+  const isAppImage = /\.appimage$/i.test(t);
+  if (isAppImage) {
+    // Only remove an AppImage we can positively establish as a store-managed
+    // artifact (the filename pattern rx-store-<version>.AppImage is validated).
+    if (!/rx-store[-\w.]*\.appimage$/i.test(path.basename(t))) {
+      throw new Error('This is not a RX Store-managed AppImage; refusing to delete it.');
+    }
+    require('node:fs').unlinkSync(t);
+    return true;
+  }
+  // Debian/Ubuntu package: invoke the package manager directly so the OS handles
+  // privilege authentication. No manual sudo/password handling in RX Store.
+  if (!/^[a-z0-9+._-]+$/i.test(t)) throw new Error('Invalid package name.');
+  await new Promise<void>((resolve, reject) => {
+    // `apt-get purge` shows a confirmation prompt with sudo/privilege auth.
+    const child = execFile('apt-get', ['purge', '--', t], { stdio: 'inherit' }, (err) => {
+      if (err) reject(new Error('Your OS may have cancelled the uninstall (or requested elevation). ' + err.message));
+      else resolve();
+    });
+    // Keep the child attached so the user can authenticate/confirm.
+    child.on('error', (e) => reject(e));
+  });
+  return true;
 }
 
 function initIpc() {
@@ -400,24 +601,35 @@ function initIpc() {
   });
   ipcMain.handle('native:open', async (_event, target: string) => {
     const t = String(target || '');
+    // URLs / PWA targets open in the system browser — kept separate from native
+    // executable launching.
     if (/^https?:\/\//i.test(t)) { await shell.openExternal(t); return true; }
-    // Only ever open a local path that actually exists. This guards against
-    // launching a path supplied by an untrusted/remote source without a
-    // positive detection behind it (we only open detection-derived targets).
+    // Only ever launch a local target that actually exists and was positively
+    // detected. Nothing here is interpolated into a shell command.
     if (!existsSync(t)) throw new Error('The installed application executable could not be found.');
-    const error = await shell.openPath(t);
-    if (error) throw new Error(error);
+    // Direct process execution (NO shell, NO shell.openPath): for a launcher
+    // script this runs the launcher itself (preserving Chromium sandbox setup),
+    // for an .exe it starts the executable. Detached so the app keeps running.
+    await launchDetached(t);
     return true;
   });
-  ipcMain.handle('native:uninstall', async () => {
-    if (process.platform === 'win32') await shell.openExternal('ms-settings:appsfeatures');
-    else {
-      const candidates = ['/usr/bin/gnome-software', '/usr/bin/plasma-discover'];
-      const manager = candidates.find((candidate) => { try { require('node:fs').accessSync(candidate); return true; } catch { return false; } });
-      if (manager) await shell.openPath(manager);
-      else await shell.openExternal('https://help.ubuntu.com/community/InstallingSoftware');
+
+  // Real uninstall. The `target` comes from native detection (Windows registry
+  // UninstallString / Linux package id / owned AppImage path), NOT arbitrary
+  // remote metadata. We invoke the OS mechanism directly so it can show its
+  // normal confirmation/privilege UI. Never opens a software manager.
+  ipcMain.handle('native:uninstall', async (_event, input?: { appSlug?: string; target?: string; platform?: string }) => {
+    const target = String(input?.target || '').trim();
+    const platform = String(input?.platform || process.platform);
+    if (process.platform === 'win32' || platform === 'windows') {
+      if (!target) throw new Error('No uninstaller registered for this application.');
+      return uninstallWindows(target);
     }
-    return true;
+    if (process.platform === 'linux' || platform === 'linux') {
+      if (!target) throw new Error('No uninstall target for this application.');
+      return uninstallLinux(target);
+    }
+    throw new Error('Uninstall is not supported on this platform.');
   });
   ipcMain.handle('native:notify', (_event, input: { title: string; body?: string }) => {
     if (Notification.isSupported()) new Notification({ title: input.title || 'RX Store', body: input.body || '', icon: path.join(app.getAppPath(), 'build/icon.png') }).show();

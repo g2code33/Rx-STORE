@@ -11,8 +11,12 @@ import PageBlocks from '../components/edit/PageBlocks';
 import { formatDownloadCount, formatDate, getRatingColor } from '../utils/helpers';
 import { normalizeWebsiteUrl } from '../utils/url';
 import toast from 'react-hot-toast';
-import { androidDownloadAndInstall, androidOpen, androidOnDownloadProgress, androidStopDownloadProgress, androidUninstall, confirmDesktopInstalled, desktopDownload, desktopInstall, desktopOpen, desktopUninstall, getNativePackage, isAndroidShell, isDesktopShell, removeNativePackage, type NativePackageState } from '../platform/nativeInstaller';
+import { androidDownloadAndInstall, androidOnDownloadProgress, androidStopDownloadProgress, confirmDesktopInstalled, desktopDownload, desktopInstall, getNativePackage, isAndroidShell, isDesktopShell, removeNativePackage, type NativePackageState } from '../platform/nativeInstaller';
 import { useInstalledState } from '../platform/nativeDetection';
+import { getNativeRuntime } from '../native/runtime';
+import { getDeviceId, getRuntimePlatform } from '../native/deviceIdentity';
+import { reportCurrentInstallation, fetchOtherDeviceInstallations } from '../native/accountSync';
+import { mapDetectionToInstall } from '../platform/detect';
 
 /** Human-readable byte count (auto-detected package size). */
 function formatBytes(bytes?: number): string {
@@ -103,6 +107,34 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   // Hooks first: `app` arrives a render later (context loads async), so no early return before this point.
   const isInstalled = app ? installedApps.includes(app.id) : false;
   const nativeUpdateAvailable = detectedState === 'UPDATE_AVAILABLE';
+  // Other-device installations (last-known cloud info). Purposely NOT used to
+  // flip the current device to OPEN — only to render "Installed on N other devices".
+  const [otherDevices, setOtherDevices] = useState<{ deviceId: string; status: string }[]>([]);
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      const list = await fetchOtherDeviceInstallations();
+      if (!alive || !app) return;
+      const currentDeviceId = getDeviceId();
+      setOtherDevices(list.filter((i) => i.appSlug === app.slug && i.deviceId !== currentDeviceId));
+    })();
+    return () => { alive = false; };
+  }, [app?.slug, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reconcile the CURRENT device's installation record to the account whenever
+  // real native detection changes (install / update / uninstall). Only reports
+  // confirmed/detected state — never "installed" just because an installer ran.
+  React.useEffect(() => {
+    if (!app?.slug || !user?.id) return;
+    void reportCurrentInstallation({
+      appSlug: app.slug,
+      platform: getRuntimePlatform(),
+      installed: osInstalled,
+      installedVersion: systemInstalled?.version,
+      status: mapDetectionToInstall(detectedState),
+      detectionSource: systemInstalled?.source,
+    }).catch(() => {});
+  }, [osInstalled, systemInstalled?.version, detectedState, app?.slug, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const [liveReviews, setLiveReviews] = React.useState<any[] | null>(null);
   React.useEffect(() => {
     const API = (import.meta as any).env?.VITE_API_URL;
@@ -304,33 +336,46 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
 
   const handleNativeOpen = async () => {
     try {
-      if (isAndroidShell() && app.androidPackageId) { await androidOpen(app.androidPackageId); return; }
-      if (systemInstalled?.executable && window.rxDesktop) { await window.rxDesktop.openApp(systemInstalled.executable); return; }
-      if (nativePackage) { await desktopOpen(nativePackage); return; }
-      throw new Error('The publisher has not configured a launch target');
+      const rt = getNativeRuntime();
+      await rt.open(app, systemInstalled?.executable || nativePackage?.launchTarget);
     } catch (e: any) { toast.error(e.message || 'Could not open application'); }
   };
 
   const handleUninstall = async () => {
     if (!confirm(`Uninstall ${app.name}? Your operating system will ask you to confirm.`)) return;
-    if (isAndroidShell() && app.androidPackageId) {
-      try { await androidUninstall(app.androidPackageId); toast('Android will ask you to confirm removal.', { icon: 'ℹ️' }); }
-      catch (e: any) { toast.error(e.message || 'Could not open Android uninstaller'); }
-      return;
-    }
-    if (isDesktopShell() && (nativePackage || osInstalled)) {
-      try {
-        await desktopUninstall();
-        toast('System app manager opened — remove the app there, then return here.', { icon: 'ℹ️', duration: 6000 });
-        if (confirm(`After completing the system uninstall, mark ${app.name} as removed from RX Store?`)) {
-          removeNativePackage(app.slug); uninstallApp(app.id); setNativePackage(null);
+    try {
+      const rt = getNativeRuntime();
+      // Determine the validated uninstall target from a fresh detection so the OS
+      // invokes the real mechanism (registry UninstallString / package id), not a
+      // software manager. Re-detect so we get accurate + current info.
+      await rt.refresh(app.slug);
+      const fresh = await rt.detect(app);
+      const target = fresh?.uninstallString || fresh?.packageName || fresh?.executable;
+      await rt.uninstall(app, target);
+      toast('The operating system will ask you to confirm the uninstall.', { icon: 'ℹ️', duration: 6000 });
+      // Wait briefly then re-detect to confirm + reconcile.
+      setTimeout(async () => {
+        await rt.refresh(app.slug);
+        const after = await rt.detect(app);
+        const stillInstalled = !!after?.installed;
+        if (!stillInstalled) {
+          removeNativePackage(app.slug);
+          uninstallApp(app.id);
+          setNativePackage(null);
           void refreshDetection();
         }
-      } catch (e: any) { toast.error(e.message || 'Could not open system app manager'); }
-      return;
+        await reportCurrentInstallation({
+          appSlug: app.slug,
+          platform: getRuntimePlatform(),
+          installed: stillInstalled,
+          installedVersion: after?.version,
+          status: stillInstalled ? 'INSTALLED' : 'NOT_INSTALLED',
+          detectionSource: after?.source,
+        }).catch(() => {});
+      }, 2500);
+    } catch (e: any) {
+      toast.error(e.message || 'Could not uninstall the application');
     }
-    uninstallApp(app.id);
-    toast.success(`${app.name} has been removed from RX Store`);
   };
 
   // The app's own website — set per app in the App Editor (Website URL field).
@@ -467,6 +512,12 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
                 <button onClick={handleInstall} disabled={isInstalling} className="px-8 py-3.5 bg-white text-rx-dark font-bold rounded-xl hover:bg-white/90 transition-all active:scale-95 disabled:opacity-70 flex items-center gap-2 shadow-lg">
                   <Download className="w-5 h-5" />{app.price === 'free' ? 'Get' : `Get — $${app.priceAmount}${app.price === 'subscription' ? '/mo' : ''}`}
                 </button>
+              )}
+              {!osInstalled && otherDevices.length > 0 && (
+                <div className="text-[11px] text-rx-gray-medium flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400 inline-block" />
+                  Installed on {otherDevices.length} other {otherDevices.length === 1 ? 'device' : 'devices'}
+                </div>
               )}
               <div className="flex items-center gap-2">
                 {/* Share this app — native share sheet when available, else copy the link */}

@@ -16,6 +16,7 @@ import { getSetting, getAllSettings, putSettings, SETTING_DEFAULTS, PUBLIC_SETTI
 import { getAllContent, putContent, getContentHistory, revertContent } from './services/content';
 import { trackAdEvent, getAdStats, createAdShare, listAdShares, revokeAdShare, getPublicShare } from './services/ads';
 import { updatesRoutes } from './routes/updates';
+import { devicesRoutes } from './routes/devices';
 import { verifyToken } from './services/auth';
 
 const router = new Router();
@@ -599,6 +600,30 @@ export default {
         return json({ success:true, data:{ user:{ id:user.id, name:user.name, email:user.email, phone:user.phone, avatar:user.avatar_url||'👤', role:user.role, joinDate:(user.created_at||'').slice(0,10), preferences }}},200,origin);
       } catch (e:any) { return json({ success:false, error:{ message:e.message }},401,origin); }
     }
+    // ---- Account-aware device + installation registry (authenticated) ----
+    if (path.startsWith('/devices')) {
+      const auth = request.headers.get('Authorization') || '';
+      let userId = '';
+      try { if (auth.startsWith('Bearer ')) userId = (await verifyToken(auth.slice(7), env.JWT_SECRET))?.userId || ''; } catch {}
+      if (!userId) return json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Sign in required' } }, 401, origin);
+      // Attach the user to the request so the route module can read it directly.
+      (normalizedRequest as any).user = { userId };
+      try {
+        let data: any;
+        if (path === '/devices/register' && request.method === 'POST') data = await devicesRoutes.register(normalizedRequest as any, env);
+        else if (path === '/devices/heartbeat' && request.method === 'POST') data = await devicesRoutes.heartbeat(normalizedRequest as any, env);
+        else if (path === '/devices' && request.method === 'GET') data = await devicesRoutes.listDevices(normalizedRequest as any, env);
+        else if (path.match(/^\/devices\/[^\/]+\/revoke$/) && request.method === 'POST') data = await devicesRoutes.revokeDevice(normalizedRequest as any, env);
+        else if (path === '/devices/installations' && request.method === 'POST') data = await devicesRoutes.reportInstallation(normalizedRequest as any, env);
+        else if (path === '/devices/installations' && request.method === 'GET') data = await devicesRoutes.listInstallations(normalizedRequest as any, env);
+        else return json({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown device route' } }, 404, origin);
+        if (data?.error) return json({ success: false, error: { code: data.code || 'ERROR', message: data.error } }, data.code === 'UNAUTHORIZED' ? 401 : data.code === 'NOT_FOUND' ? 404 : 400, origin);
+        return json({ success: true, data }, 200, origin);
+      } catch (e: any) {
+        return json({ success: false, error: { message: e.message || 'Device operation failed' } }, 500, origin);
+      }
+    }
+
     if (path === '/health') return json({ status: 'ok', version: '1.0.0', timestamp: new Date().toISOString() },200,origin);
 
     const res = await router.handle(normalizedRequest as any, env);

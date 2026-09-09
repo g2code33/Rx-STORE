@@ -300,3 +300,46 @@ CREATE TABLE IF NOT EXISTS site_settings (
   value TEXT NOT NULL DEFAULT '',
   updated_at TEXT DEFAULT (datetime('now'))
 );
+
+-- ==================== DEVICES / INSTALLATIONS (account-aware) ====================
+-- A physical/logical RX Store install. device_id is client-generated and stable
+-- across restarts/logins; never based on IP, no unnecessary hardware identifiers.
+CREATE TABLE IF NOT EXISTS devices (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  device_name TEXT,
+  platform TEXT,                -- 'windows' | 'linux' | 'android' | 'web'
+  device_type TEXT,             -- 'phone' | 'tablet' | 'desktop' | 'pwa'
+  os_version TEXT,
+  rx_store_version TEXT,
+  app_version TEXT,
+  last_seen_at TEXT DEFAULT (datetime('now')),
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  revoked_at TEXT,
+  status TEXT DEFAULT 'active' CHECK (status IN ('active','revoked'))
+);
+CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
+CREATE INDEX IF NOT EXISTS idx_devices_status ON devices(status);
+
+-- One current installation record per (device, application). Cloud state is
+-- LAST-KNOWN info for *other* devices; local native detection is authoritative.
+CREATE TABLE IF NOT EXISTS app_installations (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  platform TEXT,
+  installed_version TEXT,
+  status TEXT DEFAULT 'not_installed' CHECK (status IN
+    ('not_installed','installed','update_available','installing','updating',
+     'uninstalling','install_failed','update_failed','uninstall_failed','unknown')),
+  detection_source TEXT,
+  last_detected_at TEXT,
+  installed_at TEXT,
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(device_id, application_id)
+);
+CREATE INDEX IF NOT EXISTS idx_app_installations_user ON app_installations(user_id);
+CREATE INDEX IF NOT EXISTS idx_app_installations_device ON app_installations(device_id);
+CREATE INDEX IF NOT EXISTS idx_app_installations_app ON app_installations(application_id);

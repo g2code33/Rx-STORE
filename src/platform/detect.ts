@@ -29,7 +29,15 @@ export interface InstalledApp {
   version?: string;
   /** A trusted launch target discovered on the local machine (or undefined). */
   executable?: string;
-  /** Where the result came from: registry / executable / package / package-manager. */
+  /** Windows registry UninstallString (registered uninstaller), if any. */
+  uninstallString?: string;
+  /** Windows registry QuietUninstallString (silent uninstaller), if any. */
+  quietUninstallString?: string;
+  /** Linux package identifier (dpkg/Flatpak) used to invoke the uninstaller. */
+  packageName?: string;
+  /** Linux AppImage path positively owned by RX Store (safe to remove). */
+  appImagePath?: string;
+  /** Where the result came from: registry / executable / package / package-manager / desktop. */
   source?: string;
   /** Epoch ms when the detection ran — used for short-term caching. */
   detectedAt: number;
@@ -143,7 +151,11 @@ export function detectionAction(state: DetectionState): 'Get' | 'Open' | 'Update
 export function normalizeInstalledApp(
   appId: string,
   platform: DetectedPlatform,
-  raw: { installed?: boolean; version?: string; executable?: string; launchTarget?: string; source?: string },
+  raw: {
+    installed?: boolean; version?: string; executable?: string; launchTarget?: string;
+    uninstallString?: string; quietUninstallString?: string; packageName?: string; appImagePath?: string;
+    source?: string;
+  },
   storeVersion?: string,
 ): InstalledApp {
   const installed = !!raw.installed;
@@ -154,6 +166,10 @@ export function normalizeInstalledApp(
     installed,
     version: raw.version,
     executable,
+    uninstallString: raw.uninstallString,
+    quietUninstallString: raw.quietUninstallString,
+    packageName: raw.packageName,
+    appImagePath: raw.appImagePath,
     source: raw.source,
     detectedAt: Date.now(),
   };
@@ -163,4 +179,135 @@ export function normalizeInstalledApp(
 export function stateForDetection(app: InstalledApp, storeVersion?: string): DetectionState {
   if (!app.installed) return 'NOT_INSTALLED';
   return detectionState(storeVersion, true, app.version);
+}
+
+// ---------------------------------------------------------------------------
+// Rich installation-state model (account/multi-device aware).
+//
+// The local device's native detection is authoritative for the *current*
+// device. The cloud (app_installations) is LAST-KNOWN info for *other* devices
+// and must never flip the current device to OPEN. This module encodes that rule
+// in a pure, unit-tested function.
+// ---------------------------------------------------------------------------
+
+/** Rich, non-boolean installation state for an application on the current device. */
+export type InstallState =
+  | 'NOT_INSTALLED'
+  | 'INSTALLED'
+  | 'UPDATE_AVAILABLE'
+  | 'INSTALLING'
+  | 'UPDATING'
+  | 'UNINSTALLING'
+  | 'INSTALL_FAILED'
+  | 'UPDATE_FAILED'
+  | 'UNINSTALL_FAILED'
+  | 'DETECTION_UNAVAILABLE';
+
+/** A transient/terminal operation in progress on the current device. */
+export type InstallOperation =
+  | 'installing'
+  | 'updating'
+  | 'uninstalling'
+  | 'install_failed'
+  | 'update_failed'
+  | 'uninstall_failed'
+  | null;
+
+/** A single installation record reported by the cloud (any device). */
+export interface DeviceInstallation {
+  deviceId: string;
+  appSlug?: string;
+  status: string;
+  installedVersion?: string;
+}
+
+/** Map the base DetectionState to the corresponding rich InstallState. */
+export function mapDetectionToInstall(state: DetectionState): InstallState {
+  switch (state) {
+    case 'INSTALLED_CURRENT': return 'INSTALLED';
+    case 'UPDATE_AVAILABLE': return 'UPDATE_AVAILABLE';
+    case 'DETECTION_UNAVAILABLE': return 'DETECTION_UNAVAILABLE';
+    case 'NOT_INSTALLED':
+    default: return 'NOT_INSTALLED';
+  }
+}
+
+/**
+ * Decide the current device's install state from real local detection.
+ *
+ * `local` is the current device's native detection result (authoritative).
+ * `storeVersion` is the published version. `operation` is the transient
+ * install/update/uninstall progress (overrides the base state when set).
+ */
+export function currentDeviceInstallState(
+  local: InstalledApp | null,
+  storeVersion?: string,
+  operation?: InstallOperation,
+): InstallState {
+  // A transient operation in progress wins over the detected base state.
+  if (operation === 'installing') return 'INSTALLING';
+  if (operation === 'updating') return 'UPDATING';
+  if (operation === 'uninstalling') return 'UNINSTALLING';
+  if (operation === 'install_failed') return 'INSTALL_FAILED';
+  if (operation === 'update_failed') return 'UPDATE_FAILED';
+  if (operation === 'uninstall_failed') return 'UNINSTALL_FAILED';
+
+  if (!local) return 'DETECTION_UNAVAILABLE'; // web/PWA — cannot inspect the OS
+  if (!local.installed) return 'NOT_INSTALLED';
+  const base = detectionState(storeVersion, true, local.version);
+  return mapDetectionToInstall(base);
+}
+
+/**
+ * Count how many OTHER devices (excluding `currentDeviceId`) have this app
+ * installed or with an update available, per the cloud's last-known state.
+ * Used only to render "Installed on N other devices" — never to flip the
+ * current device to OPEN.
+ */
+export function otherDeviceInstallCount(
+  installations: DeviceInstallation[],
+  currentDeviceId?: string,
+): number {
+  if (!installations?.length) return 0;
+  const active = new Set(['installed', 'update_available']);
+  return installations.filter((i) => {
+    if (currentDeviceId && i.deviceId === currentDeviceId) return false;
+    return active.has(String(i.status || '').toLowerCase());
+  }).length;
+}
+
+/**
+ * The combined, current-device-authoritative view.
+ *
+ * `state` is what the CURRENT device should show (GET/OPEN/UPDATE + transient).
+ * `otherDevices` is the number of OTHER devices with a matching installation,
+ * purely informational.
+ */
+export function resolveDeviceView(input: {
+  local: InstalledApp | null;
+  storeVersion?: string;
+  operation?: InstallOperation;
+  otherInstallations?: DeviceInstallation[];
+  currentDeviceId?: string;
+}): { state: InstallState; otherDevices: number } {
+  const state = currentDeviceInstallState(input.local, input.storeVersion, input.operation);
+  const otherDevices = otherDeviceInstallCount(input.otherInstallations || [], input.currentDeviceId);
+  return { state, otherDevices };
+}
+
+/** Map a rich InstallState to the backend's lowercase status value. */
+export function installStatusForReport(state: InstallState): string {
+  switch (state) {
+    case 'INSTALLED': return 'installed';
+    case 'NOT_INSTALLED': return 'not_installed';
+    case 'UPDATE_AVAILABLE': return 'update_available';
+    case 'INSTALLING': return 'installing';
+    case 'UPDATING': return 'updating';
+    case 'UNINSTALLING': return 'uninstalling';
+    case 'INSTALL_FAILED': return 'install_failed';
+    case 'UPDATE_FAILED': return 'update_failed';
+    case 'UNINSTALL_FAILED': return 'uninstall_failed';
+    case 'DETECTION_UNAVAILABLE':
+    default: return 'unknown';
+  }
 }

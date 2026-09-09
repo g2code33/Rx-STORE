@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { User, Notification } from '../types';
 import { api, isApiConfigured, clearToken, API_URL } from '../services/api';
+import { syncDeviceOnAuth, heartbeatDevice } from '../native/accountSync';
 
 interface AuthContextType {
   user: User | null;
@@ -173,6 +174,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Load this user's notifications whenever the signed-in user changes
   useEffect(() => {
     setNotifications(loadNotifications(user));
+  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Register the current device with the account and keep it "seen". Device
+  // identity is stable per install (survives restart + login/logout) and never
+  // leaks IP/hardware IDs. Best-effort — never blocks auth.
+  useEffect(() => {
+    if (!user?.id || !isApiConfigured()) return;
+    void syncDeviceOnAuth();
+    const t = setInterval(() => void heartbeatDevice(), 5 * 60_000);
+    return () => clearInterval(t);
   }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Logged-in users: live server feed (admin broadcasts, release alerts, update notices), polled

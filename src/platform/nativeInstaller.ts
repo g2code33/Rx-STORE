@@ -38,6 +38,7 @@ function read(): Record<string, NativePackageState> {
 
 export const isDesktopShell = () => typeof window !== 'undefined' && !!window.rxDesktop?.isDesktop;
 export const isAndroidShell = () => Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
+export const isWebShell = () => typeof window !== 'undefined' && !isDesktopShell() && !isAndroidShell();
 export async function androidDownloadAndInstall(url: string, fileName: string) {
   return AndroidInstaller.downloadAndInstall({ url, fileName });
 }
@@ -109,7 +110,31 @@ export async function desktopOpen(state: NativePackageState) {
   await window.rxDesktop.openApp(state.launchTarget);
 }
 
-export async function desktopUninstall() {
+/** Launch a positively-detected local executable/launcher (Electron execFile). */
+export async function desktopOpenTarget(target: string) {
+  if (!window.rxDesktop) throw new Error('Desktop launcher is unavailable');
+  if (!target) throw new Error('The publisher has not configured an Open target for this app yet');
+  await window.rxDesktop.openApp(target);
+}
+
+/**
+ * Invoke the real uninstaller for a detected app. `target` is the validated
+ * uninstall target (Windows UninstallString / Linux package id / AppImage path)
+ * obtained from native detection; `appSlug` is used for cache reconciliation.
+ */
+export async function desktopUninstall(appSlug?: string, target?: string) {
   if (!window.rxDesktop) throw new Error('Desktop uninstaller is unavailable');
-  await window.rxDesktop.uninstallApp();
+  await window.rxDesktop.uninstallApp({ appSlug, target, platform: getRuntimePlatform() });
+}
+
+/** The current runtime platform (windows | linux | android | web). */
+function getRuntimePlatform(): 'windows' | 'linux' | 'android' | 'web' {
+  if (isAndroidShell()) return 'android';
+  if (isDesktopShell()) {
+    const ua = (navigator.userAgent || '').toLowerCase();
+    if (/windows/.test(ua)) return 'windows';
+    if (/linux|x11/.test(ua)) return 'linux';
+    return 'windows';
+  }
+  return 'web';
 }

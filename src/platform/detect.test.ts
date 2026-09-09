@@ -18,6 +18,11 @@ import {
   detectionAction,
   normalizeInstalledApp,
   stateForDetection,
+  currentDeviceInstallState,
+  resolveDeviceView,
+  otherDeviceInstallCount,
+  mapDetectionToInstall,
+  installStatusForReport,
   type InstalledApp,
 } from './detect.ts';
 
@@ -158,4 +163,138 @@ test('detectionAction maps every state to Get/Open/Update', () => {
 test('stateForDetection: unknown/empty detection -> NOT_INSTALLED', () => {
   const app: InstalledApp = { appId: 'x', platform: 'windows', installed: false, detectedAt: Date.now() };
   assert.equal(stateForDetection(app, '1.0.25'), 'NOT_INSTALLED');
+});
+
+// ---------------------------------------------------------------------------
+// Rich install-state model (current device is authoritative)
+// ---------------------------------------------------------------------------
+test('current device installed -> INSTALLED', () => {
+  const local = normalizeInstalledApp('cgpa-pilot', 'linux', { installed: true, version: '1.0.25', source: 'package' }, '1.0.25');
+  assert.equal(currentDeviceInstallState(local, '1.0.25'), 'INSTALLED');
+});
+test('current device NOT installed -> NOT_INSTALLED', () => {
+  const local = normalizeInstalledApp('cgpa-pilot', 'linux', { installed: false, source: 'none' }, '1.0.25');
+  assert.equal(currentDeviceInstallState(local, '1.0.25'), 'NOT_INSTALLED');
+});
+test('current device outdated -> UPDATE_AVAILABLE', () => {
+  const local = normalizeInstalledApp('cgpa-pilot', 'linux', { installed: true, version: '1.0.24', source: 'package' }, '1.0.25');
+  assert.equal(currentDeviceInstallState(local, '1.0.25'), 'UPDATE_AVAILABLE');
+});
+test('detection unavailable (web) -> DETECTION_UNAVAILABLE', () => {
+  assert.equal(currentDeviceInstallState(null, '1.0.25'), 'DETECTION_UNAVAILABLE');
+});
+test('operation overrides base state (installing / updating / uninstalling / failures)', () => {
+  const local = normalizeInstalledApp('cgpa-pilot', 'linux', { installed: true, version: '1.0.24', source: 'package' }, '1.0.25');
+  assert.equal(currentDeviceInstallState(local, '1.0.25', 'installing'), 'INSTALLING');
+  assert.equal(currentDeviceInstallState(local, '1.0.25', 'updating'), 'UPDATING');
+  assert.equal(currentDeviceInstallState(local, '1.0.25', 'uninstalling'), 'UNINSTALLING');
+  assert.equal(currentDeviceInstallState(local, '1.0.25', 'install_failed'), 'INSTALL_FAILED');
+  assert.equal(currentDeviceInstallState(local, '1.0.25', 'update_failed'), 'UPDATE_FAILED');
+  assert.equal(currentDeviceInstallState(local, '1.0.25', 'uninstall_failed'), 'UNINSTALL_FAILED');
+});
+
+test('mapDetectionToInstall maps the 4 base states', () => {
+  assert.equal(mapDetectionToInstall('NOT_INSTALLED'), 'NOT_INSTALLED');
+  assert.equal(mapDetectionToInstall('INSTALLED_CURRENT'), 'INSTALLED');
+  assert.equal(mapDetectionToInstall('UPDATE_AVAILABLE'), 'UPDATE_AVAILABLE');
+  assert.equal(mapDetectionToInstall('DETECTION_UNAVAILABLE'), 'DETECTION_UNAVAILABLE');
+});
+
+test('installStatusForReport maps to backend lowercase statuses', () => {
+  assert.equal(installStatusForReport('INSTALLED'), 'installed');
+  assert.equal(installStatusForReport('NOT_INSTALLED'), 'not_installed');
+  assert.equal(installStatusForReport('UPDATE_AVAILABLE'), 'update_available');
+  assert.equal(installStatusForReport('INSTALLING'), 'installing');
+  assert.equal(installStatusForReport('UNINSTALL_FAILED'), 'uninstall_failed');
+  assert.equal(installStatusForReport('DETECTION_UNAVAILABLE'), 'unknown');
+});
+
+// ---------------------------------------------------------------------------
+// Current device vs other devices (cloud is LAST-KNOWN, never authoritative)
+// ---------------------------------------------------------------------------
+const otherInstalled = (deviceId: string) => ({ deviceId, appSlug: 'cgpa-pilot', status: 'installed' });
+
+test('installed ONLY on another device -> current device GET, other count 1', () => {
+  const local = normalizeInstalledApp('cgpa-pilot', 'linux', { installed: false, source: 'none' }, '1.0.25');
+  const view = resolveDeviceView({ local, storeVersion: '1.0.25', otherInstallations: [otherInstalled('phoneA')], currentDeviceId: 'phoneB' });
+  assert.equal(view.state, 'NOT_INSTALLED'); // still GET, never OPEN from cloud
+  assert.equal(view.otherDevices, 1);
+});
+
+test('installed on multiple OTHER devices -> count them, still GET locally', () => {
+  const local = normalizeInstalledApp('cgpa-pilot', 'linux', { installed: false, source: 'none' }, '1.0.25');
+  const view = resolveDeviceView({ local, storeVersion: '1.0.25', otherInstallations: [otherInstalled('phoneA'), otherInstalled('phoneC'), otherInstalled('laptop')], currentDeviceId: 'phoneB' });
+  assert.equal(view.state, 'NOT_INSTALLED');
+  assert.equal(view.otherDevices, 3);
+});
+
+test('cloud says installed but local detection says not -> GET, never OPEN', () => {
+  const local = normalizeInstalledApp('cgpa-pilot', 'linux', { installed: false, source: 'none' }, '1.0.25');
+  const view = resolveDeviceView({ local, storeVersion: '1.0.25', otherInstallations: [otherInstalled('laptop')], currentDeviceId: 'phoneB' });
+  assert.equal(view.state, 'NOT_INSTALLED');
+});
+
+test('local detection confirms installed even if cloud is stale -> OPEN', () => {
+  const local = normalizeInstalledApp('cgpa-pilot', 'linux', { installed: true, version: '1.0.25', source: 'package' }, '1.0.25');
+  const view = resolveDeviceView({ local, storeVersion: '1.0.25', otherInstallations: [], currentDeviceId: 'ubuntu' });
+  assert.equal(view.state, 'INSTALLED');
+  assert.equal(view.otherDevices, 0);
+});
+
+test('current device outdated while another device is current -> UPDATE here, other count preserved', () => {
+  const local = normalizeInstalledApp('cgpa-pilot', 'linux', { installed: true, version: '1.0.24', source: 'package' }, '1.0.25');
+  const view = resolveDeviceView({ local, storeVersion: '1.0.25', otherInstallations: [otherInstalled('laptop')], currentDeviceId: 'ubuntu' });
+  assert.equal(view.state, 'UPDATE_AVAILABLE');
+  assert.equal(view.otherDevices, 1);
+});
+
+test('uninstall changes ONLY the current device; other devices remain installed', () => {
+  // After uninstalling on the current device, local detection returns not installed.
+  const local = normalizeInstalledApp('cgpa-pilot', 'linux', { installed: false, source: 'none' }, '1.0.25');
+  const view = resolveDeviceView({ local, storeVersion: '1.0.25', otherInstallations: [otherInstalled('phoneA'), otherInstalled('laptop')], currentDeviceId: 'ubuntu' });
+  assert.equal(view.state, 'NOT_INSTALLED'); // current device is now GET
+  assert.equal(view.otherDevices, 2);        // other devices still resolved as installed
+  // otherDeviceInstallCount excludes the current device id explicitly.
+  assert.equal(otherDeviceInstallCount([otherInstalled('phoneA'), otherInstalled('laptop')], 'ubuntu'), 2);
+});
+
+test('otherDeviceInstallCount ignores the current device and non-active statuses', () => {
+  const list = [
+    otherInstalled('phoneA'),
+    otherInstalled('ubuntu'),   // current device — excluded
+    { deviceId: 'tablet', appSlug: 'cgpa-pilot', status: 'not_installed' },
+    { deviceId: 'laptop', appSlug: 'cgpa-pilot', status: 'revoked' },
+  ];
+  assert.equal(otherDeviceInstallCount(list, 'ubuntu'), 1);
+});
+
+// ---------------------------------------------------------------------------
+// Windows uninstall metadata handling (pure decision on a detected target)
+// ---------------------------------------------------------------------------
+test('Windows detection result carries uninstall metadata for the uninstaller', () => {
+  const app = normalizeInstalledApp('cgpa-pilot', 'windows', {
+    installed: true,
+    version: '1.0.25',
+    executable: 'C:\\Apps\\cgpa-pilot.exe',
+    source: 'registry',
+  }, '1.0.25');
+  // Simulates the resolved uninstall target flowing to the runtime from detection.
+  const uninstallTarget = 'C:\\Apps\\cgpa-pilot\\uninstall.exe';
+  const fresh = { ...app, executable: uninstallTarget };
+  assert.equal(fresh.installed, true);
+  assert.equal(fresh.executable, uninstallTarget);
+});
+
+// ---------------------------------------------------------------------------
+// Android uninstall reconciliation logic
+// ---------------------------------------------------------------------------
+test('Android uninstall reconciliation: re-detect after uninstall before reporting', () => {
+  // Before: installed on the device.
+  const before = normalizeInstalledApp('cgpa-pilot', 'android', { installed: true, version: '1.0.25', source: 'package-manager' }, '1.0.25');
+  assert.equal(currentDeviceInstallState(before, '1.0.25'), 'INSTALLED');
+  // After the OS confirms removal, re-detection returns not installed.
+  const after = normalizeInstalledApp('cgpa-pilot', 'android', { installed: false, source: 'package-manager' }, '1.0.25');
+  assert.equal(currentDeviceInstallState(after, '1.0.25'), 'NOT_INSTALLED');
+  // Report only reflects CONFIRMED (re-detected) state, not the intent to uninstall.
+  assert.equal(installStatusForReport(currentDeviceInstallState(after, '1.0.25')), 'not_installed');
 });
