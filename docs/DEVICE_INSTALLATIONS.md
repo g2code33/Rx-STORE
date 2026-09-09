@@ -169,23 +169,28 @@ Authenticated endpoints in `backend/src/routes/devices.ts`, wired in the worker
 
 | Method | Path                       | Purpose |
 | ------ | -------------------------- | ------- |
-| POST   | `/devices/register`         | upsert the current device (record separate from the previous install) |
-| POST   | `/devices/heartbeat`        | bump `last_seen_at` + version |
-| GET    | `/devices`                 | list the user's own devices |
-| POST   | `/devices/:id/revoke`      | revoke one of the user's devices |
-| POST   | `/devices/installations`    | upsert the current device's app installation record |
+| POST   | `/devices/register`         | idempotent upsert of the current device (per user + device) |
+| POST   | `/devices/heartbeat`        | bump `last_seen_at` + version (revoked devices are ignored) |
+| GET    | `/devices?currentDeviceId=` | list the user's devices, the current device flagged |
+| POST   | `/devices/:deviceId/revoke` | revoke one of the user's devices (does NOT uninstall its apps) |
+| POST   | `/devices/installations`    | upsert the current device's app installation record (revoked rejected) |
 | GET    | `/devices/installations`    | list installation state across the user's devices |
 
 DB tables (`backend/migrations/0006_devices_installations.sql` + `schema.sql`):
-- `devices(id, user_id, device_name, platform, device_type, os_version,
-  rx_store_version, app_version, last_seen_at, created_at, updated_at,
-  revoked_at, status)`
+- `devices(id, user_id, device_id, device_name, platform, device_type,
+  os_version, rx_store_version, app_version, last_seen_at, created_at,
+  updated_at, revoked_at, status, UNIQUE(user_id, device_id))` — `id` is the
+  internal row id; `device_id` is the stable client per-install id.
 - `app_installations(id, user_id, device_id, application_id, platform,
   installed_version, status, detection_source, last_detected_at, installed_at,
-  updated_at, UNIQUE(device_id, application_id))`
+  updated_at, UNIQUE(device_id, application_id))` — `device_id` references
+  `devices.id` (internal).
 
-The unique constraint prevents duplicate records on every re-detection; the
-upsert keeps exactly one current record per (device, application).
+The `UNIQUE(user_id, device_id)` means the SAME physical install registered under
+two different accounts gets its OWN row, so account state is isolated on shared
+computers and a device never becomes a duplicate on every start. The unique
+constraint on `app_installations` prevents duplicate records on re-detection;
+the upsert keeps exactly one current record per (device, application).
 
 ### Migration numbering
 There were previously **two** `0005_*` migrations. I did **not** add another
@@ -197,14 +202,23 @@ deployments need no manual step.
 
 ## 10. UI behavior
 
+`src/context/DeviceContext.tsx` is the clean frontend state layer: it exposes
+`currentDevice`, `devices`, `installations`, `syncState`, and `syncNow / refresh
+/ revoke / reportInstallation`. Components stay presentational and consume it
+via `useDevices()`.
+
 `src/pages/AppDetail.tsx`:
 - Current-device action is `Get` / `Open` / `Update` from **local detection**
   (`useInstalledState` + `getNativeRuntime().resolve`).
 - When `!osInstalled` but the cloud reports this app installed elsewhere, it
-  shows a small **"Installed on N other devices"** hint — it does **NOT** change
-  `Get` to `Open`.
+  shows a small **"Installed on N other devices · <device name>"** hint — it does
+  **NOT** change `Get` to `Open`.
 - After successful native operations the code invalidates the cache, re-detects,
   reconciles the UI, and reports the confirmed state to the account.
+
+`src/pages/Profile.tsx` gains a **"My Devices"** tab: lists the account's devices
+with the current one flagged, a human-friendly name, platform, last-seen,
+a Refresh action, and a safe "Remove" (revoke) that does NOT uninstall apps.
 
 `src/components/apps/AppCard.tsx` continues to use local detection for the card
 action (no cloud override).
@@ -227,14 +241,22 @@ action (no cloud override).
 
 ## 12. Tests
 
-`src/platform/detect.test.ts` (46 tests, all passing). New coverage: current
-device installed/not installed, installed only on another device, installed on
-multiple devices, current device outdated while another is current, uninstall
-changes only the current device, other-device installations unchanged, version
-comparison, detection unavailable, operation state overrides, Windows uninstall
-metadata, Android uninstall reconciliation, and backend status mapping. Native
-OS access is not exercised (that requires real Windows/Linux/Android); the pure
-decision layer is tested in isolation.
+- `src/platform/detect.test.ts` (53 tests): current device installed/not
+  installed, installed only on another device, installed on multiple devices,
+  current device outdated while another is current, uninstall changes only the
+  current device, other-device installations unchanged, version comparison,
+  detection unavailable, operation state overrides, the full Phone A / Phone B
+  multi-device scenario, update preserving the actual installed version until
+  verification, offline detection, Windows uninstall metadata, Android uninstall
+  reconciliation, backend status mapping, and device staleness thresholds.
+- `src/native/deviceIdentity.test.ts` (5 tests): device id persists across reads,
+  device id survives logout (never regenerated), different installs get different
+  ids, a human-readable device name is produced, and web never claims native
+  detection.
+
+Native OS access is not exercised (that requires real Windows/Linux/Android);
+the pure decision layer is tested in isolation. Run all with `npm test` (58
+tests, all passing on the repo).
 
 ---
 

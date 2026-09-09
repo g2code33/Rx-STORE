@@ -5,6 +5,7 @@ import App from './App';
 import { AuthProvider } from './context/AuthContext';
 import { AppProvider } from './context/AppContext';
 import { ContentProvider } from './context/ContentContext';
+import { DeviceProvider } from './context/DeviceContext';
 import { capturePwaInstallPrompt } from './platform/pwaInstall';
 import './index.css';
 
@@ -14,7 +15,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <AuthProvider>
         <ContentProvider>
           <AppProvider>
-            <App />
+            <DeviceProvider>
+              <App />
+            </DeviceProvider>
           </AppProvider>
         </ContentProvider>
       </AuthProvider>

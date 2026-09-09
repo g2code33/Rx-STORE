@@ -302,11 +302,14 @@ CREATE TABLE IF NOT EXISTS site_settings (
 );
 
 -- ==================== DEVICES / INSTALLATIONS (account-aware) ====================
--- A physical/logical RX Store install. device_id is client-generated and stable
--- across restarts/logins; never based on IP, no unnecessary hardware identifiers.
+-- A physical/logical RX Store install. `id` is an internal row id;
+-- `device_id` is the stable client per-install id that survives restarts/logins.
+-- UNIQUE(user_id, device_id) isolates the SAME physical install per account
+-- (shared computers), and never creates duplicates on every start.
 CREATE TABLE IF NOT EXISTS devices (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL,
   device_name TEXT,
   platform TEXT,                -- 'windows' | 'linux' | 'android' | 'web'
   device_type TEXT,             -- 'phone' | 'tablet' | 'desktop' | 'pwa'
@@ -317,10 +320,12 @@ CREATE TABLE IF NOT EXISTS devices (
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   revoked_at TEXT,
-  status TEXT DEFAULT 'active' CHECK (status IN ('active','revoked'))
+  status TEXT DEFAULT 'active' CHECK (status IN ('active','revoked')),
+  UNIQUE(user_id, device_id)
 );
 CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
 CREATE INDEX IF NOT EXISTS idx_devices_status ON devices(status);
+CREATE INDEX IF NOT EXISTS idx_devices_device_id ON devices(device_id);
 
 -- One current installation record per (device, application). Cloud state is
 -- LAST-KNOWN info for *other* devices; local native detection is authoritative.

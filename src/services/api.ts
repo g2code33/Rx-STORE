@@ -210,7 +210,7 @@ export const api = {
   },
 
   devices: {
-    /** Register/upsert the current device for the signed-in user. */
+    /** Register/upsert the current device for the signed-in user (idempotent). */
     async register(device: {
       deviceId: string; deviceName: string; platform?: string; deviceType?: string; osVersion?: string; rxStoreVersion?: string; appVersion?: string;
     }) {
@@ -220,11 +220,12 @@ export const api = {
     async heartbeat(deviceId: string, rxStoreVersion?: string, appVersion?: string) {
       return request<{ updated: boolean }>('/devices/heartbeat', { method: 'POST', body: JSON.stringify({ deviceId, rxStoreVersion, appVersion }) });
     },
-    /** List the user's own devices. */
-    async list() {
-      return request<{ devices: any[] }>('/devices', { method: 'GET' });
+    /** List the user's own devices; `currentDeviceId` flags the current device. */
+    async list(currentDeviceId?: string) {
+      const q = currentDeviceId ? `?currentDeviceId=${encodeURIComponent(currentDeviceId)}` : '';
+      return request<{ devices: any[]; currentDeviceId?: string }>(`/devices${q}`, { method: 'GET' });
     },
-    /** Revoke one of the user's devices. */
+    /** Revoke one of the user's devices (does NOT uninstall its applications). */
     async revoke(deviceId: string) {
       return request<{ revoked: boolean; deviceId: string }>(`/devices/${deviceId}/revoke`, { method: 'POST' });
     },

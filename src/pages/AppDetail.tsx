@@ -14,9 +14,8 @@ import toast from 'react-hot-toast';
 import { androidDownloadAndInstall, androidOnDownloadProgress, androidStopDownloadProgress, confirmDesktopInstalled, desktopDownload, desktopInstall, getNativePackage, isAndroidShell, isDesktopShell, removeNativePackage, type NativePackageState } from '../platform/nativeInstaller';
 import { useInstalledState } from '../platform/nativeDetection';
 import { getNativeRuntime } from '../native/runtime';
-import { getDeviceId, getRuntimePlatform } from '../native/deviceIdentity';
-import { reportCurrentInstallation, fetchOtherDeviceInstallations } from '../native/accountSync';
 import { mapDetectionToInstall } from '../platform/detect';
+import { useDevices } from '../context/DeviceContext';
 
 /** Human-readable byte count (auto-detected package size). */
 function formatBytes(bytes?: number): string {
@@ -107,34 +106,28 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   // Hooks first: `app` arrives a render later (context loads async), so no early return before this point.
   const isInstalled = app ? installedApps.includes(app.id) : false;
   const nativeUpdateAvailable = detectedState === 'UPDATE_AVAILABLE';
-  // Other-device installations (last-known cloud info). Purposely NOT used to
-  // flip the current device to OPEN — only to render "Installed on N other devices".
-  const [otherDevices, setOtherDevices] = useState<{ deviceId: string; status: string }[]>([]);
-  React.useEffect(() => {
-    let alive = true;
-    (async () => {
-      const list = await fetchOtherDeviceInstallations();
-      if (!alive || !app) return;
-      const currentDeviceId = getDeviceId();
-      setOtherDevices(list.filter((i) => i.appSlug === app.slug && i.deviceId !== currentDeviceId));
-    })();
-    return () => { alive = false; };
-  }, [app?.slug, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Account/device state layer. Other-device installations are LAST-KNOWN cloud
+  // info, Purposely NOT used to flip the current device to OPEN — only to render
+  // "Installed on N other devices" with the device names.
+  const { currentDevice, installations, reportInstallation } = useDevices();
+  const otherDevices = React.useMemo(() => {
+    if (!app) return [];
+    return installations.filter((i) => i.appSlug === app.slug && i.deviceId !== currentDevice.deviceId);
+  }, [installations, app?.slug, currentDevice.deviceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reconcile the CURRENT device's installation record to the account whenever
   // real native detection changes (install / update / uninstall). Only reports
   // confirmed/detected state — never "installed" just because an installer ran.
   React.useEffect(() => {
     if (!app?.slug || !user?.id) return;
-    void reportCurrentInstallation({
+    void reportInstallation({
       appSlug: app.slug,
-      platform: getRuntimePlatform(),
       installed: osInstalled,
       installedVersion: systemInstalled?.version,
       status: mapDetectionToInstall(detectedState),
       detectionSource: systemInstalled?.source,
     }).catch(() => {});
-  }, [osInstalled, systemInstalled?.version, detectedState, app?.slug, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [osInstalled, systemInstalled?.version, detectedState, app?.slug, user?.id, reportInstallation]); // eslint-disable-line react-hooks/exhaustive-deps
   const [liveReviews, setLiveReviews] = React.useState<any[] | null>(null);
   React.useEffect(() => {
     const API = (import.meta as any).env?.VITE_API_URL;
@@ -364,9 +357,8 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
           setNativePackage(null);
           void refreshDetection();
         }
-        await reportCurrentInstallation({
+        await reportInstallation({
           appSlug: app.slug,
-          platform: getRuntimePlatform(),
           installed: stillInstalled,
           installedVersion: after?.version,
           status: stillInstalled ? 'INSTALLED' : 'NOT_INSTALLED',
@@ -514,9 +506,12 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
                 </button>
               )}
               {!osInstalled && otherDevices.length > 0 && (
-                <div className="text-[11px] text-rx-gray-medium flex items-center gap-1.5">
+                <div className="text-[11px] text-rx-gray-medium flex items-center gap-1.5 text-right">
                   <span className="w-1.5 h-1.5 rounded-full bg-blue-400 inline-block" />
-                  Installed on {otherDevices.length} other {otherDevices.length === 1 ? 'device' : 'devices'}
+                  <span>
+                    Installed on {otherDevices.length} other {otherDevices.length === 1 ? 'device' : 'devices'}
+                    {otherDevices[0]?.deviceName ? <span className="text-white/70"> · {otherDevices[0].deviceName}</span> : null}
+                  </span>
                 </div>
               )}
               <div className="flex items-center gap-2">

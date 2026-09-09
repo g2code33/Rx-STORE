@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
-import { Download, CreditCard, Bell, Settings, LogOut, X, Trash2, RefreshCw, Rocket } from 'lucide-react';
+import { Download, CreditCard, Bell, Settings, LogOut, X, Trash2, RefreshCw, Rocket, Monitor, Smartphone, Globe, Laptop } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useApps } from '../context/AppContext';
+import { useDevices } from '../context/DeviceContext';
 import { formatDate } from '../utils/helpers';
 import AppLogo from '../components/apps/AppLogo';
 import { useUpdateStatus, describeStatus, checkNow, installNow, isDesktopApp, applyUpdatePolicy } from '../desktop/updater';
@@ -62,7 +63,8 @@ function DesktopUpdatesCard() {
 export default function Profile() {
   const { user, logout, updateProfile, notifications, markNotificationRead } = useAuth();
   const { getAppById, installedApps, installApp, uninstallApp } = useApps();
-  const [activeTab, setActiveTab] = useState<'apps' | 'subscriptions' | 'notifications' | 'trash' | 'settings'>('apps');
+  const { devices, syncNow, revoke } = useDevices();
+  const [activeTab, setActiveTab] = useState<'apps' | 'devices' | 'subscriptions' | 'notifications' | 'trash' | 'settings'>('apps');
   const [profileForm, setProfileForm] = useState({ name: user?.name || '', email: user?.email || '' });
   const [preferences, setPreferences] = useState(() => ({ ...DEFAULT_PREFERENCES, ...(user?.preferences || {}) }));
   const [savingProfile, setSavingProfile] = useState(false);
@@ -109,6 +111,7 @@ export default function Profile() {
 
   const tabs = [
     { id: 'apps' as const, label: 'My Applications', icon: Download, count: (installedApps || []).length },
+    { id: 'devices' as const, label: 'My Devices', icon: Monitor, count: devices.filter((d) => d.status !== 'revoked').length },
     { id: 'subscriptions' as const, label: 'Subscriptions', icon: CreditCard, count: (user.subscriptions || []).length },
     { id: 'notifications' as const, label: 'Notifications', icon: Bell, count: (notifications || []).filter((n) => !n.read).length },
     { id: 'trash' as const, label: 'Recycle Bin', icon: Trash2, count: (()=>{ try{ const u=JSON.parse(localStorage.getItem('rx-store-user')||'{}'); const k=u?.id?`rx-trash-${u.id}`:'rx-trash'; const a=JSON.parse(localStorage.getItem(k)||'[]'); return Array.isArray(a)?a.length:0; } catch{ return 0; }})() },
@@ -176,6 +179,55 @@ export default function Profile() {
               <h3 className="text-xl font-semibold text-white mb-2">No applications installed</h3>
               <p className="text-rx-gray-medium mb-6">Browse our marketplace to find and install applications.</p>
               <Link to="/browse" className="btn-primary">Browse Applications</Link>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'devices' && (
+        <div className="animate-fade-in">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-xl font-bold text-white">My Devices</h2>
+            <button onClick={() => void syncNow()} className="flex items-center gap-2 px-4 py-2 text-sm text-rx-yellow bg-rx-yellow/10 hover:bg-rx-yellow/20 rounded-xl transition-colors">
+              <RefreshCw className="w-4 h-4" /> Refresh
+            </button>
+          </div>
+          <p className="text-xs text-rx-gray-medium mb-4">
+            The current device is detected locally. Other devices are last-known account information — removing a device does not uninstall apps on it.
+          </p>
+          {devices.length > 0 ? (
+            <div className="space-y-3">
+              {devices.map((d) => {
+                const DeviceIcon = d.platform === 'android' ? Smartphone : d.platform === 'windows' ? Monitor : d.platform === 'linux' ? Laptop : Globe;
+                return (
+                  <div key={d.id} className={`card p-4 flex items-center gap-4 ${d.isCurrentDevice ? 'border-rx-yellow/40' : ''}`}>
+                    <div className="w-11 h-11 rounded-xl bg-rx-dark-tertiary flex items-center justify-center"><DeviceIcon className="w-5 h-5 text-rx-yellow" /></div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="font-semibold text-white truncate">{d.deviceName}</p>
+                        {d.isCurrentDevice && <span className="px-1.5 py-0.5 bg-rx-yellow/20 text-rx-yellow text-[10px] font-bold rounded-md">THIS DEVICE</span>}
+                      </div>
+                      <p className="text-xs text-rx-gray-medium capitalize">
+                        {d.platform} · last seen {d.lastSeenAt ? formatDate(d.lastSeenAt) : '—'}
+                      </p>
+                    </div>
+                    {!d.isCurrentDevice && (
+                      <button
+                        onClick={() => { if (confirm(`Remove "${d.deviceName}" from your account? Apps already installed on it are NOT uninstalled.`)) void revoke(d.deviceId).then((ok) => { if (ok) toast.success('Device removed'); else toast.error('Could not remove device'); }); }}
+                        className="px-3 py-1.5 text-xs font-medium text-red-400 hover:text-white bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-lg transition-all flex items-center gap-1"
+                      >
+                        <X className="w-3 h-3" /> Remove
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-center py-16">
+              <div className="text-5xl mb-4">📱</div>
+              <h3 className="text-xl font-semibold text-white mb-2">No devices yet</h3>
+              <p className="text-rx-gray-medium">Sign in on RX Store to register a device.</p>
             </div>
           )}
         </div>

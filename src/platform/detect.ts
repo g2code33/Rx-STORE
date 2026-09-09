@@ -295,6 +295,27 @@ export function resolveDeviceView(input: {
   return { state, otherDevices };
 }
 
+/** How recently-active a device is, for UI staleness labels. */
+export type DeviceActivity = 'active' | 'stale' | 'offline';
+
+/**
+ * Classify a device by its last-seen timestamp. Never claims a device is
+ * "online" merely because it has an installation record. `lastSeenAt` uses the
+ * same ISO/datetime string the backend returns ('' / missing => offline).
+ *   active  — seen within the last 24h
+ *   stale   — seen within the last 14 days
+ *   offline — not seen recently or unknown
+ */
+export function deviceActivity(lastSeenAt?: string | null, now: number = Date.now()): DeviceActivity {
+  if (!lastSeenAt) return 'offline';
+  const t = new Date(lastSeenAt).getTime();
+  if (Number.isNaN(t)) return 'offline';
+  const days = (now - t) / 86_400_000;
+  if (days <= 1) return 'active';
+  if (days <= 14) return 'stale';
+  return 'offline';
+}
+
 /** Map a rich InstallState to the backend's lowercase status value. */
 export function installStatusForReport(state: InstallState): string {
   switch (state) {

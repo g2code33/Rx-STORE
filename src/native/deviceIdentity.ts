@@ -15,9 +15,11 @@
  *   - web/PWA: localStorage persists per origin in the browser
  *
  * The web/PWA uses a browser-scoped identity but NEVER claims native detection.
+ *
+ * NOTE: this module is intentionally free of @capacitor/core and nativeInstaller
+ * imports so it stays unit-testable and reusable; it detects the shell from the
+ * globals the native bridges expose (window.rxDesktop / window.Capacitor).
  */
-import { Capacitor } from '@capacitor/core';
-import { isDesktopShell } from '../platform/nativeInstaller';
 
 const DEVICE_ID_KEY = 'rx-store-device-id';
 const DEVICE_NAME_KEY = 'rx-store-device-name';
@@ -53,13 +55,33 @@ export function getDeviceName(): string {
   try { return localStorage.getItem(DEVICE_NAME_KEY) || ''; } catch { return ''; }
 }
 
+/**
+ * Clear account-adjacent device metadata. This deliberately does NOT remove the
+ * device id: the id belongs to the install and must survive login/logout so a
+ * user returning to the same device reuses the same identity.
+ */
 export function clearDeviceIdentity(): void {
   try { localStorage.removeItem(DEVICE_NAME_KEY); } catch { /* ignore */ }
 }
 
+/** True when running inside the Android Capacitor shell. */
+function isAndroidShell(): boolean {
+  try {
+    const cap = (window as any).Capacitor;
+    return !!(cap && cap.isNativePlatform?.() && cap.getPlatform?.() === 'android');
+  } catch {
+    return false;
+  }
+}
+
+/** True when running inside the Electron desktop shell. */
+function isDesktopShell(): boolean {
+  try { return !!(window as any).rxDesktop?.isDesktop; } catch { return false; }
+}
+
 /** Resolve the current runtime platform without claiming native detection on web. */
 export function getRuntimePlatform(): RuntimePlatform {
-  if (isAndroidShellPlatform()) return 'android';
+  if (isAndroidShell()) return 'android';
   if (isDesktopShell()) {
     const ua = (navigator.userAgent || '').toLowerCase();
     if (/windows/.test(ua)) return 'windows';
@@ -67,10 +89,6 @@ export function getRuntimePlatform(): RuntimePlatform {
     return 'windows';
   }
   return 'web';
-}
-
-function isAndroidShellPlatform(): boolean {
-  try { return Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android'; } catch { return false; }
 }
 
 function detectDeviceType(platform: RuntimePlatform): 'phone' | 'tablet' | 'desktop' | 'pwa' {

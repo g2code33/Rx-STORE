@@ -178,12 +178,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Register the current device with the account and keep it "seen". Device
   // identity is stable per install (survives restart + login/logout) and never
-  // leaks IP/hardware IDs. Best-effort — never blocks auth.
+  // leaks IP/hardware IDs. Best-effort — never blocks auth. Heartbeat ~15 min
+  // plus on foreground return; RX Store stays usable offline.
   useEffect(() => {
     if (!user?.id || !isApiConfigured()) return;
     void syncDeviceOnAuth();
-    const t = setInterval(() => void heartbeatDevice(), 5 * 60_000);
-    return () => clearInterval(t);
+    const t = setInterval(() => void heartbeatDevice(), 15 * 60_000);
+    const onVisible = () => { if (document.visibilityState === 'visible') void heartbeatDevice(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVisible); };
   }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Logged-in users: live server feed (admin broadcasts, release alerts, update notices), polled

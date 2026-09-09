@@ -23,6 +23,7 @@ import {
   otherDeviceInstallCount,
   mapDetectionToInstall,
   installStatusForReport,
+  deviceActivity,
   type InstalledApp,
 } from './detect.ts';
 
@@ -297,4 +298,100 @@ test('Android uninstall reconciliation: re-detect after uninstall before reporti
   assert.equal(currentDeviceInstallState(after, '1.0.25'), 'NOT_INSTALLED');
   // Report only reflects CONFIRMED (re-detected) state, not the intent to uninstall.
   assert.equal(installStatusForReport(currentDeviceInstallState(after, '1.0.25')), 'not_installed');
+});
+
+// ---------------------------------------------------------------------------
+// Prompt 2 — full multi-device scenario (current device is authoritative)
+// ---------------------------------------------------------------------------
+test('scenario: Phone A installed / Phone B not installed -> GET + other device', () => {
+  // Phone B current, local detection says not installed.
+  const localB = normalizeInstalledApp('cgpa-pilot', 'android', { installed: false, source: 'package-manager' }, '1.0.25');
+  const view = resolveDeviceView({
+    local: localB, storeVersion: '1.0.25',
+    otherInstallations: [{ deviceId: 'phoneA', status: 'installed' }],
+    currentDeviceId: 'phoneB',
+  });
+  assert.equal(view.state, 'NOT_INSTALLED');      // GET, never OPEN from cloud
+  assert.equal(view.otherDevices, 1);             // "Installed on another device"
+});
+
+test('scenario: install on Phone B -> BOTH devices become installed', () => {
+  // After a successful local install, current device detection flips to installed.
+  const localB = normalizeInstalledApp('cgpa-pilot', 'android', { installed: true, version: '1.0.25', source: 'package-manager' }, '1.0.25');
+  const view = resolveDeviceView({
+    local: localB, storeVersion: '1.0.25',
+    otherInstallations: [{ deviceId: 'phoneA', status: 'installed' }],
+    currentDeviceId: 'phoneB',
+  });
+  assert.equal(view.state, 'INSTALLED');          // OPEN on Phone B
+  assert.equal(view.otherDevices, 1);             // Phone A still installed
+});
+
+test('scenario: uninstall on Phone B does NOT affect Phone A', () => {
+  // Phone B re-detects as not installed; Phone A's record is untouched.
+  const localB = normalizeInstalledApp('cgpa-pilot', 'android', { installed: false, source: 'package-manager' }, '1.0.25');
+  const view = resolveDeviceView({
+    local: localB, storeVersion: '1.0.25',
+    otherInstallations: [{ deviceId: 'phoneA', status: 'installed' }],
+    currentDeviceId: 'phoneB',
+  });
+  assert.equal(view.state, 'NOT_INSTALLED');      // GET on Phone B
+  assert.equal(view.otherDevices, 1);             // Phone A remains installed
+});
+
+test('scenario: current device opened, other device count preserved', () => {
+  // Phone A opens after B uninstalls — local detection confirms installed.
+  const localA = normalizeInstalledApp('cgpa-pilot', 'android', { installed: true, version: '1.0.25', source: 'package-manager' }, '1.0.25');
+  const view = resolveDeviceView({
+    local: localA, storeVersion: '1.0.25',
+    otherInstallations: [{ deviceId: 'phoneB', status: 'not_installed' }],
+    currentDeviceId: 'phoneA',
+  });
+  assert.equal(view.state, 'INSTALLED');          // still OPEN
+  assert.equal(view.otherDevices, 0);             // Phone B not installed anywhere else
+});
+
+// ---------------------------------------------------------------------------
+// Update preserves the actual installed version until verification
+// ---------------------------------------------------------------------------
+test('update: preserves installed version until native verification', () => {
+  const local = normalizeInstalledApp('cgpa-pilot', 'linux', { installed: true, version: '1.2.0', source: 'package' }, '1.3.0');
+  const state = currentDeviceInstallState(local, '1.3.0');
+  assert.equal(state, 'UPDATE_AVAILABLE');
+  // The detected version is preserved (not overwritten by the store version).
+  assert.equal(local.version, '1.2.0');
+  // Only after re-detection confirms 1.3.0 does it become installed/current.
+  const verified = normalizeInstalledApp('cgpa-pilot', 'linux', { installed: true, version: '1.3.0', source: 'package' }, '1.3.0');
+  assert.equal(currentDeviceInstallState(verified, '1.3.0'), 'INSTALLED');
+});
+
+// ---------------------------------------------------------------------------
+// Offline current-device detection does NOT depend on the backend
+// ---------------------------------------------------------------------------
+test('offline: current-device detection continues without backend state', () => {
+  // currentDeviceInstallState is PURE — it has no backend dependency. Web/PWA
+  // (no local detection) => DETECTION_UNAVAILABLE; native => local wins.
+  assert.equal(currentDeviceInstallState(null, '1.0.25'), 'DETECTION_UNAVAILABLE');
+  const local = normalizeInstalledApp('cgpa-pilot', 'linux', { installed: true, version: '1.0.25', source: 'package' }, '1.0.25');
+  assert.equal(currentDeviceInstallState(local, '1.0.25'), 'INSTALLED');
+  // Stale backend data is never allowed to flip a not-installed device to Open.
+  const view = resolveDeviceView({ local: normalizeInstalledApp('cgpa-pilot', 'android', { installed: false, source: 'package-manager' }, '1.0.25'), storeVersion: '1.0.25', otherInstallations: [{ deviceId: 'laptop', status: 'installed' }], currentDeviceId: 'phoneB' });
+  assert.equal(view.state, 'NOT_INSTALLED');
+});
+
+// ---------------------------------------------------------------------------
+// Device staleness — never claim a device is online just because it has a record
+// ---------------------------------------------------------------------------
+test('deviceActivity thresholds: active / stale / offline, never falsely online', () => {
+  const now = Date.now();
+  const hours = (n: number) => new Date(now - n * 3600_000).toISOString();
+  const days = (n: number) => new Date(now - n * 86_400_000).toISOString();
+  assert.equal(deviceActivity(hours(1), now), 'active');
+  assert.equal(deviceActivity(hours(23), now), 'active');
+  assert.equal(deviceActivity(days(2), now), 'stale');
+  assert.equal(deviceActivity(days(13), now), 'stale');
+  assert.equal(deviceActivity(days(20), now), 'offline');
+  assert.equal(deviceActivity('', now), 'offline');
+  assert.equal(deviceActivity(undefined, now), 'offline');
+  assert.equal(deviceActivity('garbage', now), 'offline');
 });
