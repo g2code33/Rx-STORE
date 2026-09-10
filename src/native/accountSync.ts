@@ -12,21 +12,27 @@ import { api, isApiConfigured } from '../services/api';
 import { buildDeviceRecord, getDeviceId, getRuntimePlatform } from './deviceIdentity';
 import { installStatusForReport, type InstallState } from '../platform/detect';
 import type { AppInstallation, Device } from '../types/device';
+import { enqueue, flush, pendingCount, type SyncItem } from './syncQueue.ts';
+import { isOnline } from './connectivity.ts';
 
 /** Register + heartbeat the current device for the subscribed account. */
 export async function syncDeviceOnAuth(rxStoreVersion?: string): Promise<{ deviceId: string } | null> {
   if (!isApiConfigured()) return null;
   const rec = buildDeviceRecord(rxStoreVersion);
+  const payload = {
+    deviceId: rec.deviceId,
+    deviceName: rec.deviceName,
+    platform: rec.platform,
+    deviceType: rec.deviceType,
+    osVersion: rec.osVersion,
+    rxStoreVersion: rec.rxStoreVersion,
+    appVersion: rec.rxStoreVersion,
+  };
+  // Registration is idempotent server-side (UNIQUE(user_id, device_id)); queue it
+  // so a first launch while offline still registers once connectivity returns.
+  enqueue({ kind: 'device_register', deviceId: rec.deviceId, payload });
   try {
-    await api.devices.register({
-      deviceId: rec.deviceId,
-      deviceName: rec.deviceName,
-      platform: rec.platform,
-      deviceType: rec.deviceType,
-      osVersion: rec.osVersion,
-      rxStoreVersion: rec.rxStoreVersion,
-      appVersion: rec.rxStoreVersion,
-    });
+    await api.devices.register(payload);
     return { deviceId: rec.deviceId };
   } catch {
     return null;
@@ -55,17 +61,50 @@ export async function reportCurrentInstallation(input: {
   detectionSource?: string;
 }): Promise<void> {
   if (!isApiConfigured()) return;
-  try {
-    await api.devices.reportInstallation({
-      deviceId: getDeviceId(),
-      appSlug: input.appSlug,
-      platform: input.platform || getRuntimePlatform(),
-      installed: input.installed,
-      installedVersion: input.installedVersion,
-      status: installStatusForReport(input.status),
-      detectionSource: input.detectionSource,
-    });
-  } catch { /* best-effort */ }
+  const payload = {
+    deviceId: getDeviceId(),
+    appSlug: input.appSlug,
+    platform: input.platform || getRuntimePlatform(),
+    installed: input.installed,
+    installedVersion: input.installedVersion,
+    status: installStatusForReport(input.status),
+    detectionSource: input.detectionSource,
+  };
+  // DURABLE FIRST: queue the intent so an offline install/update is never lost.
+  // Coalesced per (device, app) so retries cannot duplicate records.
+  enqueue({ kind: 'installation', deviceId: payload.deviceId, appSlug: input.appSlug, payload });
+  // Then best-effort flush (no-op when offline).
+  void flushSyncQueue();
+}
+
+/** Send one queued item. Throws so the queue applies backoff on failure. */
+async function sendItem(item: SyncItem): Promise<void> {
+  if (item.kind === 'installation') {
+    await api.devices.reportInstallation(item.payload);
+    return;
+  }
+  if (item.kind === 'device_register') {
+    await api.devices.register(item.payload);
+    return;
+  }
+  if (item.kind === 'heartbeat') {
+    await api.devices.heartbeat(item.payload.deviceId, item.payload.rxStoreVersion, item.payload.appVersion);
+  }
+}
+
+/**
+ * Flush the durable queue. Safe to call often: it is a no-op when offline, only
+ * sends items whose backoff has elapsed, and coalesces duplicates.
+ */
+export async function flushSyncQueue(): Promise<{ sent: number; failed: number; remaining: number }> {
+  if (!isApiConfigured()) return { sent: 0, failed: 0, remaining: 0 };
+  const r = await flush(sendItem, { canSync: () => isOnline() });
+  return { sent: r.sent, failed: r.failed, remaining: r.remaining };
+}
+
+/** How many state changes are waiting to reach the backend. */
+export function pendingSyncCount(): number {
+  return pendingCount();
 }
 
 /** Other-device installations for the signed-in user (last-known info, clean shape). */

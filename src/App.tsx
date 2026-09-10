@@ -16,6 +16,7 @@ import { useAuth } from './context/AuthContext';
 import { applyUpdatePolicy } from './desktop/updater';
 import { androidDownloadAndInstall, androidHostVersion, androidNetworkStatus, isAndroidShell } from './platform/nativeInstaller';
 import { EditModeContext, getBuilderCtx, subscribeBuilder } from './components/edit/EditMode';
+import { RouteErrorBoundary } from './components/common/ErrorBoundary';
 
 /**
  * Provides the Live Website Builder ctx to the whole app. Null for everyone
@@ -166,6 +167,7 @@ export default function App() {
       <main className="flex-1 pb-16 lg:pb-0" style={{ paddingTop: 'var(--rx-header-h, 4rem)' }}>
         <GetAppBanner />
         <Suspense fallback={<LoadingFallback />}>
+          <RouteErrorBoundary>
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/browse" element={<Browse />} />
@@ -182,6 +184,7 @@ export default function App() {
             <Route path="/sponsor/:token" element={<Sponsor />} />
             <Route path="/admin" element={<Admin />} />
           </Routes>
+          </RouteErrorBoundary>
         </Suspense>
       </main>
       <Footer />

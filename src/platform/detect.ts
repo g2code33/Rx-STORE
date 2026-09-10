@@ -376,6 +376,31 @@ export function hasUninstallableSource(source?: string, uninstallString?: string
   return ['registry', 'package', 'desktop', 'package-manager'].includes(String(source || ''));
 }
 
+/**
+ * Label for an OTHER device's last-known installation, qualified by staleness.
+ * Another device's record is never guaranteed current — once it is stale we say
+ * "Last known installed" instead of implying it is installed right now.
+ */
+export function otherDeviceInstallLabel(
+  lastKnownAt: string | Date | null | undefined,
+  now: number = Date.now(),
+): string {
+  const at = lastKnownAt instanceof Date ? lastKnownAt.toISOString() : (lastKnownAt || '');
+  const activity = deviceActivity(at, now);
+  if (activity === 'active') return 'Installed on another device';
+  if (activity === 'stale') return 'Last known installed on another device';
+  return 'Previously installed on another device';
+}
+
+/**
+ * Whether the cloud's last-known state for ANOTHER device should be presented as
+ * guaranteed-current. Only "active" records are presented without qualification.
+ */
+export function isOtherDeviceStateFresh(lastKnownAt: string | Date | null | undefined, now: number = Date.now()): boolean {
+  const at = lastKnownAt instanceof Date ? lastKnownAt.toISOString() : (lastKnownAt || '');
+  return deviceActivity(at, now) === 'active';
+}
+
 /** Map a rich InstallState to the backend's lowercase status value. */
 export function installStatusForReport(state: InstallState): string {
   switch (state) {

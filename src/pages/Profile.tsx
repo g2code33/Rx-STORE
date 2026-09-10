@@ -110,7 +110,7 @@ function DesktopUpdatesCard() {
 export default function Profile() {
   const { user, logout, updateProfile, notifications, markNotificationRead } = useAuth();
   const { getAppById, installedApps, installApp, uninstallApp } = useApps();
-  const { devices, syncNow, revoke, installations } = useDevices();
+  const { devices, syncNow, revoke, installations, offline, pendingSync, flushSync } = useDevices();
   const [activeTab, setActiveTab] = useState<'apps' | 'devices' | 'subscriptions' | 'notifications' | 'trash' | 'settings'>('apps');
   const [profileForm, setProfileForm] = useState({ name: user?.name || '', email: user?.email || '' });
   const [preferences, setPreferences] = useState(() => ({ ...DEFAULT_PREFERENCES, ...(user?.preferences || {}) }));
@@ -240,6 +240,23 @@ export default function Profile() {
           <p className="text-xs text-rx-gray-medium mb-4">
             The current device is detected locally. Other devices are last-known account information — removing a device does not uninstall apps on it.
           </p>
+          {(offline || pendingSync > 0) && (
+            <div
+              role="status"
+              className={`mb-4 p-3 rounded-xl border text-xs flex items-center justify-between gap-3 ${offline ? 'bg-amber-500/10 border-amber-500/20 text-amber-200' : 'bg-white/5 border-white/10 text-rx-gray-medium'}`}
+            >
+              <span>
+                {offline
+                  ? `Offline — installed apps still work.${pendingSync > 0 ? ` ${pendingSync} change${pendingSync === 1 ? '' : 's'} will sync when you reconnect.` : ''}`
+                  : `${pendingSync} pending sync change${pendingSync === 1 ? '' : 's'}.`}
+              </span>
+              {!offline && pendingSync > 0 && (
+                <button onClick={() => void flushSync()} className="px-2.5 py-1 rounded-lg bg-rx-yellow text-rx-dark font-bold">
+                  Sync now
+                </button>
+              )}
+            </div>
+          )}
           {devices.length > 0 ? (
             <div className="space-y-3">
               {devices.map((d) => {

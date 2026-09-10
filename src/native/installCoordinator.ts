@@ -33,6 +33,7 @@ import { reportCurrentInstallation } from './accountSync';
 import { getRuntimePlatform } from './deviceIdentity';
 import { invalidateDetectionCache } from '../platform/nativeDetection';
 import { isAndroidShell, isDesktopShell } from '../platform/nativeInstaller';
+import { saveAttempt, clearAttempt, type PersistedPhase } from './transactionRecovery.ts';
 
 export interface PackageResolution {
   platform: string;
@@ -166,7 +167,13 @@ export class InstallCoordinator {
     const platform = getRuntimePlatform();
 
     let tx = createTransaction({ previousVersion, targetVersion: packageMeta.version, platform });
-    const emit = (next: TransactionResult) => { tx = next; if (input.onState) input.onState(tx); };
+    const emit = (next: TransactionResult) => {
+      tx = next;
+      // Persist the attempt so a crash/close mid-install can be reconciled on the
+      // next launch (see transactionRecovery). Cleared on any terminal state.
+      persist(tx, app, previousVersion, !!isUpdate, tx.artifactPath);
+      if (input.onState) input.onState(tx);
+    };
 
     emit(transition(tx, { state: 'DOWNLOAD_STARTED' }));
 
@@ -310,6 +317,40 @@ export class InstallCoordinator {
       detectionSource: source,
     }).catch(() => {});
   }
+}
+
+/** Persisted phases we can recover from; everything else clears the record. */
+const PERSISTED_PHASES: PersistedPhase[] = [
+  'DOWNLOAD_STARTED', 'DOWNLOADING', 'DOWNLOAD_COMPLETED', 'VERIFYING', 'VERIFIED',
+  'INSTALLER_STARTED', 'INSTALLATION_PENDING', 'VERIFYING_INSTALLATION',
+];
+
+/** Write the attempt when it is in flight; clear it once it is terminal. */
+function persist(
+  tx: TransactionResult,
+  app: App,
+  previousVersion?: string,
+  isUpdate?: boolean,
+  artifactPath?: string,
+): void {
+  try {
+    if (PERSISTED_PHASES.includes(tx.state as PersistedPhase)) {
+      saveAttempt({
+        attemptId: tx.attemptId,
+        appSlug: app.slug,
+        appName: app.name,
+        targetVersion: tx.targetVersion,
+        previousVersion,
+        phase: tx.state as PersistedPhase,
+        isUpdate: !!isUpdate,
+        startedAt: tx.startedAt,
+        artifactPath: artifactPath ?? tx.artifactPath,
+      });
+    } else {
+      // Terminal (INSTALLED / *_FAILED / NOT_DETECTED / CANCELLED) -> nothing to recover.
+      clearAttempt();
+    }
+  } catch { /* recovery bookkeeping must never break an install */ }
 }
 
 function verifyReason(v: VerificationResult): string {

@@ -107,7 +107,13 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   const { state: detectedState, detection: systemInstalled, installed: osInstalled, refresh: refreshDetection } = useInstalledState(app as any);
   // Central install/update transaction (the single source of truth for the
   // Get/Download/Verify/Install state machine — never inferred per-component).
-  const { tx: installTx, busy: txBusy, start: startTransaction, reset: resetTransaction } = useInstallTransaction();
+  const { tx: installTx, busy: txBusy, start: startTransaction, reset: resetTransaction, recoveryMessage } = useInstallTransaction();
+
+  // Surface an interrupted-attempt recovery once, so a crashed install never
+  // leaves a silently stuck state.
+  React.useEffect(() => {
+    if (recoveryMessage) toast(recoveryMessage, { icon: '♻️', duration: 7000 });
+  }, [recoveryMessage]);
   // Single unified button copy (Downloading X% / Verifying… / Installing… /
   // Checking… / OPEN / UPDATE / Updating X% / RETRY) from the central state.
   const { button: unifiedInstallBtn } = useInstallButton(app as any);

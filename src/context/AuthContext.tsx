@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import { User, Notification } from '../types';
 import { api, isApiConfigured, clearToken, API_URL } from '../services/api';
 import { syncDeviceOnAuth, heartbeatDevice } from '../native/accountSync';
+import { clearAccountData } from '../native/cache';
 
 interface AuthContextType {
   user: User | null;
@@ -155,7 +156,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     localStorage.removeItem('rx-store-user');
     dispatchAuth(null);
-    try { localStorage.removeItem('rx-store-installed'); } catch {}
+    // Remove ALL account-scoped cached state (installs, pending sync work,
+    // in-flight transactions) so a different account can never inherit it.
+    // The device identity and the public catalog deliberately survive.
+    try { clearAccountData(); } catch { /* never block sign-out */ }
   };
 
   const updateProfile = async (updates: Partial<User>) => {

@@ -25,10 +25,18 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 const CATALOG_CACHE_KEY = 'rx-catalog-cache-v1';
 
+/**
+ * Read the cached catalog defensively. Malformed/hostile cache contents (a
+ * truncated write, an old schema, or a hand-edited value) must never crash the
+ * application — we drop anything that is not a usable app record.
+ */
 function readCatalogCache(): App[] {
   try {
-    const cached = JSON.parse(localStorage.getItem(CATALOG_CACHE_KEY) || '{}');
-    return Array.isArray(cached.apps) ? cached.apps : [];
+    const raw = localStorage.getItem(CATALOG_CACHE_KEY);
+    if (!raw) return [];
+    const cached = JSON.parse(raw);
+    const list = Array.isArray(cached?.apps) ? cached.apps : (Array.isArray(cached) ? cached : []);
+    return list.filter((a: any) => a && typeof a === 'object' && typeof a.slug === 'string' && a.slug.length > 0);
   } catch { return []; }
 }
 
@@ -44,12 +52,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [selectedCategory, setSelectedCategory] = useState<AppCategory | null>(null);
   const [selectedPlatform, setSelectedPlatform] = useState<string | null>(null);
   const [installedApps, setInstalledApps] = useState<string[]>(() => {
-    // Brand new site: start empty. Per-user key to avoid new accounts seeing old installs.
+    // Per-user key ONLY. The legacy shared key ('rx-store-installed') is read
+    // exclusively for a signed-out visitor — falling back to it for a signed-in
+    // user would surface ANOTHER account's installs on a shared computer.
     const userStr = localStorage.getItem('rx-store-user');
     let userId = '';
     try { userId = userStr ? JSON.parse(userStr).id : ''; } catch {}
     const key = userId ? `rx-store-installed-${userId}` : 'rx-store-installed';
-    const saved = localStorage.getItem(key) || localStorage.getItem('rx-store-installed');
+    const saved = localStorage.getItem(key);
     if (saved) { try { const arr = JSON.parse(saved); return Array.isArray(arr) ? arr : []; } catch {} }
     return [];
   });
@@ -64,13 +74,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setError(null);
     try {
       const data = await api.apps.list({ limit: 100 });
-      if (data.apps && Array.isArray(data.apps)) {
-        const normalized = (data.apps as any[]).map((a) => normalizeApp(a));
-        setApps(normalized);
-        try { localStorage.setItem(CATALOG_CACHE_KEY, JSON.stringify({ at: Date.now(), apps: normalized })); } catch {}
+      if (data?.apps && Array.isArray(data.apps)) {
+        // Skip unusable rows rather than throwing on one bad record, and never
+        // replace a good cached catalog with an empty/failed response.
+        const normalized = (data.apps as any[])
+          .filter((a) => a && typeof a === 'object' && typeof a.slug === 'string' && a.slug)
+          .map((a) => normalizeApp(a));
+        if (normalized.length > 0) {
+          setApps(normalized);
+          try { localStorage.setItem(CATALOG_CACHE_KEY, JSON.stringify({ at: Date.now(), apps: normalized })); } catch {}
+        }
       }
     } catch (e: any) {
-      setError(e.message || 'Failed to load apps');
+      // Backend outage: keep serving the cached catalog instead of blanking it.
+      // Keep any already-loaded (cached) catalog usable; only surface an error
+      // when we have nothing at all to show.
+      setError((prev) => (apps.length ? null : (e?.message || 'Failed to load apps')));
     } finally {
       setIsLoading(false);
     }
@@ -177,12 +196,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } catch { return 'rx-store-installed'; }
   };
 
+  /**
+   * Persist the per-user install list. We only write the legacy SHARED key while
+   * signed out, so a signed-in account's data is never exposed to another account.
+   */
+  const persistInstalled = (updated: string[]) => {
+    try {
+      const key = getInstalledKey();
+      localStorage.setItem(key, JSON.stringify(updated));
+      if (key === 'rx-store-installed') localStorage.setItem('rx-store-installed', JSON.stringify(updated));
+    } catch { /* quota / private mode */ }
+  };
+
   const installApp = (appId: string) => {
     setInstalledApps((prev) => {
       if (prev.includes(appId)) return prev;
       const updated = [...prev, appId];
-      localStorage.setItem(getInstalledKey(), JSON.stringify(updated));
-      localStorage.setItem('rx-store-installed', JSON.stringify(updated)); // keep legacy for fallback
+      persistInstalled(updated);
       return updated;
     });
   };
@@ -190,8 +220,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const uninstallApp = (appId: string) => {
     setInstalledApps((prev) => {
       const updated = prev.filter((id) => id !== appId);
-      localStorage.setItem(getInstalledKey(), JSON.stringify(updated));
-      localStorage.setItem('rx-store-installed', JSON.stringify(updated));
+      persistInstalled(updated);
       return updated;
     });
   };
@@ -199,8 +228,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Reload per-user installs when user changes (login/logout)
   useEffect(() => {
     const h = () => {
+      // Re-scope strictly to the (possibly new) account. An account with no
+      // cached list starts EMPTY rather than inheriting another account's data.
       const key = getInstalledKey();
-      const saved = localStorage.getItem(key) || localStorage.getItem('rx-store-installed');
+      const saved = localStorage.getItem(key);
       if (saved) { try { const arr = JSON.parse(saved); setInstalledApps(Array.isArray(arr)?arr:[]); return; } catch {} }
       setInstalledApps([]);
     };
