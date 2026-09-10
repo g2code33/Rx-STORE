@@ -182,7 +182,42 @@ Notes:
   hashes upgrade on next login); do not rotate `JWT_SECRET` unless you want to
   force everyone to sign in again.
 
-### Troubleshooting
+### Older deployments (DB created before this repo's migrations)
+
+Symptom: `0008` fails with `no such column: deleted_at` AND the database contains
+tables that are not in `backend/schema.sql` (e.g. `ad_stats`, `licenses`,
+`upload_jobs`). Such a database predates migrations `0002`–`0005` entirely.
+
+1. Dump the real DDL of the three tables the new worker depends on and compare
+   against `backend/schema.sql`:
+   ```bash
+   npx wrangler d1 execute rx-store-db --remote --command "SELECT name, sql FROM sqlite_master WHERE type='table' AND name IN ('packages','releases','applications')"
+   ```
+2. `applications` needs the `0004` + `0005` columns (the admin app editor writes
+   all of them). Add each **one command at a time** — a `duplicate column name`
+   error is harmless and means it already exists (do NOT use `--file` here: file
+   execution is transactional, so one duplicate would roll back the rest):
+   ```bash
+   npx wrangler d1 execute rx-store-db --remote --command "ALTER TABLE applications ADD COLUMN features TEXT DEFAULT '[]'"
+   npx wrangler d1 execute rx-store-db --remote --command "ALTER TABLE applications ADD COLUMN release_notes TEXT DEFAULT '[]'"
+   npx wrangler d1 execute rx-store-db --remote --command "ALTER TABLE applications ADD COLUMN deleted_at TEXT"
+   npx wrangler d1 execute rx-store-db --remote --command "ALTER TABLE applications ADD COLUMN android_package_id TEXT"
+   npx wrangler d1 execute rx-store-db --remote --command "ALTER TABLE applications ADD COLUMN windows_uninstall_key TEXT"
+   npx wrangler d1 execute rx-store-db --remote --command "ALTER TABLE applications ADD COLUMN windows_executable TEXT"
+   npx wrangler d1 execute rx-store-db --remote --command "ALTER TABLE applications ADD COLUMN linux_package_name TEXT"
+   npx wrangler d1 execute rx-store-db --remote --command "ALTER TABLE applications ADD COLUMN linux_executable TEXT"
+   ```
+3. `releases` needs (per `backend/schema.sql`): `channel`, `release_type`,
+   `minimum_supported_version`, `published_at`, `updated_at`, `deleted_at`,
+   `release_notes`. Check the step-1 dump and add any missing ones the same
+   one-command-per-ALTER way, e.g.
+   `ALTER TABLE releases ADD COLUMN channel TEXT DEFAULT 'stable'`.
+   Also check the `status` CHECK in the dump includes `rolled_back` and
+   `disabled` — if not, the rollback feature needs a table rebuild (ask before
+   attempting one).
+4. Then continue with the `0008` repair steps above.
+
+
 
 **`0008` fails with `no such column: deleted_at` (or `created_at`)**
 
