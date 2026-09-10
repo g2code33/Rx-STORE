@@ -1,6 +1,6 @@
 # RX Store — Final Integration Audit & Release Readiness (Prompt 10)
 
-**Date:** 2026-09-10 · **Version:** 1.3.1 · **Phase:** final verification (no new features)
+**Date:** 2026-09-10 · **Version:** 1.4.0 · **Phase:** final verification (no new features)
 
 This is the release-readiness assessment for the complete RX Store system after
 Prompts 1–10. It verifies that everything works together as **one coherent
