@@ -72,7 +72,7 @@ export interface NativeRuntime {
   install(app: App, url: string, fileName: string, opts?: { platform?: string }): Promise<{ started?: boolean; permissionRequired?: boolean }>;
 
   /** Invoke the registered uninstaller for the current platform. */
-  uninstall(app: App, target?: string): Promise<void>;
+  uninstall(app: App, target?: string, opts?: { quietTarget?: string; appImagePath?: string }): Promise<void>;
 
   /** Stable device identity for this install. */
   device(): ReturnType<typeof buildDeviceRecord>;
@@ -158,16 +158,17 @@ export function createNativeRuntime(): NativeRuntime {
       return { started: true, permissionRequired: false };
     },
 
-    uninstall: async (app, target) => {
+    uninstall: async (app, target, opts?) => {
       if (isAndroidShell() && app.androidPackageId) {
         await androidUninstall(app.androidPackageId);
         return;
       }
       if (isDesktopShell()) {
-        // Pass the detected uninstall target (registry UninstallString / package
-        // name) so the main process invokes the real mechanism, not a software
-        // manager. Empty target falls back to the app's configured identity.
-        await desktopUninstall(app.slug, target);
+        // Pass the detected uninstall target (Windows UninstallString + optional
+        // QuietUninstallString / Linux package id + owned AppImage path) so the
+        // main process invokes the real mechanism, not a software manager. Never
+        // guesses a target.
+        await desktopUninstall(app.slug, target, opts?.quietTarget, opts?.appImagePath);
         return;
       }
       throw new Error('Uninstalling is only available in the native apps.');

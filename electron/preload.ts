@@ -20,7 +20,7 @@ contextBridge.exposeInMainWorld('rxDesktop', {
   hashFile: (filePath: string) => ipcRenderer.invoke('native:hash-file', filePath),
   installApp: (filePath: string) => ipcRenderer.invoke('native:install', filePath),
   openApp: (target: string) => ipcRenderer.invoke('native:open', target),
-  uninstallApp: (input?: { appSlug?: string; target?: string; platform?: 'windows' | 'linux' | 'android' | 'web' }) => ipcRenderer.invoke('native:uninstall', input),
+  uninstallApp: (input?: { appSlug?: string; target?: string; quietTarget?: string; appImagePath?: string; platform?: 'windows' | 'linux' | 'android' | 'web' }) => ipcRenderer.invoke('native:uninstall', input),
   showNotification: (input: { title: string; body?: string }) => ipcRenderer.invoke('native:notify', input),
   onDownloadProgress: (cb: (s: any) => void) => {
     const listener = (_e: any, s: any) => cb(s);

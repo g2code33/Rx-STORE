@@ -468,6 +468,20 @@ async function detectLinux(identity: any): Promise<DetectedApp> {
     if (match && match.exec) desktopLauncher = match.exec;
   }
 
+  // AppImage detection: RX Store downloads AppImages into a known location.
+  // If the configured linuxExecutable (or a PATH hit) resolves to an .AppImage
+  // that we can positively identify as RX Store-managed, we track the artifact
+  // path so uninstall can remove ONLY that store-owned file (never unrelated
+  // user files). The launcher is stored/used directly, never opened as text.
+  let appImagePath = '';
+  if (exec && /\.appimage$/i.test(exec) && executable) {
+    if (/rx-store[-\w.]*\.appimage$/i.test(path.basename(executable))) {
+      appImagePath = executable;
+    }
+  } else if (executable && /\.appimage$/i.test(executable) && /rx-store[-\w.]*\.appimage$/i.test(path.basename(executable))) {
+    appImagePath = executable;
+  }
+
   const installed = foundByPackage || !!executable || !!desktopLauncher;
   return {
     installed,
@@ -475,6 +489,7 @@ async function detectLinux(identity: any): Promise<DetectedApp> {
     // Prefer the PATH-resolved executable; fall back to the .desktop Exec.
     executable: (executable || (desktopLauncher ? execBaseCommand(desktopLauncher) : '')) || undefined,
     packageName: pkg || undefined,
+    appImagePath: appImagePath || undefined,
     platform: 'linux',
     source: foundByPackage ? 'package' : executable ? 'executable' : desktopLauncher ? 'desktop' : 'none',
   };
@@ -521,16 +536,24 @@ async function resolveWindowsShortcut(shortcutPath: string): Promise<void> {
   }).catch(() => { /* best-effort: if resolution fails, fall through */ });
 }
 
-/** Invoke a Windows registered uninstaller (from UninstallString) detached. */
-async function uninstallWindows(uninstallString: string): Promise<boolean> {
-  const { exe, args } = parseWindowsCommand(uninstallString);
-  if (!exe) throw new Error('Invalid uninstaller command.');
+/**
+ * Invoke a Windows registered uninstaller.
+ * `quietUninstallString` is preferred when present and safely usable (a silent
+ * uninstall lets the OS complete without user interaction); otherwise we use
+ * `uninstallString`, which shows Windows' normal confirmation / privilege UI.
+ * Both strings are parsed into executable + args arrays (never a shell string).
+ */
+async function uninstallWindows(opts: { uninstallString?: string; quietUninstallString?: string }): Promise<boolean> {
+  const { exe, args } = parseWindowsCommand(opts.quietUninstallString || opts.uninstallString || '');
+  if (!exe) throw new Error('No valid uninstaller command was registered for this application.');
   if (!existsSync(exe)) throw new Error('The registered uninstaller was not found on disk.');
-  // Run detached so Windows can show its normal confirmation / privilege UI.
+  // Run detached so the OS/installer can show its own confirmation UI and can
+  // survive RX Store. Errors here mean the uninstaller could not be launched,
+  // NOT that uninstall succeeded — the caller re-detects to confirm.
   await new Promise<void>((resolve, reject) => {
     const child = execFile(exe, args, { detached: true, stdio: 'ignore', windowsHide: false }, (err) => {
-      // Detached GUI processes return 0 immediately; ENOENT/real errors reject.
-      resolve();
+      // Detached GUI processes return 0 immediately; real launch errors reject.
+      if (err && (err as any).code !== 'ENOENT') reject(err); else resolve();
     });
     child.unref();
   });
@@ -538,8 +561,8 @@ async function uninstallWindows(uninstallString: string): Promise<boolean> {
 }
 
 /** Invoke a Linux uninstall for a detected package/AppImage. */
-async function uninstallLinux(target: string): Promise<boolean> {
-  const t = String(target || '').trim();
+async function uninstallLinux(opts: { target: string; appImagePath?: string }): Promise<boolean> {
+  const t = String(opts.appImagePath || opts.target || '').trim();
   const isAppImage = /\.appimage$/i.test(t);
   if (isAppImage) {
     // Only remove an AppImage we can positively establish as a store-managed
@@ -617,7 +640,11 @@ function initIpc() {
     if (/^https?:\/\//i.test(t)) { await shell.openExternal(t); return true; }
     // Only ever launch a local target that actually exists and was positively
     // detected. Nothing here is interpolated into a shell command.
-    if (!existsSync(t)) throw new Error('The installed application executable could not be found.');
+    if (!existsSync(t)) {
+      // A missing executable is a STALE path (likely uninstalled/re-located) —
+      // NOT proof the app is uninstalled. The caller should re-detect.
+      throw new Error('STALE_EXECUTABLE: The detected executable no longer exists. Re-run detection.');
+    }
     // Direct process execution (NO shell, NO shell.openPath): for a launcher
     // script this runs the launcher itself (preserving Chromium sandbox setup),
     // for an .exe it starts the executable. Detached so the app keeps running.
@@ -629,16 +656,18 @@ function initIpc() {
   // UninstallString / Linux package id / owned AppImage path), NOT arbitrary
   // remote metadata. We invoke the OS mechanism directly so it can show its
   // normal confirmation/privilege UI. Never opens a software manager.
-  ipcMain.handle('native:uninstall', async (_event, input?: { appSlug?: string; target?: string; platform?: string }) => {
+  ipcMain.handle('native:uninstall', async (_event, input?: { appSlug?: string; target?: string; quietTarget?: string; appImagePath?: string; platform?: string }) => {
     const target = String(input?.target || '').trim();
+    const quietTarget = String(input?.quietTarget || '').trim();
+    const appImagePath = String(input?.appImagePath || '').trim();
     const platform = String(input?.platform || process.platform);
     if (process.platform === 'win32' || platform === 'windows') {
-      if (!target) throw new Error('No uninstaller registered for this application.');
-      return uninstallWindows(target);
+      if (!target && !quietTarget) throw new Error('No uninstaller registered for this application.');
+      return uninstallWindows({ uninstallString: target, quietUninstallString: quietTarget });
     }
     if (process.platform === 'linux' || platform === 'linux') {
-      if (!target) throw new Error('No uninstall target for this application.');
-      return uninstallLinux(target);
+      if (!target && !appImagePath) throw new Error('No uninstall target for this application.');
+      return uninstallLinux({ target, appImagePath });
     }
     throw new Error('Uninstall is not supported on this platform.');
   });

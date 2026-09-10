@@ -316,6 +316,66 @@ export function deviceActivity(lastSeenAt?: string | null, now: number = Date.no
   return 'offline';
 }
 
+// ---------------------------------------------------------------------------
+// Prompt 4 — native lifecycle hardening decisions (pure, unit-tested).
+// These models lifecycles that must NEVER be conflated: a failed open is not an
+// uninstall; a stale path is not proof of removal; an installer launch is not
+// installation success.
+// ---------------------------------------------------------------------------
+
+/** A launch/uninstall target resolved from native detection, for safe use. */
+export interface NativeActionTarget {
+  executable?: string;
+  uninstallString?: string;
+  quietUninstallString?: string;
+  packageName?: string;
+  appImagePath?: string;
+  platform: DetectedPlatform;
+}
+
+/** How to interpret a failed `Open` — never treat it as an uninstall. */
+export function classifyOpenFailure(errorMessage: string): { kind: 'stale_executable' | 'not_found' | 'launch_failed'; recoverable: boolean } {
+  const msg = String(errorMessage || '').toLowerCase();
+  if (msg.includes('stale_executable')) {
+    return { kind: 'stale_executable', recoverable: true };
+  }
+  if (msg.includes('not found') || msg.includes('could not be found') || msg.includes('does not exist') || msg.includes('no longer exists')) {
+    return { kind: 'not_found', recoverable: true };
+  }
+  return { kind: 'launch_failed', recoverable: false };
+}
+
+/**
+ * Whether an executable path should be trusted for `Open`. A stale path (the
+ * target no longer exists on disk) must trigger re-detection rather than an
+ * uninstall. Existence of a valid target is what makes Open safe.
+ */
+export function isExecutableTargetValid(executable?: string | null, exists?: boolean): boolean {
+  if (!executable) return false;
+  return exists === undefined ? true : !!exists;
+}
+
+/**
+ * The preferred uninstall command for an application. Quiet uninstall is chosen
+ * only when present AND the caller opted into it (safe use); otherwise the
+ * normal UninstallString is used so Windows can show its confirmation UI.
+ */
+export function preferredUninstallCommand(uninstallString?: string, quietUninstallString?: string, preferQuiet = true): string | null {
+  if (preferQuiet && quietUninstallString) return quietUninstallString;
+  return uninstallString || quietUninstallString || null;
+}
+
+/**
+ * True when the `installed` result is from a detection source that can support a
+ * real uninstall action (registry / package / desktop). When detection is only
+ * "executable" we can still launch, but may not have a registered uninstaller.
+ */
+export function hasUninstallableSource(source?: string, uninstallString?: string, packageName?: string, appImagePath?: string): boolean {
+  if (uninstallString || packageName) return true;
+  if (appImagePath) return true;
+  return ['registry', 'package', 'desktop', 'package-manager'].includes(String(source || ''));
+}
+
 /** Map a rich InstallState to the backend's lowercase status value. */
 export function installStatusForReport(state: InstallState): string {
   switch (state) {

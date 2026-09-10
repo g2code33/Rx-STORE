@@ -46,16 +46,35 @@ public class AppInstallerPlugin extends Plugin {
     // Real Android package detection by the stable package ID (never display name).
     // Returns a normalized shape so the store frontend can reason about it the
     // same way it does desktop detections.
+    //
+    // Android 11+ package visibility: `getPackageInfo` can throw for packages not
+    // visible to us, while `getLaunchIntentForPackage` is visibility-friendly for
+    // launchable apps. We use the launch intent first (covers the vast majority of
+    // distributed apps), then fall back to getPackageInfo for version metadata.
     @PluginMethod
     public void isInstalled(PluginCall call) {
         String packageId = call.getString("packageId", "");
         boolean installed = false;
         String version = "";
         if (!packageId.isEmpty()) {
-            try {
-                android.content.pm.PackageInfo info = getContext().getPackageManager().getPackageInfo(packageId, 0);
-                installed = true; version = info.versionName == null ? "" : info.versionName;
-            } catch (Exception ignored) {}
+            // 1. Visibility-friendly launch-intent check.
+            android.content.Intent launch = getContext().getPackageManager().getLaunchIntentForPackage(packageId);
+            if (launch != null) {
+                installed = true;
+                // Best-effort version metadata (may be filtered on Android 11+).
+                try {
+                    android.content.pm.PackageInfo info = getContext().getPackageManager().getPackageInfo(packageId, 0);
+                    version = info.versionName == null ? "" : info.versionName;
+                } catch (Exception ignored) { version = ""; }
+            } else {
+                // 2. Fall back to a direct package-info query (works where the package
+                //    is visible via <queries>). A missing package is NOT an error.
+                try {
+                    android.content.pm.PackageInfo info = getContext().getPackageManager().getPackageInfo(packageId, 0);
+                    installed = true;
+                    version = info.versionName == null ? "" : info.versionName;
+                } catch (Exception ignored) {}
+            }
         }
         JSObject result = new JSObject();
         result.put("installed", installed);

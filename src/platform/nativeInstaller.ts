@@ -60,6 +60,10 @@ export interface DesktopDetectionResult {
   version?: string;
   launchTarget?: string;
   executable?: string;
+  uninstallString?: string;
+  quietUninstallString?: string;
+  packageName?: string;
+  appImagePath?: string;
   source?: string;
   platform?: 'windows' | 'linux';
 }
@@ -120,12 +124,14 @@ export async function desktopOpenTarget(target: string) {
 
 /**
  * Invoke the real uninstaller for a detected app. `target` is the validated
- * uninstall target (Windows UninstallString / Linux package id / AppImage path)
- * obtained from native detection; `appSlug` is used for cache reconciliation.
+ * uninstall target (Windows UninstallString / Linux package id) obtained from
+ * native detection; `quietTarget` is the optional Windows QuietUninstallString;
+ * `appImagePath` is an RX Store-owned AppImage path; `appSlug` is used for cache
+ * reconciliation. Never guesses a target.
  */
-export async function desktopUninstall(appSlug?: string, target?: string) {
+export async function desktopUninstall(appSlug?: string, target?: string, quietTarget?: string, appImagePath?: string) {
   if (!window.rxDesktop) throw new Error('Desktop uninstaller is unavailable');
-  await window.rxDesktop.uninstallApp({ appSlug, target, platform: getRuntimePlatform() });
+  await window.rxDesktop.uninstallApp({ appSlug, target, quietTarget, appImagePath, platform: getRuntimePlatform() });
 }
 
 /** The current runtime platform (windows | linux | android | web). */

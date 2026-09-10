@@ -117,3 +117,50 @@ native detection.
   not mutate, `describeTransaction`, `isFailed`/`isTerminalSuccess`, download
   completion never becomes INSTALLED, failed update preserves the previous
   version, store subscription.
+
+---
+
+## Prompt 4 — Native lifecycle hardening
+
+### Electron Open
+- Detected **executable/launcher** targets are launched via direct `execFile`
+  (no shell, no `shell.openPath`). A Linux launcher script is executed, never
+  opened as text (the Ubuntu/CGPA Pilot fix).
+- **URLs** are kept separate: a URL target (web/PWA) opens via
+  `shell.openExternal`. A native app's executable is never routed through a URL.
+- A **stale executable path** (the file no longer exists on disk) throws
+  `STALE_EXECUTABLE: ...` so the frontend re-detects and informs the user. A
+  failed Open is a **recoverable** error and is **never** treated as an
+  uninstall (`classifyOpenFailure`).
+
+### Windows detection + uninstall
+- Detection exposes `UninstallString`, `QuietUninstallString`, `DisplayVersion`,
+  `InstallLocation`, `DisplayIcon`, executable, across HKCU / HKLM /
+  WOW6432Node. No invented GUIDs.
+- Uninstall prefers `QuietUninstallString` when present (silent where safe),
+  otherwise `UninstallString` (shows Windows' confirmation/privilege UI). Both
+  are parsed into executable + **args array** (never a shell string) and the exe
+  is validated to exist before launch. A command that can't be safely parsed is
+  rejected (`parseWindowsCommand`).
+
+### Linux detection + uninstall
+- Detection uses dpkg + PATH + `.desktop` entries (`/usr/share/applications`,
+  `~/.local/share/applications`), extracting `Name`, `Exec`, `Icon`, `NoDisplay`.
+- `.deb`: `apt-get purge -- <pkg>` via the OS (handles privilege/auth), then
+  re-detect. AppImage: only an RX Store-owned (filename
+  `rx-store-<version>.AppImage`) artifact is removed; `appImagePath` is tracked
+  so uninstall removes ONLY that store-owned file and never unrelated user files.
+
+### Android
+- Open uses the actual distributed package ID via the plugin's launch intent,
+  never RX Store's own `com.calcitonin.rxstore`.
+- Uninstall launches Android's delete flow, then **re-runs detection**; the
+  current device is reported `not_installed` only after confirmed absence (the
+  reconciler polls within a verification window). `isInstalled` is Android 11+
+  visibility-safe (`getLaunchIntentForPackage` first, then `getPackageInfo`).
+
+### Verification
+Every install/update/uninstall goes through native detection verification. An
+`INSTALLER_STARTED` state is never treated as `INSTALLED`; only detection
+confirmation reaches `INSTALLED`, and only confirmed absence reaches
+`not_installed`.

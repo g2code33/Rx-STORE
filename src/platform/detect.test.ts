@@ -24,6 +24,10 @@ import {
   mapDetectionToInstall,
   installStatusForReport,
   deviceActivity,
+  classifyOpenFailure,
+  isExecutableTargetValid,
+  preferredUninstallCommand,
+  hasUninstallableSource,
   type InstalledApp,
 } from './detect.ts';
 
@@ -394,4 +398,70 @@ test('deviceActivity thresholds: active / stale / offline, never falsely online'
   assert.equal(deviceActivity('', now), 'offline');
   assert.equal(deviceActivity(undefined, now), 'offline');
   assert.equal(deviceActivity('garbage', now), 'offline');
+});
+
+// ---------------------------------------------------------------------------
+// Prompt 4 — native lifecycle hardening decisions
+// ---------------------------------------------------------------------------
+test('open failure never becomes an uninstall (stale / missing / launch)', () => {
+  const stale = classifyOpenFailure('STALE_EXECUTABLE: no longer exists');
+  assert.equal(stale.kind, 'stale_executable');
+  assert.equal(stale.recoverable, true);
+
+  const missing = classifyOpenFailure('The installed application executable could not be found.');
+  assert.equal(missing.kind, 'not_found');
+  assert.equal(missing.recoverable, true);
+
+  const launch = classifyOpenFailure('Access is denied.');
+  assert.equal(launch.kind, 'launch_failed');
+  assert.equal(launch.recoverable, false);
+
+  // Launch failure is NOT a reason to mark the app uninstalled.
+  assert.notEqual(launch.kind, 'uninstall');
+});
+
+test('stale executable path: a missing file triggers re-detection, not uninstall', () => {
+  // target exists -> valid; target removed -> invalid (re-detect), but not uninstalled.
+  assert.equal(isExecutableTargetValid('C:\\x\\app.exe', true), true);
+  assert.equal(isExecutableTargetValid('C:\\x\\app.exe', false), false);
+  assert.equal(isExecutableTargetValid(undefined, false), false);
+  const after = normalizeInstalledApp('cgpa-pilot', 'windows', { installed: true, version: '1.0.25', executable: 'C:\\gone\\app.exe', source: 'registry' }, '1.0.25');
+  // A stale path is still "detected installed" until re-detection proves otherwise.
+  assert.equal(stateForDetection(after, '1.0.25'), 'INSTALLED_CURRENT');
+});
+
+test('preferredUninstallCommand prefers QuietUninstallString, falls back to UninstallString', () => {
+  assert.equal(preferredUninstallCommand('"C:\\x\\un.exe" /S', '"C:\\x\\un.exe" /quiet', true), '"C:\\x\\un.exe" /quiet');
+  assert.equal(preferredUninstallCommand('"C:\\x\\un.exe" /S', '', true), '"C:\\x\\un.exe" /S');
+  assert.equal(preferredUninstallCommand('', '"C:\\x\\un.exe" /quiet', false), '"C:\\x\\un.exe" /quiet');
+  assert.equal(preferredUninstallCommand('', '', true), null);
+});
+
+test('hasUninstallableSource: only registry/package/desktop/owned artifacts support real uninstall', () => {
+  assert.equal(hasUninstallableSource('registry', '"C:\\x\\un.exe"', '', ''), true);
+  assert.equal(hasUninstallableSource('package', '', 'cgpa-pilot', ''), true);
+  assert.equal(hasUninstallableSource('desktop', '', '', ''), true);
+  assert.equal(hasUninstallableSource('package-manager', '', '', ''), true);
+  assert.equal(hasUninstallableSource('executable', '', '', ''), false);
+  assert.equal(hasUninstallableSource('', '', '', '/opt/rx/cgpa-pilot.AppImage'), true);
+});
+
+test('installer launch is NOT installation success (state model enforces verification)', () => {
+  // The coordinator distinguishes INSTALLER_STARTED from INSTALLED: only native
+  // detection confirmation can reach INSTALLED. We model this with the rich state.
+  const launched = currentDeviceInstallState(null, '1.0.25', 'installing');
+  assert.equal(launched, 'INSTALLING');
+  // Not INSTALLED until detection confirms.
+  const local = normalizeInstalledApp('cgpa-pilot', 'android', { installed: true, version: '1.0.25', source: 'package-manager' }, '1.0.25');
+  assert.equal(currentDeviceInstallState(local, '1.0.25'), 'INSTALLED');
+});
+
+test('Android uninstall reconciliation: confirmed absence only after re-detection', () => {
+  const before = normalizeInstalledApp('cgpa-pilot', 'android', { installed: true, version: '1.0.25', source: 'package-manager' }, '1.0.25');
+  assert.equal(currentDeviceInstallState(before, '1.0.25'), 'INSTALLED');
+  // After OS confirms removal, re-detection returns not installed.
+  const after = normalizeInstalledApp('cgpa-pilot', 'android', { installed: false, source: 'package-manager' }, '1.0.25');
+  assert.equal(currentDeviceInstallState(after, '1.0.25'), 'NOT_INSTALLED');
+  // Report only the CONFIRMED state — never the uninstall intent.
+  assert.equal(installStatusForReport(currentDeviceInstallState(after, '1.0.25')), 'not_installed');
 });

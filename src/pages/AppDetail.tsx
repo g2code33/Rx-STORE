@@ -45,6 +45,33 @@ function formatSizeLabel(platform: string): string {
   }
 }
 
+/**
+ * Poll native detection after an uninstall within a verification window.
+ * Returns true while the app is STILL detected as installed, false once it is
+ * confirmed gone (only then may the current device be reported NOT_INSTALLED).
+ * If detection is unavailable, we keep the previous state (never guess).
+ */
+async function waitForUninstallDetection(rt: ReturnType<typeof getNativeRuntime>, app: { slug: string }): Promise<boolean> {
+  const WINDOW_MS = 60_000;
+  const POLL_MS = 3_000;
+  const start = Date.now();
+  let sawDetection = false;
+  while (Date.now() - start < WINDOW_MS) {
+    try {
+      await rt.refresh(app.slug);
+      const det = await rt.detect(app as any);
+      if (det) sawDetection = true;
+      if (det?.installed) return true;            // still installed (uninstall not done / failed)
+      if (det && !det.installed) return false;    // confirmed gone
+    } catch { /* detection unavailable — keep waiting */ }
+    await new Promise((r) => setTimeout(r, POLL_MS));
+  }
+  // Window elapsed with detection available but still "not installed": confirm gone.
+  if (sawDetection) return false;
+  // Detection never produced a result → inconclusive. Preserve previous state.
+  return true;
+}
+
 /** Internal paths navigate in-app, external URLs open a new tab, '#' stays inert. */
 function DetailLink({ to, className, children }: { to: string; className?: string; children: React.ReactNode }) {
   if (/^https?:\/\//.test(to)) return <a href={to} target="_blank" rel="noreferrer" className={className}>{children}</a>;
@@ -261,10 +288,20 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   };
 
   const handleNativeOpen = async () => {
+    const rt = getNativeRuntime();
     try {
-      const rt = getNativeRuntime();
       await rt.open(app, systemInstalled?.executable || nativePackage?.launchTarget);
-    } catch (e: any) { toast.error(e.message || 'Could not open application'); }
+    } catch (e: any) {
+      if (String(e?.message || '').includes('STALE_EXECUTABLE')) {
+        // Stale executable path: re-detect and inform the user. This is a
+        // RECOVERABLE open failure — it must NEVER mark the app as uninstalled.
+        await rt.refresh(app.slug);
+        void refreshDetection();
+        toast.error('The app could not be launched (its executable moved or was removed). We re-checked your installation.', { duration: 6000 });
+      } else {
+        toast.error(e.message || 'Could not open application');
+      }
+    }
   };
 
   const handleUninstall = async () => {
@@ -272,32 +309,32 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
     try {
       const rt = getNativeRuntime();
       // Determine the validated uninstall target from a fresh detection so the OS
-      // invokes the real mechanism (registry UninstallString / package id), not a
-      // software manager. Re-detect so we get accurate + current info.
+      // invokes the real mechanism (Windows UninstallString + optional
+      // QuietUninstallString / Linux package id), never a software manager.
       await rt.refresh(app.slug);
       const fresh = await rt.detect(app);
       const target = fresh?.uninstallString || fresh?.packageName || fresh?.executable;
-      await rt.uninstall(app, target);
+      const quietTarget = fresh?.quietUninstallString;
+      const appImagePath = fresh?.appImagePath;
+      await rt.uninstall(app, target, { quietTarget, appImagePath });
       toast('The operating system will ask you to confirm the uninstall.', { icon: 'ℹ️', duration: 6000 });
-      // Wait briefly then re-detect to confirm + reconcile.
-      setTimeout(async () => {
-        await rt.refresh(app.slug);
-        const after = await rt.detect(app);
-        const stillInstalled = !!after?.installed;
-        if (!stillInstalled) {
-          removeNativePackage(app.slug);
-          uninstallApp(app.id);
-          setNativePackage(null);
-          void refreshDetection();
-        }
-        await reportInstallation({
-          appSlug: app.slug,
-          installed: stillInstalled,
-          installedVersion: after?.version,
-          status: stillInstalled ? 'INSTALLED' : 'NOT_INSTALLED',
-          detectionSource: after?.source,
-        }).catch(() => {});
-      }, 2500);
+      // Re-detect within a verification window (poll) so we only reconcile the
+      // current-device state once native detection confirms the app is gone. We
+      // NEVER report NOT_INSTALLED merely because the uninstall intent launched.
+      const stillInstalled = await waitForUninstallDetection(rt, app);
+      if (!stillInstalled) {
+        removeNativePackage(app.slug);
+        uninstallApp(app.id);
+        setNativePackage(null);
+        void refreshDetection();
+      }
+      await reportInstallation({
+        appSlug: app.slug,
+        installed: stillInstalled,
+        installedVersion: stillInstalled ? (await rt.detect(app))?.version : undefined,
+        status: stillInstalled ? 'INSTALLED' : 'NOT_INSTALLED',
+        detectionSource: stillInstalled ? (await rt.detect(app))?.source : undefined,
+      }).catch(() => {});
     } catch (e: any) {
       toast.error(e.message || 'Could not uninstall the application');
     }

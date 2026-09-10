@@ -1,12 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Permit detection only of launchable apps, not broad device inventory. -->
+    <!-- Permit detection of distributed installed applications on Android 11+.
+         We scope this to launchable apps (any LAUNCHER-category MAIN activity)
+         so RX Store can query installed package metadata/version without
+         requesting broad, invasive package visibility. RX Store never reads the
+         full package inventory; it only asks about the specific package id of an
+         app the user is viewing. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- Explicit package declarations for the apps RX Store distributes /
+             detects by package id. Add the stable package id here to be visible
+             on Android 11+ even if the app has no launcher activity. -->
     </queries>
 
     <application
