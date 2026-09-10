@@ -182,6 +182,38 @@ Notes:
   hashes upgrade on next login); do not rotate `JWT_SECRET` unless you want to
   force everyone to sign in again.
 
+### Troubleshooting
+
+**`0008` fails with `no such column: deleted_at` (or `created_at`)**
+
+Your production `packages` table is older than this repo's schema baseline and
+is missing a column the migration copies. The failed run **rolled back** —
+wrangler executes the file as one transaction, so `packages` is untouched.
+
+1. Confirm the rollback left no half-built table behind:
+   ```bash
+   npx wrangler d1 execute rx-store-db --remote --command "SELECT name FROM sqlite_master WHERE name LIKE 'packages%' ORDER BY name"
+   ```
+   Only `packages` should be listed. If a leftover `packages_new` exists
+   (should not happen), drop it: `DROP TABLE packages_new;`
+2. Inspect the real table definition:
+   ```bash
+   npx wrangler d1 execute rx-store-db --remote --command "SELECT sql FROM sqlite_master WHERE name='packages'"
+   ```
+3. Add each missing column **one command at a time** (a `duplicate column
+   name` error just means it already exists — skip past it):
+   ```bash
+   npx wrangler d1 execute rx-store-db --remote --command "ALTER TABLE packages ADD COLUMN deleted_at TEXT"
+   npx wrangler d1 execute rx-store-db --remote --command "ALTER TABLE packages ADD COLUMN created_at TEXT"
+   ```
+4. Optional data-quality check — rows with empty required fields would be
+   silently skipped by the copy, so this must return `0`:
+   ```bash
+   npx wrangler d1 execute rx-store-db --remote --command "SELECT COUNT(*) AS bad_rows FROM packages WHERE filename IS NULL OR filename='' OR storage_key IS NULL OR storage_key='' OR sha256 IS NULL OR sha256='' OR file_size IS NULL OR version IS NULL OR version=''"
+   ```
+5. Re-run `0008`, then verify the row count matches step 1's pre-migration
+   count. If the count dropped, stop and investigate — do not re-run.
+
 For one-off ad-hoc SQL, the same command shape applies:
 
 ```bash

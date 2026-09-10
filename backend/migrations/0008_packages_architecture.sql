@@ -18,6 +18,21 @@
 -- D1 CAVEAT: dropping a table drops its indexes, so `idx_packages_*` are
 -- recreated AFTER the rename (the old indexes no longer exist by then).
 --
+-- PRE-FLIGHT (deployments whose `packages` table predates this repo's schema):
+-- This migration copies these columns from the OLD table: id, application_id,
+-- release_id, platform, architecture, filename, storage_key, file_size,
+-- mime_type, sha256, version, deployment_url, package_type, status,
+-- deleted_at, created_at. Older deployments may lack `deleted_at` (and
+-- possibly `created_at`), which fails the copy with
+-- "no such column: deleted_at". Check your real table first:
+--   npx wrangler d1 execute rx-store-db --remote --command "SELECT sql FROM sqlite_master WHERE name='packages';"
+-- If a column is missing, add it BEFORE running this file (one command at a
+-- time; a "duplicate column name" error just means it already exists):
+--   ALTER TABLE packages ADD COLUMN deleted_at TEXT;
+--   ALTER TABLE packages ADD COLUMN created_at TEXT;
+-- (SQLite only allows constant defaults in ADD COLUMN; NULL is fine — both
+-- columns are nullable in packages_new.)
+--
 -- Run EXACTLY ONCE against production:
 --   npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0008_packages_architecture.sql
 --
