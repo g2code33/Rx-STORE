@@ -99,8 +99,10 @@ Every foreign-key column used for lookup is indexed, plus:
 
 ## Migrations
 
-Run in filename order. All are idempotent or safely re-runnable (see each file's
-header).
+Run in filename order. `0002`–`0007` are idempotent (`IF NOT EXISTS` /
+`CREATE TABLE` guards — safe to re-run). **`0008` runs exactly once** (see its
+header: a needless re-run preserves rows but resets the compatibility metadata
+columns), so back up before applying it.
 
 ```
 0002_packages_platforms.sql          allow all upload platforms
@@ -122,7 +124,65 @@ execution order. The rename is safe: the file is `CREATE TABLE IF NOT EXISTS`,
 and renaming does not re-run anything for deployments that already applied the
 old filename.
 
-Apply against production D1:
+---
+
+## Production migration runbook (required before deploying the Prompt 2–10 worker)
+
+The new backend endpoints (`/devices/*`, `/auth/refresh` sessions, the
+architecture-aware package download) require the `0006`–`0008` tables. **Migrate
+the database first, then deploy the worker code** — the old worker ignores the
+new tables, so there is no downtime window.
+
+Run from the repository root (the account comes from `npx wrangler login`):
+
+```bash
+# 0) Confirm you are logged in to the right Cloudflare account
+npx wrangler whoami                 # if not logged in: npx wrangler login
+
+# 1) BACK UP the remote database (0008 rebuilds the packages table)
+npx wrangler d1 export rx-store-db --remote --output=db-backup.sql
+
+# 2) Check which migrations are already applied (list existing tables)
+npx wrangler d1 execute rx-store-db --remote \
+  --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+
+# 3) Record the current package count — it MUST be identical after 0008
+npx wrangler d1 execute rx-store-db --remote \
+  --command "SELECT COUNT(*) AS packages_before FROM packages"
+
+# 4) Apply the three new migrations IN ORDER (confirm if wrangler asks)
+npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0006_devices_installations.sql
+npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0007_auth_sessions.sql
+npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0008_packages_architecture.sql
+
+# 5) Verify: count unchanged + new tables exist
+npx wrangler d1 execute rx-store-db --remote \
+  --command "SELECT COUNT(*) AS packages_after FROM packages"
+npx wrangler d1 execute rx-store-db --remote \
+  --command "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('devices','app_installations','auth_sessions') ORDER BY name"
+
+# 6) Deploy the updated worker (the new endpoints are code, not just tables)
+cd backend && npx wrangler deploy && cd ..
+
+# 7) Confirm required secrets are set on the worker
+cd backend && npx wrangler secret list     # must include JWT_SECRET
+```
+
+Notes:
+
+* If step 2 shows any of `0002`–`0005b`'s tables/columns missing (e.g. the
+  native identity columns from `0005`), apply those files the same way first —
+  they are all re-run safe.
+* **CORS:** after deploying, only the first-party origins
+  (`rxstore.com`, `www.rxstore.com`, `api.rxstore.com`, `app://rxstore`,
+  Capacitor/localhost shells) are allowed in production. If the web frontend is
+  served from anywhere else (e.g. a `*.pages.dev` host), add its exact origin to
+  `CORS_ALLOWED_ORIGINS` in `backend/wrangler.toml` before deploying.
+* **No user data migration:** existing password hashes still verify (legacy
+  hashes upgrade on next login); do not rotate `JWT_SECRET` unless you want to
+  force everyone to sign in again.
+
+For one-off ad-hoc SQL, the same command shape applies:
 
 ```bash
 npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/<file>.sql

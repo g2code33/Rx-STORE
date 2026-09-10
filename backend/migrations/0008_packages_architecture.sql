@@ -18,13 +18,19 @@
 -- D1 CAVEAT: dropping a table drops its indexes, so `idx_packages_*` are
 -- recreated AFTER the rename (the old indexes no longer exist by then).
 --
--- Run once against production:
+-- Run EXACTLY ONCE against production:
 --   npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0008_packages_architecture.sql
--- Safe to re-run (guards on the existing constraint).
+--
+-- RE-RUN WARNING: rows are copied forward before the old table is dropped, so
+-- an accidental re-run does not lose package rows — BUT the copy cannot include
+-- min_os_version / min_android_sdk (those columns do not exist in the OLD
+-- packages table this migration converts from), so a re-run would reset any
+-- values set after the first run to NULL. Take a backup first
+-- (`npx wrangler d1 export rx-store-db --remote --output=backup.sql`), run
+-- once, and verify the row count is unchanged afterwards.
 
--- Only perform the rebuild when the old single-architecture constraint is present.
--- (When this migration was already applied, the UNIQUE index name differs and the
---  guard makes the script a no-op.)
+-- SQLite cannot drop the old UNIQUE(release_id, platform) auto-index in place,
+-- so the table is rebuilt: create new -> copy rows -> drop old -> rename.
 CREATE TABLE IF NOT EXISTS packages_new (
   id TEXT PRIMARY KEY,
   application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
