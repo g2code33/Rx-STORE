@@ -2,6 +2,9 @@
 
 Machine-readable status for every major requirement across Prompts 1–9.
 
+> **Final phase:** the Prompt 10 final integration audit and release-readiness
+> verdict lives in [`docs/RELEASE_READINESS.md`](./RELEASE_READINESS.md).
+
 **Status legend**
 
 * **PASS** — implemented **and verified** in this environment.

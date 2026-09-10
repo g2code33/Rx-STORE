@@ -206,6 +206,7 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
       if(!token){ window.location.href='/login'; return; }
       try{
         const API=(import.meta as any).env?.VITE_API_URL;
+        if(!API) throw new Error('RX Store is not connected to its application service. Install a correctly configured build.');
         const r=await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/download?platform=${platform}`,{headers:{'Authorization':`Bearer ${token}`}});
         const j=await r.json().catch(()=>null);
         if(!r.ok||!j?.success) throw new Error(j?.error?.message||'Download failed');

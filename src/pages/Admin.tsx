@@ -448,8 +448,10 @@ export default function Admin() {
                             <button onClick={()=>setEditingApp(app)} className="p-1.5 text-rx-gray-medium hover:text-white hover:bg-white/10 rounded-lg transition-all"><Edit className="w-4 h-4" /></button>
                             <button onClick={async()=>{
                               if(!confirm(`Delete ${app.name}?`)) return;
+                              const API=(import.meta as any).env?.VITE_API_URL;
+                              if(!API){ alert('RX Store is not connected to its application service. Install a correctly configured build.'); return; }
                               const token=localStorage.getItem('rx-store-token')||'';
-                              const res=await fetch(`${import.meta.env.VITE_API_URL}/admin/apps/${app.slug}`,{method:'DELETE',headers:{'Authorization':`Bearer ${token}`}});
+                              const res=await fetch(`${API.replace(/\/$/,'')}/admin/apps/${app.slug}`,{method:'DELETE',headers:{'Authorization':`Bearer ${token}`}});
                               if(res.ok) { refresh(); } else { const j=await res.json(); alert(j.error?.message||'Failed'); }
                             }} className="p-1.5 text-rx-gray-medium hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all"><Trash2 className="w-4 h-4" /></button>
                           </div>

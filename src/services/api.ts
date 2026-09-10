@@ -1,7 +1,9 @@
 /**
  * RX Store API Service
- * Central HTTP client with auth, fallback to mock, and typed endpoints.
- * Set VITE_API_URL to connect to real backend; defaults to mock mode.
+ * Central HTTP client with auth and typed endpoints.
+ * Requires VITE_API_URL (the deployed backend origin). Without it every call
+ * fails clearly with "API not configured" — there is NO silent mock fallback,
+ * and production builds refuse to compile without it (vite.config.ts guard).
  */
 
 import { log, recordMetric } from '../native/logger.ts';

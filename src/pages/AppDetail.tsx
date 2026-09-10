@@ -650,6 +650,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
                         try {
                           const API=(import.meta as any).env?.VITE_API_URL;
                           const token=localStorage.getItem('rx-store-token')||'';
+                          if(!API) throw new Error('RX Store is not connected to its application service. Install a correctly configured build.');
                           const r=await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/reviews`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify({rating:newRating, comment:newComment})});
                           const j=await r.json();
                           if(!r.ok) throw new Error(j.error?.message||'Failed');
