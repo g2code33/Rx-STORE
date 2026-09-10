@@ -3,6 +3,7 @@
  */
 import { getSetting } from '../services/settings';
 import { verifyToken } from '../services/auth';
+import { paginationMeta } from '../services/releases';
 
 /** Display label per stored package platform (used for the auto-derived size). */
 const SIZE_LABEL: Record<string, string> = {
@@ -80,21 +81,24 @@ export const appsRoutes = {
     const page = parseInt(url.searchParams.get('page') || '1');
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '20'), 100);
 
-    let query = `SELECT * FROM applications WHERE status='active'`;
-    const bindings: any[] = [];
+    // WHERE clause + bindings are shared by the page query AND the COUNT query so
+    // `total` reflects the whole filtered set, not just this page's length.
+    let filterSql = '';
+    const filterBindings: any[] = [];
+    if (category) { filterSql += ` AND category = ?`; filterBindings.push(category); }
+    if (search) { filterSql += ` AND (name LIKE ? OR description LIKE ? OR category LIKE ?)`; const p = `%${search}%`; filterBindings.push(p,p,p); }
+    if (platform) { filterSql += ` AND platforms LIKE ?`; filterBindings.push(`%${platform}%`); }
 
-    if (category) { query += ` AND category = ?`; bindings.push(category); }
-    if (search) { query += ` AND (name LIKE ? OR description LIKE ? OR category LIKE ?)`; const p = `%${search}%`; bindings.push(p,p,p); }
-    if (platform) { query += ` AND platforms LIKE ?`; bindings.push(`%${platform}%`); }
-
+    let orderSql: string;
     switch (sort) {
-      case 'rating': query += ` ORDER BY rating DESC`; break;
-      case 'newest': query += ` ORDER BY release_date DESC`; break;
-      case 'name': query += ` ORDER BY name ASC`; break;
-      default: query += ` ORDER BY download_count DESC`; break;
+      case 'rating': orderSql = ` ORDER BY rating DESC`; break;
+      case 'newest': orderSql = ` ORDER BY release_date DESC`; break;
+      case 'name': orderSql = ` ORDER BY name ASC`; break;
+      default: orderSql = ` ORDER BY download_count DESC`; break;
     }
-    query += ` LIMIT ? OFFSET ?`;
-    bindings.push(limit, (page - 1) * limit);
+    const safePage = Math.max(1, page || 1);
+    const query = `SELECT * FROM applications WHERE status='active'${filterSql}${orderSql} LIMIT ? OFFSET ?`;
+    const bindings: any[] = [...filterBindings, limit, (safePage - 1) * limit];
 
     const result: any = await env.DB.prepare(query).bind(...bindings).all();
     const apps = result.results || [];
@@ -103,7 +107,27 @@ export const appsRoutes = {
       const row: any = { ...a, platforms: tryParse(a.platforms, []), tags: tryParse(a.tags, []), screenshots: tryParse(a.screenshots, []), features: tryParse(a.features, []), releaseNotes: tryParse(a.release_notes, []), version: a.current_version || a.version || '1.0.0', downloadCount: a.download_count, reviewCount: a.review_count, priceAmount: a.price_amount, price: a.price_type || a.price };
       return withSize(env, a.id, row, sizesByApp[a.id] || {});
     });
-    return { apps: normalized, pagination: { page, limit, total: normalized.length } };
+
+    // The TRUE total requires a separate COUNT with the same filters — the page
+    // length is only how many rows this page returned. Returning the page length
+    // as `total` (the previous behaviour) made pagination controls wrong.
+    const countQuery = `SELECT COUNT(*) as total FROM applications WHERE status='active'` + filterSql;
+    const countRow: any = await env.DB.prepare(countQuery).bind(...filterBindings).first().catch(() => ({ total: normalized.length }));
+    const total = Number(countRow?.total ?? normalized.length);
+    const meta = paginationMeta({ page, limit, total });
+
+    return {
+      apps: normalized,
+      pagination: {
+        page: meta.page,
+        limit: meta.pageSize,
+        pageSize: meta.pageSize,
+        total: meta.total,
+        totalPages: meta.totalPages,
+        hasNext: meta.hasNext,
+        hasPrevious: meta.hasPrevious,
+      },
+    };
   },
   async detail(request: Request, env: any) {
     const url = new URL(request.url);

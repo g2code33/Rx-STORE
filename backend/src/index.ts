@@ -19,6 +19,7 @@ import { updatesRoutes } from './routes/updates';
 import { devicesRoutes } from './routes/devices';
 import { verifyAccessToken } from './services/auth';
 import { apiErrorBody, statusForCode, requestIdFor, redact, type ErrorCode } from './services/errors';
+import { selectPackage, buildManifest, normalizeChannel, defaultChannel } from './services/releases';
 
 const router = new Router();
 
@@ -402,8 +403,8 @@ export default {
         let platform = (new URL(request.url).searchParams.get('platform') || 'web').toLowerCase();
         if (platform === 'deb') platform = 'linux_deb';
         if (platform === 'appimage') platform = 'linux_appimage';
-        const app: any = await env.DB.prepare('SELECT id, current_version, website FROM applications WHERE slug=?').bind(slug).first();
-        if (!app) return respond({ success:false, error:{ message:'App not found' }},404,origin);
+        const app: any = await env.DB.prepare('SELECT id, name, current_version, website FROM applications WHERE slug=?').bind(slug).first();
+        if (!app) return fail('NOT_FOUND', 'Application not found');
         // Live admin toggles: downloads + maintenance
         if (await getSetting(env, 'downloads_open', '1') === '0') return respond({ success:false, error:{ code:'DOWNLOADS_CLOSED', message:'Downloads are temporarily disabled by the administrator.' }},503,origin);
         if (!await isAdminRequest(request, env) && await getSetting(env, 'maintenance_mode', '0') === '1') return respond({ success:false, error:{ code:'MAINTENANCE', message:'RX Store is under maintenance. Please check back soon.' }},503,origin);
@@ -416,23 +417,63 @@ export default {
           if (deploymentUrl) return respond({ success:true, data:{ url: deploymentUrl, isPWA: true, deploymentUrl, version: app.current_version, platform }},200,origin);
         }
 
-        // 2. Package from the latest PUBLISHED release (uploads ↔ releases ↔ install pipeline)
-        //    'linux' requests match linux_deb packages (alias used by old upload UI)
-        const plats = platform === 'linux' ? ['linux','linux_deb','linux_appimage'] : [platform];
-        const pkg: any = await env.DB.prepare(
-          `SELECT p.storage_key, p.sha256, p.file_size, p.filename, p.deployment_url, p.package_type, p.version FROM packages p
-           JOIN releases r ON r.id = p.release_id AND r.status = 'published'
-           WHERE p.application_id=? AND p.status='published' AND p.platform IN (${plats.map(()=>'?').join(',')})
-           ORDER BY r.published_at DESC LIMIT 1`
-        ).bind(app.id, ...plats).first().catch(()=>null);
-        if (pkg?.storage_key && pkg?.package_type !== 'pwa') {
-          // Record the download for the authenticated user (never as an
-          // installation). user_id is derived from the token, never from the
-          // client body — a download record is NOT an installation record.
-          let dlUser: string | null = null;
-          try { const t = (request.headers.get('Authorization') || '').replace(/^Bearer /, ''); if (t) dlUser = (await verifyAccessToken(t, env.JWT_SECRET))?.userId || null; } catch {}
-          try { await env.DB.prepare('INSERT INTO downloads (id, user_id, app_id, platform, version, created_at) VALUES (?,?,?,?,?,datetime(\'now\'))').bind(`dl_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, dlUser, app.id, platform, pkg.version || app.current_version).run(); await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run(); } catch {}
-          return respond({ success:true, data:{ url: `${originUrl}/r2/${pkg.storage_key}`, checksum: pkg.sha256, size: pkg.file_size, fileName: pkg.filename, version: pkg.version || app.current_version, platform }},200,origin);
+        // 2. Canonical path: select the package from a PUBLISHED release using
+        //    platform + architecture + channel. Unpublished releases are excluded
+        //    by the query AND re-checked below. Selection is deterministic and
+        //    never silently returns an incompatible package.
+        const reqArch = new URL(request.url).searchParams.get('arch') || new URL(request.url).searchParams.get('architecture') || 'x64';
+        const reqChannel = normalizeChannel(new URL(request.url).searchParams.get('channel')) || defaultChannel(null);
+        // Only admins may request a non-stable channel.
+        const channel = reqChannel === 'stable' ? 'stable' : ((await isAdminRequest(request, env)) ? reqChannel : 'stable');
+
+        const pkgRows: any = await env.DB.prepare(
+          `SELECT p.*, r.version AS release_version, r.channel AS release_channel, r.status AS release_status,
+                  r.release_notes AS release_notes, r.published_at AS release_published_at
+           FROM packages p
+           JOIN releases r ON r.id = p.release_id
+           WHERE p.application_id = ? AND r.status = 'published' AND r.channel = ?
+                 AND p.status = 'published' AND (p.deleted_at IS NULL)
+           ORDER BY r.published_at DESC`
+        ).bind(app.id, channel).all().catch(() => ({ results: [] }));
+
+        const candidates = (pkgRows.results || []).filter((p: any) => p.release_status === 'published');
+        const { selected, reason } = selectPackage(candidates, { platform, architecture: reqArch });
+        if (selected) {
+          const pkg = selected.pkg;
+          const isPwa = pkg.package_type === 'pwa' || (!pkg.storage_key && !!pkg.deployment_url);
+          let notes: string[] = [];
+          try { const n = JSON.parse(pkg.release_notes || '[]'); notes = Array.isArray(n) ? n : [String(n)]; } catch {}
+          const manifest = buildManifest({
+            pkg, matchedPlatform: selected.matchedPlatform, matchedArchitecture: selected.matchedArchitecture,
+            app: { id: app.id, slug, name: app.name },
+            channel, releaseNotes: notes, publishedAt: pkg.release_published_at, origin: originUrl,
+          });
+          if (!isPwa) {
+            // Record the download for the authenticated user (never as an
+            // installation). user_id is derived from the token, never from the
+            // client body — a download record is NOT an installation record.
+            let dlUser: string | null = null;
+            try { const t = (request.headers.get('Authorization') || '').replace(/^Bearer /, ''); if (t) dlUser = (await verifyAccessToken(t, env.JWT_SECRET))?.userId || null; } catch {}
+            try {
+              await env.DB.prepare('INSERT INTO downloads (id, user_id, app_id, platform, version, created_at) VALUES (?,?,?,?,?,datetime(\'now\'))')
+                .bind(`dl_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, dlUser, app.id, manifest.platform, manifest.version).run();
+              await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run();
+            } catch {}
+          }
+          return respond({ success: true, data: {
+            url: manifest.url, checksum: manifest.sha256, size: manifest.size, fileName: manifest.filename,
+            version: manifest.version, platform: manifest.platform, architecture: manifest.architecture,
+            channel: manifest.channel, releaseNotes: manifest.releaseNotes,
+            minOsVersion: manifest.minOsVersion, minAndroidSdk: manifest.minAndroidSdk,
+            isPWA: isPwa || undefined,
+            manifest,
+          }}, 200, origin);
+        }
+        // No compatible published package. Fall through to the legacy
+        // app_versions compatibility path only for non-specific platforms.
+        if (reason && candidates.length > 0 && platform !== 'web' && platform !== 'pwa') {
+          // A package family exists but nothing matches the architecture: be honest.
+          return respond({ success: false, error: { code: 'NO_COMPATIBLE_PACKAGE', message: reason } }, 404, origin);
         }
 
         // 3. Legacy app_versions.files (kept in sync on publish; supports old rows too)

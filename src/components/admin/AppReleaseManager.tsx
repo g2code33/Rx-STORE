@@ -22,6 +22,9 @@ export default function AppReleaseManager() {
   const [version, setVersion] = useState('');
   const [notes, setNotes] = useState('');
   const [files, setFiles] = useState<Record<string, File | null>>({});
+  // Chosen architecture per platform (defaults to x64; `universal` for web/PWA).
+  const [architectures, setArchitectures] = useState<Record<string, string>>({});
+  const archFor = (platformId: string) => architectures[platformId] || (platformId === 'web' || platformId === 'pwa' || platformId === 'ios' ? 'universal' : 'x64');
   const [uploading, setUploading] = useState<Record<string, string>>({});
   const [creating, setCreating] = useState(false);
   const [publishing, setPublishing] = useState(false);
@@ -78,10 +81,14 @@ export default function AppReleaseManager() {
   };
 
   const uploadOne = async (id: string, platformId: string, f: File): Promise<any> => {
+    // Architecture is per-platform so a release can carry Windows x64 AND arm64,
+    // or an Android universal AND an ABI-specific build.
+    const arch = archFor(platformId);
     if (f.size <= CHUNK_THRESHOLD) {
       const fd = new FormData();
       fd.append('file', f);
       fd.append('platform', platformId);
+      fd.append('architecture', arch);
       const up = await fetch(`${API_URL}/admin/releases/${id}/upload`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: fd });
       const uj = await up.json();
       if (!up.ok) throw new Error(uj.error?.message || uj.error || 'Upload failed');
@@ -92,7 +99,7 @@ export default function AppReleaseManager() {
     const st = await fetch(`${API_URL}/admin/releases/${id}/upload/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify({ platform: platformId, filename: f.name, size: f.size, mimeType: f.type || 'application/octet-stream' }),
+      body: JSON.stringify({ platform: platformId, architecture: arch, filename: f.name, size: f.size, mimeType: f.type || 'application/octet-stream' }),
     });
     const sj = await st.json();
     if (!st.ok) throw new Error(sj.error?.message || sj.error || 'Start failed');
@@ -119,7 +126,7 @@ export default function AppReleaseManager() {
     const cr = await fetch(`${API_URL}/admin/releases/${id}/upload/complete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify({ uploadId, key, platform: platformId, filename: f.name, size: f.size, mimeType: f.type || 'application/octet-stream', sha256: sha, parts: partsArr }),
+      body: JSON.stringify({ uploadId, key, platform: platformId, architecture: arch, filename: f.name, size: f.size, mimeType: f.type || 'application/octet-stream', sha256: sha, parts: partsArr }),
     });
     const cj = await cr.json();
     if (!cr.ok) throw new Error(cj.error?.message || cj.error || 'Complete failed');
@@ -237,6 +244,20 @@ export default function AppReleaseManager() {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-white flex items-center gap-2">{p.label} <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-rx-gray-medium">{p.ext}</span> {status && <span className={`text-[10px] px-1.5 py-0.5 rounded ${status.startsWith('Failed') ? 'bg-red-500/20 text-red-300' : 'bg-rx-yellow/20 text-rx-yellow'}`}>{status}</span>}</p>
                     <p className="text-xs text-rx-gray-medium truncate">{f ? `${f.name} (${(f.size/1024/1024).toFixed(1)} MB)` : `Select ${p.ext}`}</p>
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <span className="text-[10px] text-rx-gray-medium">Arch</span>
+                      <select
+                        value={archFor(p.id)}
+                        onChange={e=>setArchitectures(prev=>({ ...prev, [p.id]: e.target.value }))}
+                        className="text-[11px] bg-rx-dark border border-white/10 rounded-md px-1.5 py-0.5 text-white"
+                        title="Target CPU architecture. Upload the same platform again with a different architecture to ship both (e.g. Windows x64 and arm64)."
+                      >
+                        {(p.id === 'web' || p.id === 'ios'
+                          ? ['universal', 'x64', 'arm64']
+                          : ['x64', 'arm64', 'x86', 'arm', 'universal']
+                        ).map(a => <option key={a} value={a}>{a}</option>)}
+                      </select>
+                    </div>
                     {status && !status.startsWith('Stored') && !status.startsWith('Failed') && <div className="mt-1 h-1 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-rx-yellow animate-pulse" style={{width:'70%'}}/></div>}
                   </div>
                   {f ? (

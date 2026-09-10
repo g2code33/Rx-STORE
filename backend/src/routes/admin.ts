@@ -3,8 +3,9 @@
  * Requires admin role authentication (checked in Worker fetch).
  */
 
-import { getSetting } from '../services/settings';
-import { hashPassword, verifyPassword, verifyToken } from '../services/auth';
+import { getSetting } from '../services/settings.ts';
+import { hashPassword, verifyPassword, verifyToken } from '../services/auth.ts';
+import { normalizeArchitecture, normalizeChannel, validatePackageIntegrity, CHANNELS } from '../services/releases.ts';
 
 async function validAdminPassword(request: Request, env: any, password: unknown): Promise<boolean> {
   const auth = request.headers.get('Authorization') || '';
@@ -86,46 +87,64 @@ function sanitizeName(name: any): string {
   return String(name || 'package.bin').replace(/[^\w.\-]+/g, '_');
 }
 
-// Insert/replace the packages row for (release, platform).
-// Order matters: a prod table missing UNIQUE(release_id, platform) makes D1 say
+// Insert/replace the packages row for (release, platform, architecture).
+// Uniqueness is (release_id, platform, architecture) so multiple architectures
+// can coexist for one platform (Windows x64 + arm64, Android universal + ABI).
+// Order matters: a prod table missing the constraint makes D1 say
 // 'ON CONFLICT clause does not match any ... constraint' — that message ALSO
 // contains 'constraint', so ON CONFLICT must be handled BEFORE generic CHECK errors.
-async function writePackageRow(env: any, rel: any, platform: string, f: { filename: string; storageKey: string; size: number; mime: string; sha256: string }): Promise<any> {
-  const pkgType = platform === 'web' ? 'zip' : (platform === 'ios' ? 'pwa' : 'installer');
+async function writePackageRow(
+  env: any,
+  rel: any,
+  platform: string,
+  f: {
+    filename: string; storageKey: string; size: number; mime: string; sha256: string;
+    architecture?: string; minOsVersion?: string | null; minAndroidSdk?: number | null;
+  },
+): Promise<any> {
+  const pkgType = platform === 'web' || platform === 'pwa' ? 'zip' : (platform === 'ios' ? 'pwa' : 'installer');
   const pkgStatus = rel.status === 'published' ? 'published' : 'stored';
   const id = `pkg_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
-  const COLS = `(id, application_id, release_id, platform, architecture, filename, storage_key, file_size, mime_type, sha256, version, package_type, status)`;
-  const VALS = [id, rel.application_id, rel.id, platform, 'x64', f.filename, f.storageKey, f.size, f.mime, f.sha256, rel.version, pkgType, pkgStatus];
+  const architecture = normalizeArchitecture(f.architecture || 'x64') || 'x64';
+  const minOsVersion = f.minOsVersion ? String(f.minOsVersion).slice(0, 40) : null;
+  const minAndroidSdk = f.minAndroidSdk != null && Number.isFinite(Number(f.minAndroidSdk)) ? Number(f.minAndroidSdk) : null;
+  const COLS = `(id, application_id, release_id, platform, architecture, filename, storage_key, file_size, mime_type, sha256, version, package_type, min_os_version, min_android_sdk, status)`;
+  const VALS = [id, rel.application_id, rel.id, platform, architecture, f.filename, f.storageKey, f.size, f.mime, f.sha256, rel.version, pkgType, minOsVersion, minAndroidSdk, pkgStatus];
   try {
     await env.DB.prepare(
-      `INSERT INTO packages ${COLS} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-       ON CONFLICT(release_id, platform) DO UPDATE SET filename=excluded.filename, storage_key=excluded.storage_key, file_size=excluded.file_size, mime_type=excluded.mime_type, sha256=excluded.sha256, status=excluded.status, created_at=datetime('now')`
+      `INSERT INTO packages ${COLS} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(release_id, platform, architecture) DO UPDATE SET
+         filename=excluded.filename, storage_key=excluded.storage_key, file_size=excluded.file_size,
+         mime_type=excluded.mime_type, sha256=excluded.sha256, status=excluded.status,
+         min_os_version=excluded.min_os_version, min_android_sdk=excluded.min_android_sdk,
+         created_at=datetime('now')`
     ).bind(...VALS).run();
   } catch (e: any) {
     const msg = String(e?.message || e);
     if (msg.includes('ON CONFLICT')) {
-      // Older prod schema without UNIQUE(release_id, platform) → manual upsert
+      // Older prod schema without UNIQUE(release_id, platform, architecture) → manual upsert
       try {
-        const existing: any = await env.DB.prepare(`SELECT id FROM packages WHERE release_id=? AND platform=?`).bind(rel.id, platform).first().catch(()=>null);
+        const existing: any = await env.DB.prepare(`SELECT id FROM packages WHERE release_id=? AND platform=? AND architecture=?`).bind(rel.id, platform, architecture).first().catch(()=>null);
         if (existing) {
-          await env.DB.prepare(`UPDATE packages SET filename=?, storage_key=?, file_size=?, mime_type=?, sha256=?, status=?, created_at=datetime('now') WHERE id=?`).bind(f.filename, f.storageKey, f.size, f.mime, f.sha256, pkgStatus, existing.id).run();
+          await env.DB.prepare(`UPDATE packages SET filename=?, storage_key=?, file_size=?, mime_type=?, sha256=?, status=?, min_os_version=?, min_android_sdk=?, created_at=datetime('now') WHERE id=?`)
+            .bind(f.filename, f.storageKey, f.size, f.mime, f.sha256, pkgStatus, minOsVersion, minAndroidSdk, existing.id).run();
         } else {
-          await env.DB.prepare(`INSERT INTO packages ${COLS} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(...VALS).run();
+          await env.DB.prepare(`INSERT INTO packages ${COLS} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(...VALS).run();
         }
       } catch (e2: any) {
         const m2 = String(e2?.message || e2);
         if (m2.includes('CHECK') || m2.includes('constraint')) {
-          return { error: `DB schema needs one-time migration for platform '${platform}' — run: npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0002_packages_platforms.sql` };
+          return { error: `DB schema needs the one-time packages migration — run: npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0008_packages_architecture.sql` };
         }
         return { error: m2.slice(0, 300) };
       }
     } else if (msg.includes('CHECK') || msg.includes('constraint')) {
-      return { error: `DB schema needs one-time migration for platform '${platform}' — run: npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0002_packages_platforms.sql` };
+      return { error: `DB schema needs the one-time packages migration — run: npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0008_packages_architecture.sql` };
     } else {
       return { error: msg.slice(0, 300) };
     }
   }
-  return { id, platform, filename: f.filename, size: f.size, sha256: f.sha256, status: pkgStatus };
+  return { id, platform, architecture, filename: f.filename, size: f.size, sha256: f.sha256, status: pkgStatus };
 }
 
 // Map package platform ids → the app.platforms ids the install modal checks
@@ -426,7 +445,14 @@ export const adminRoutes = {
     await env.STORAGE.put(storageKey, buf, { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
 
     const origin = new URL(request.url).origin;
-    const saved = await writePackageRow(env, rel, platform, { filename: safeName, storageKey, size: file.size, mime: file.type || 'application/octet-stream', sha256 });
+    // Architecture is required for a real multi-arch store; it defaults to x64
+    // for backwards compatibility with older admin clients.
+    const architecture = normalizeArchitecture(form.get('architecture'));
+    if (!architecture) return { error: `Invalid architecture '${String(form.get('architecture') || '')}'. Use one of: x64, arm64, x86, arm, universal.` };
+    const saved = await writePackageRow(env, rel, platform, {
+      filename: safeName, storageKey, size: file.size, mime: file.type || 'application/octet-stream', sha256,
+      architecture, minOsVersion: form.get('minOsVersion'), minAndroidSdk: form.get('minAndroidSdk'),
+    });
     if ((saved as any)?.error) return saved;
     if (rel.status === 'published') {
       await mergeAppPlatforms(env, rel.application_id);
@@ -445,10 +471,12 @@ export const adminRoutes = {
     if ((platform as any)?.error) return platform;
     const MAX = 500 * 1024 * 1024;
     if (!body.size || body.size > MAX) return { error: `Provide size (${(MAX/1024/1024)} MB max)` };
+    const architecture = normalizeArchitecture(body.architecture);
+    if (!architecture) return { error: `Invalid architecture '${String(body.architecture || '')}'. Use one of: x64, arm64, x86, arm, universal.` };
     const safeName = sanitizeName(body.filename);
-    const storageKey = `apps/${rel.app_slug}/${rel.version}/${platform}/${safeName}`;
+    const storageKey = `apps/${rel.app_slug}/${rel.version}/${platform}/${architecture}/${safeName}`;
     const mpu = await env.STORAGE.createMultipartUpload(storageKey, { httpMetadata: { contentType: body.mimeType || 'application/octet-stream' } });
-    return { success: true, uploadId: mpu.uploadId, key: storageKey, platform, filename: safeName };
+    return { success: true, uploadId: mpu.uploadId, key: storageKey, platform, architecture, filename: safeName };
   },
 
   // POST /admin/releases/:id/upload/part (multipart: file, uploadId, key, partNumber)
@@ -482,7 +510,13 @@ export const adminRoutes = {
       const mpu = env.STORAGE.resumeMultipartUpload(key, uploadId);
       await mpu.complete(parts);
     } catch (e: any) { return { error: `Complete failed: ${String(e?.message || e).slice(0,200)}` }; }
-    const saved = await writePackageRow(env, rel, platform, { filename: sanitizeName(filename || key.split('/').pop() || 'package.bin'), storageKey: key, size: size || 0, mime: mimeType || 'application/octet-stream', sha256: String(sha256).toLowerCase() });
+    const architecture = normalizeArchitecture(body.architecture);
+    if (!architecture) return { error: `Invalid architecture '${String(body.architecture || '')}'. Use one of: x64, arm64, x86, arm, universal.` };
+    const saved = await writePackageRow(env, rel, platform, {
+      filename: sanitizeName(filename || key.split('/').pop() || 'package.bin'), storageKey: key,
+      size: size || 0, mime: mimeType || 'application/octet-stream', sha256: String(sha256).toLowerCase(),
+      architecture, minOsVersion: body.minOsVersion, minAndroidSdk: body.minAndroidSdk,
+    });
     if ((saved as any)?.error) return saved;
     const origin = new URL(request.url).origin;
     if (rel.status === 'published') {
@@ -554,14 +588,35 @@ export const adminRoutes = {
     const rel: any = await env.DB.prepare(`SELECT * FROM releases WHERE id=?`).bind(relId).first();
     if (!rel) return { error: 'Release not found' };
     if (rel.status === 'published') return { error: 'Already published' };
-    // Verify packages exist and have sha256 and R2 file
+    // Verify packages exist and are COMPLETE before anything goes live.
+    // A release is never published with missing platform/architecture/version,
+    // checksum, size, or a missing storage object.
+    if (!rel.version) return { error: 'This release has no version set.' };
+    if (!normalizeChannel(rel.channel)) return { error: `Unknown release channel '${rel.channel}'. Use one of: ${CHANNELS.join(', ')}.` };
     const pkgs: any = await env.DB.prepare(`SELECT * FROM packages WHERE release_id=?`).bind(relId).all();
     if (!pkgs.results || pkgs.results.length===0) return { error: 'No packages uploaded for this release. Upload at least one platform.' };
+    const seen = new Set<string>();
     for (const p of pkgs.results) {
-      if (!p.sha256 || !p.storage_key) return { error: `Package ${p.platform} missing checksum or storage` };
-      // Verify R2 file exists
+      const integrity = validatePackageIntegrity(p);
+      if (!integrity.ok) {
+        return { error: `Package ${p.platform || '?'}${p.architecture ? '/' + p.architecture : ''} is incomplete (missing: ${integrity.problems.join(', ')}). Upload it again.` };
+      }
+      const dupKey = `${p.platform}/${normalizeArchitecture(p.architecture) || p.architecture}`;
+      if (seen.has(dupKey)) return { error: `Duplicate package for ${dupKey}. Remove the duplicate before publishing.` };
+      seen.add(dupKey);
+      // PWA packages are a deployed URL, not an uploaded artifact.
+      const isPwa = p.package_type === 'pwa' || !!p.deployment_url;
+      if (isPwa) {
+        if (!/^https:\/\//i.test(String(p.deployment_url || ''))) return { error: `The web/PWA package for ${p.platform} needs an HTTPS deployment URL.` };
+        continue;
+      }
+      // Verify the artifact is actually present in storage.
       const obj = await env.STORAGE.head(p.storage_key).catch(()=>null);
-      if (!obj) return { error: `R2 file missing for ${p.platform}: ${p.storage_key}` };
+      if (!obj) return { error: `Stored file missing for ${p.platform}/${p.architecture}: ${p.storage_key}` };
+      // Defend against a size mismatch between the record and storage.
+      if (obj.size != null && Number(obj.size) > 0 && Number(p.file_size) !== Number(obj.size)) {
+        return { error: `Size mismatch for ${p.platform}/${p.architecture}: recorded ${p.file_size} bytes but storage has ${obj.size}. Re-upload the package.` };
+      }
     }
     await env.DB.prepare(`UPDATE releases SET status='published', published_at=datetime('now'), updated_at=datetime('now') WHERE id=?`).bind(relId).run();
     // Flip its packages live too — the install/download endpoint only serves published packages
@@ -602,9 +657,16 @@ export const adminRoutes = {
     // Find previous published version for same app
     const prev: any = await env.DB.prepare(`SELECT * FROM releases WHERE application_id=? AND status='published' AND id!=? ORDER BY published_at DESC LIMIT 1`).bind(rel.application_id, relId).first();
     if (!prev) return { error: 'No previous published release to rollback to' };
+    // Rollback NEVER deletes history: the current release is marked rolled_back
+    // and its packages archived, while the target release is restored to published.
     await env.DB.prepare(`UPDATE releases SET status='rolled_back', updated_at=datetime('now') WHERE id=?`).bind(relId).run();
-    // Its packages stop being served; previous release's packages stay live
     await env.DB.prepare(`UPDATE packages SET status='archived' WHERE release_id=?`).bind(relId).run().catch(()=>{});
+    // Re-publish the target release AND its packages. Without this, rolling back
+    // twice (or rolling back to a release whose packages were earlier archived)
+    // would leave the app with no servable package.
+    await env.DB.prepare(`UPDATE releases SET status='published', published_at=datetime('now'), updated_at=datetime('now') WHERE id=?`).bind(prev.id).run();
+    await env.DB.prepare(`UPDATE packages SET status='published' WHERE release_id=?`).bind(prev.id).run().catch(()=>{});
+    await mergeAppPlatforms(env, rel.application_id);
     // Optionally set prev as latest
     await env.DB.prepare(`UPDATE applications SET current_version=? WHERE id=?`).bind(prev.version, rel.application_id).run();
     await syncLegacyAppVersion(env, rel.application_id, prev, new URL(request.url).origin);

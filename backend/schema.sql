@@ -236,8 +236,8 @@ CREATE TABLE IF NOT EXISTS packages (
   id TEXT PRIMARY KEY,
   application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
   release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
-  platform TEXT NOT NULL CHECK (platform IN ('android','windows','linux','linux_deb','linux_appimage','macos','flatpak','web','ios')),
-  architecture TEXT DEFAULT 'x64',
+  platform TEXT NOT NULL CHECK (platform IN ('android','windows','linux','linux_deb','linux_appimage','flatpak','macos','web','ios','pwa')),
+  architecture TEXT NOT NULL DEFAULT 'x64',
   filename TEXT NOT NULL,
   storage_key TEXT NOT NULL,
   file_size INTEGER NOT NULL,
@@ -246,13 +246,19 @@ CREATE TABLE IF NOT EXISTS packages (
   version TEXT NOT NULL,
   deployment_url TEXT,
   package_type TEXT DEFAULT 'installer' CHECK (package_type IN ('installer','pwa','zip','other')),
+  -- Optional OS compatibility metadata (informational; an app without it is not blocked)
+  min_os_version TEXT,
+  min_android_sdk INTEGER,
   status TEXT DEFAULT 'stored' CHECK (status IN ('uploading','validating','stored','ready_for_review','published','failed','archived')),
   deleted_at TEXT,
   created_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(release_id, platform)
+  -- One artifact per (release, platform, architecture): supports Windows x64 AND
+  -- Windows arm64, Android universal AND per-ABI builds, etc.
+  UNIQUE(release_id, platform, architecture)
 );
 CREATE INDEX IF NOT EXISTS idx_packages_release ON packages(release_id);
 CREATE INDEX IF NOT EXISTS idx_packages_platform ON packages(platform);
+CREATE INDEX IF NOT EXISTS idx_packages_arch ON packages(architecture);
 
 CREATE TABLE IF NOT EXISTS upload_jobs (
   id TEXT PRIMARY KEY,

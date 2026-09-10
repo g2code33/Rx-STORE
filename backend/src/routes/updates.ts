@@ -5,6 +5,8 @@
  * Returns update information if a newer version is available.
  */
 
+import { compareSemver } from '../services/releases';
+
 export const updatesRoutes = {
   async checkUpdate(request: Request, env: any) {
     const url = new URL(request.url);
@@ -61,14 +63,12 @@ export const updatesRoutes = {
   },
 };
 
+/**
+ * Version comparison is centralized in services/releases.ts (SemVer-aware).
+ * The previous local implementation could not distinguish a prerelease from a
+ * final release (`1.3.0-beta` and `1.3.0` both parsed to [1,3,0] and compared
+ * equal), which could suppress a legitimate update.
+ */
 function compareVersions(a: string, b: string): number {
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const na = pa[i] || 0;
-    const nb = pb[i] || 0;
-    if (na > nb) return 1;
-    if (na < nb) return -1;
-  }
-  return 0;
+  return compareSemver(a, b);
 }
