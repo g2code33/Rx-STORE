@@ -4,6 +4,10 @@ import { Download, CreditCard, Bell, Settings, LogOut, X, Trash2, RefreshCw, Roc
 import { useAuth } from '../context/AuthContext';
 import { useApps } from '../context/AppContext';
 import { useDevices } from '../context/DeviceContext';
+import { useInstalledState } from '../platform/nativeDetection';
+import { useNativeRuntime } from '../native/useNativeRuntime';
+import { deviceActivity, mapDetectionToInstall } from '../platform/detect';
+import { installStateStatus } from '../native/installUi';
 import { formatDate } from '../utils/helpers';
 import AppLogo from '../components/apps/AppLogo';
 import { useUpdateStatus, describeStatus, checkNow, installNow, isDesktopApp, applyUpdatePolicy } from '../desktop/updater';
@@ -15,6 +19,49 @@ const DEFAULT_PREFERENCES = {
   wifiOnly: false,
   mobileDataUpdates: true,
 };
+
+/** An installed app row that uses native detection for state + real uninstall. */
+function InstalledAppRow({ app, onReconcile }: { app: any; onReconcile: (appId: string) => void }) {
+  const { state: detectedState, installed: osInstalled } = useInstalledState(app);
+  const { uninstall } = useNativeRuntime();
+  const [uninstalling, setUninstalling] = useState(false);
+  const isNative = osInstalled || detectedState === 'INSTALLED_CURRENT' || detectedState === 'UPDATE_AVAILABLE';
+  const status = installStateStatus(mapDetectionToInstall(detectedState));
+
+  const doUninstall = async () => {
+    if (!confirm(`Uninstall ${app.name}? Your operating system will ask you to confirm.`)) return;
+    setUninstalling(true);
+    try {
+      await uninstall(app);
+      toast.success(`${app.name} uninstalled`);
+      onReconcile(app.id);
+    } catch (e: any) {
+      toast.error(e?.message || 'Could not uninstall the application');
+    } finally {
+      setUninstalling(false);
+    }
+  };
+
+  return (
+    <div className="card p-5 flex items-center gap-4 group">
+      <AppLogo app={app} size="w-14 h-14" />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <Link to={`/app/${app.slug}`} className="font-semibold text-white hover:text-rx-yellow transition-colors truncate block">{app.name}</Link>
+          {isNative && <span className="px-1.5 py-0.5 bg-white/10 text-rx-gray-medium text-[10px] font-bold rounded-md">NATIVE</span>}
+        </div>
+        <p className="text-xs text-rx-gray-medium">v{app.version} · {app.size} · <span className="text-white/70">{status}</span></p>
+      </div>
+      <button
+        onClick={doUninstall}
+        disabled={uninstalling}
+        className="px-3 py-1.5 text-xs font-medium text-red-400 hover:text-white bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-lg transition-all flex items-center gap-1 disabled:opacity-50"
+      >
+        <X className="w-3 h-3" /> {uninstalling ? 'Uninstalling…' : 'Uninstall'}
+      </button>
+    </div>
+  );
+}
 
 /** Desktop-only self-update management: version, live status, manual check, restart-to-install. */
 function DesktopUpdatesCard() {
@@ -63,7 +110,7 @@ function DesktopUpdatesCard() {
 export default function Profile() {
   const { user, logout, updateProfile, notifications, markNotificationRead } = useAuth();
   const { getAppById, installedApps, installApp, uninstallApp } = useApps();
-  const { devices, syncNow, revoke } = useDevices();
+  const { devices, syncNow, revoke, installations } = useDevices();
   const [activeTab, setActiveTab] = useState<'apps' | 'devices' | 'subscriptions' | 'notifications' | 'trash' | 'settings'>('apps');
   const [profileForm, setProfileForm] = useState({ name: user?.name || '', email: user?.email || '' });
   const [preferences, setPreferences] = useState(() => ({ ...DEFAULT_PREFERENCES, ...(user?.preferences || {}) }));
@@ -159,18 +206,7 @@ export default function Profile() {
               {installedApps.map((appId) => {
                 const app = getAppById(appId);
                 if (!app) return null;
-                return (
-                  <div key={appId} className="card p-5 flex items-center gap-4 group">
-                    <AppLogo app={app} size="w-14 h-14" />
-                    <div className="flex-1 min-w-0">
-                      <Link to={`/app/${app.slug}`} className="font-semibold text-white hover:text-rx-yellow transition-colors truncate block">{app.name}</Link>
-                      <p className="text-xs text-rx-gray-medium">v{app.version} · {app.size}</p>
-                    </div>
-                    <button onClick={() => { if(confirm(`Uninstall ${app?.name}? This will remove the app from your device.`)) uninstallApp(appId); }} className="px-3 py-1.5 text-xs font-medium text-red-400 hover:text-white bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-lg transition-all flex items-center gap-1">
-                      <X className="w-3 h-3" /> Uninstall
-                    </button>
-                  </div>
-                );
+                return <InstalledAppRow key={appId} app={app} onReconcile={(id) => uninstallApp(id)} />;
               })}
             </div>
           ) : (
@@ -199,6 +235,8 @@ export default function Profile() {
             <div className="space-y-3">
               {devices.map((d) => {
                 const DeviceIcon = d.platform === 'android' ? Smartphone : d.platform === 'windows' ? Monitor : d.platform === 'linux' ? Laptop : Globe;
+                const activity = deviceActivity(d.lastSeenAt);
+                const appCount = installations.filter((i) => i.deviceId === d.deviceId && ['installed', 'update_available'].includes(i.status)).length;
                 return (
                   <div key={d.id} className={`card p-4 flex items-center gap-4 ${d.isCurrentDevice ? 'border-rx-yellow/40' : ''}`}>
                     <div className="w-11 h-11 rounded-xl bg-rx-dark-tertiary flex items-center justify-center"><DeviceIcon className="w-5 h-5 text-rx-yellow" /></div>
@@ -206,9 +244,13 @@ export default function Profile() {
                       <div className="flex items-center gap-2">
                         <p className="font-semibold text-white truncate">{d.deviceName}</p>
                         {d.isCurrentDevice && <span className="px-1.5 py-0.5 bg-rx-yellow/20 text-rx-yellow text-[10px] font-bold rounded-md">THIS DEVICE</span>}
+                        <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded-md capitalize ${activity === 'active' ? 'bg-green-500/20 text-green-400' : activity === 'stale' ? 'bg-amber-500/20 text-amber-300' : 'bg-white/10 text-rx-gray-medium'}`}
+                          title={activity === 'active' ? 'Active recently' : activity === 'stale' ? 'Last seen a while ago' : 'Offline / unknown'}>
+                          {activity === 'active' ? 'Active' : activity === 'stale' ? 'Last seen' : 'Offline'}
+                        </span>
                       </div>
                       <p className="text-xs text-rx-gray-medium capitalize">
-                        {d.platform} · last seen {d.lastSeenAt ? formatDate(d.lastSeenAt) : '—'}
+                        {d.platform} · last seen {d.lastSeenAt ? formatDate(d.lastSeenAt) : '—'}{appCount > 0 ? ` · ${appCount} app${appCount === 1 ? '' : 's'}` : ''}
                       </p>
                     </div>
                     {!d.isCurrentDevice && (

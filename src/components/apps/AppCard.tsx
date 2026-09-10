@@ -8,6 +8,9 @@ import { useApps } from '../../context/AppContext';
 import { useEditMode } from '../edit/EditMode';
 import AppLogo from './AppLogo';
 import { useInstalledState } from '../../platform/nativeDetection';
+import { useInstallButton } from '../../native/useInstallButton';
+import { deviceCountLabel } from '../../native/installUi';
+import { useDevices } from '../../context/DeviceContext';
 
 interface AppCardProps {
   app: App;
@@ -20,9 +23,14 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
   const isInstalled = installedApps.includes(app.id);
   // Real OS detection (desktop + Android). Web/PWA -> DETECTION_UNAVAILABLE.
   const { state: detectedState, installed: osInstalled } = useInstalledState(app);
+  // Single source of truth for the button state (GET / Downloading X% /
+  // Verifying… / Installing… / Checking… / OPEN / UPDATE / Updating X% / RETRY).
+  const { button: installBtn, isBusy } = useInstallButton(app);
+  const { currentDevice, installations } = useDevices();
   const present = isInstalled || osInstalled;
   const isUpdate = detectedState === 'UPDATE_AVAILABLE';
-  const cardAction = isUpdate ? 'Update' : present ? 'Open' : 'Get';
+  // "Installed on another device" hint — only for OTHER devices, never flips OPEN.
+  const otherDevices = React.useMemo(() => installations.filter((i) => i.appSlug === app.slug && i.deviceId !== currentDevice.deviceId).length, [installations, app.slug, currentDevice.deviceId]);
   const edit = useEditMode(); // Live Website Builder: pencil opens the full AppEditor
 
   if (variant === 'horizontal') {
@@ -85,8 +93,8 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
             </div>
           </div>
         </Link>
-        <Link to={`/app/${app.slug}`} className={`flex-shrink-0 min-w-[64px] text-center px-4 py-1.5 rounded-full text-xs font-bold ${present ? (isUpdate ? 'bg-rx-yellow text-rx-dark' : 'bg-white/10 text-green-400') : 'bg-rx-yellow text-rx-dark'}`}>
-          {cardAction === 'Get' && app.price !== 'free' && app.price !== 'subscription' ? 'VIEW' : cardAction.toUpperCase()}
+        <Link to={`/app/${app.slug}`} className={`flex-shrink-0 min-w-[64px] text-center px-4 py-1.5 rounded-full text-xs font-bold ${osInstalled ? 'bg-white/10 text-green-400' : 'bg-rx-yellow text-rx-dark'}`}>
+          {installBtn.state === 'GET' && app.price !== 'free' && app.price !== 'subscription' ? 'VIEW' : installBtn.label.toUpperCase()}
         </Link>
       </div>
     );
@@ -164,19 +172,24 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
             </div>
           </div>
 
-          {present ? (
+          {osInstalled || installBtn.state === 'OPEN' ? (
             <span className={`text-xs font-medium px-2.5 py-1 rounded-lg ${isUpdate ? 'text-rx-yellow bg-rx-yellow/10' : 'text-green-400 bg-green-400/10'}`}>{isUpdate ? 'Update' : 'Open'}</span>
+          ) : installBtn.state === 'RETRY' || isBusy ? (
+            <span className="text-xs font-medium px-2.5 py-1 rounded-lg text-rx-yellow bg-rx-yellow/10">{installBtn.label}</span>
           ) : (
             <button
               onClick={(e) => { e.preventDefault(); e.stopPropagation(); const token=localStorage.getItem('rx-store-token'); if(!token){ window.location.href='/login'; return; } if((window as any).rxDesktop?.isDesktop){ window.location.href=`/app/${app.slug}`; return; } setShowDl(true); }}
+              aria-label={installBtn.status || installBtn.label}
+              title={installBtn.status || installBtn.label}
               className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-all ${app.price === 'free' ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-rx-yellow text-rx-dark hover:bg-rx-yellow-light'}`}
             >
-              {app.price === 'free'
-                ? 'Install'
-                : app.priceAmount
-                  ? `Get $${app.priceAmount}${app.price === 'subscription' ? '/mo' : ''}`
-                  : app.price === 'subscription' ? 'Subscribe' : 'Get'}
+              {installBtn.label}
             </button>
+          )}
+          {!osInstalled && otherDevices > 0 && (
+            <span className="text-[10px] text-rx-gray-medium flex items-center gap-1 mt-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 inline-block" /> {deviceCountLabel(otherDevices)}
+            </span>
           )}
         </div>
 

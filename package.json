@@ -28,8 +28,8 @@
     "release:patch": "npm version patch --no-git-tag-version && git add -A && git commit -m \"release: v$(node -p \"require(\\\"./package.json\\\").version\")\" && git push origin main",
     "release:minor": "npm version minor --no-git-tag-version && git add -A && git commit -m \"release: v$(node -p \"require(\\\"./package.json\\\").version\")\" && git push origin main",
     "release:major": "npm version major --no-git-tag-version && git add -A && git commit -m \"release: v$(node -p \"require(\\\"./package.json\\\").version\")\" && git push origin main",
-    "test": "node --experimental-strip-types --test src/platform/detect.test.ts src/native/deviceIdentity.test.ts src/native/verify.test.ts src/native/installTransaction.test.ts",
-    "test:detect": "node --experimental-strip-types --test src/platform/detect.test.ts src/native/deviceIdentity.test.ts src/native/verify.test.ts src/native/installTransaction.test.ts"
+    "test": "node --experimental-strip-types --test src/platform/detect.test.ts src/native/deviceIdentity.test.ts src/native/verify.test.ts src/native/installTransaction.test.ts src/native/installUi.test.ts",
+    "test:detect": "node --experimental-strip-types --test src/platform/detect.test.ts src/native/deviceIdentity.test.ts src/native/verify.test.ts src/native/installTransaction.test.ts src/native/installUi.test.ts"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",

@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Star, Download, ArrowLeft, Share2, ExternalLink, Check, ChevronRight, Shield, Clock, Monitor, Calendar, Tag, ThumbsUp } from 'lucide-react';
+import { Star, Download, ArrowLeft, Share2, ExternalLink, Check, ChevronRight, Shield, Clock, Monitor, Calendar, Tag, ThumbsUp, AlertTriangle } from 'lucide-react';
 import DownloadModal from '../components/apps/DownloadModal';
 import AppLogo from '../components/apps/AppLogo';
 import { useApps } from '../context/AppContext';
@@ -16,6 +16,7 @@ import { getRuntimePlatform } from '../native/deviceIdentity';
 import { useInstalledState } from '../platform/nativeDetection';
 import { getNativeRuntime } from '../native/runtime';
 import { useInstallTransaction } from '../native/useInstallTransaction';
+import { useInstallButton } from '../native/useInstallButton';
 import { resolvePlatformForDevice } from '../native/installCoordinator';
 import type { PackageResolution } from '../native/installCoordinator';
 import { mapDetectionToInstall } from '../platform/detect';
@@ -106,7 +107,10 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   const { state: detectedState, detection: systemInstalled, installed: osInstalled, refresh: refreshDetection } = useInstalledState(app as any);
   // Central install/update transaction (the single source of truth for the
   // Get/Download/Verify/Install state machine — never inferred per-component).
-  const { tx: installTx, busy: txBusy, label: txLabel, start: startTransaction, reset: resetTransaction } = useInstallTransaction();
+  const { tx: installTx, busy: txBusy, start: startTransaction, reset: resetTransaction } = useInstallTransaction();
+  // Single unified button copy (Downloading X% / Verifying… / Installing… /
+  // Checking… / OPEN / UPDATE / Updating X% / RETRY) from the central state.
+  const { button: unifiedInstallBtn } = useInstallButton(app as any);
   // Keep the working native install step (desktop "Install" button) separate.
   const dlHandleRef = useRef<{ remove: () => void } | null>(null);
   // Once the OS reports the app as installed, clear the transient installing UI.
@@ -431,7 +435,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
                   {(installTx.state === 'DOWNLOADING' || installTx.state === 'DOWNLOAD_STARTED') ? (
                     <>
                       <div className="flex items-center justify-between text-xs mb-1">
-                        <span className="text-white/80 font-medium flex items-center gap-1.5"><Download className="w-3.5 h-3.5 text-rx-yellow" /> Downloading…</span>
+                        <span className="text-white/80 font-medium flex items-center gap-1.5" role="status"><Download className="w-3.5 h-3.5 text-rx-yellow" /> {unifiedInstallBtn.label}</span>
                         <span className="text-rx-yellow font-bold tabular-nums">{installTx.progress.percent}%</span>
                       </div>
                       <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
@@ -442,11 +446,16 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
                       </div>
                     </>
                   ) : (
-                    <div className="flex items-center gap-2 text-sm text-white/80">
+                    <div className="flex items-center gap-2 text-sm text-white/80" role="status">
                       <div className="w-4 h-4 border-2 border-rx-yellow border-t-transparent rounded-full animate-spin" />
-                      <span>{txLabel}</span>
+                      <span>{unifiedInstallBtn.label}</span>
                     </div>
                   )}
+                </div>
+              ) : unifiedInstallBtn.state === 'RETRY' ? (
+                <div className="flex items-center gap-2 flex-wrap justify-end" role="alert">
+                  <span className="text-xs text-amber-300 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" /> {unifiedInstallBtn.label}</span>
+                  <button onClick={() => { resetTransaction(); setShowDownload(true); }} className="px-4 py-2.5 bg-rx-yellow text-rx-dark rounded-xl text-sm font-bold hover:bg-rx-yellow-light transition-colors">Retry</button>
                 </div>
               ) : osInstalled ? (
                 <div className="flex items-center gap-2 flex-wrap justify-end">

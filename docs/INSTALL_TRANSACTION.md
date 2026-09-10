@@ -164,3 +164,58 @@ Every install/update/uninstall goes through native detection verification. An
 `INSTALLER_STARTED` state is never treated as `INSTALLED`; only detection
 confirmation reaches `INSTALLED`, and only confirmed absence reaches
 `not_installed`.
+
+---
+
+## Prompt 5 — Frontend installation state & multi-device UX
+
+### Single source of truth
+- `src/native/installUi.ts` maps the transaction state machine + the current
+  device's detected install state into one `InstallButton` (`GET`, `DOWNLOADING`,
+  `VERIFYING`, `INSTALLING`, `CHECKING`, `OPEN`, `UPDATE`, `UPDATING`, `RETRY`).
+- `src/native/useInstallButton.ts` combines the active transaction + native
+  detection so AppCard / AppDetail read one button, never inferring conflicts.
+- Native detection is authoritative for the CURRENT device; the backend
+  (`app_installations`) is last-known for OTHER devices; localStorage is cache
+  only. `currentDeviceInstallState` / `resolveDeviceView` enforce this.
+
+### Button states
+`installButtonFor` maps every state to a clear label and `action`:
+- idle not installed → `GET`; installed → `OPEN`; update → `UPDATE`.
+- `Downloading 42%`, `Verifying…`, `Installing…`, `Checking installation…`,
+  `Updating 42%`, failure → `RETRY`.
+- Update wording is used throughout the transient pipeline when `isUpdate`.
+
+### Installed elsewhere / multiple devices
+AppCard and AppDetail show `Installed on another device` / `Installed on N
+devices` from `otherDeviceInstallCount` — this NEVER flips the current device to
+`OPEN`. The user can still install locally (`GET`).
+
+### My Apps (Profile)
+Uses native detection (`useInstalledState`) for each installed app and the real
+native uninstall flow (`useNativeRuntime().uninstall`), which re-detects before
+reconciling. It never reports uninstalled merely because the intent launched.
+
+### Device management
+Profile's "My Devices" lists device name, platform, current-device flag, last
+seen, installed-app count, and a `deviceActivity` badge (Active / Last seen /
+Offline) that never claims a device is online from `last_seen_at` alone. Revoke
+is scoped and does not remote-uninstall.
+
+### Offline / login transitions
+- Current native detection + opening installed apps works offline; catalog is
+  cached; sync is best-effort (queued/retried on connectivity).
+- On account change, AuthContext dispatches `rx-auth-change`; AppContext /
+  DeviceContext re-read per-user keys and clear account data. The persistent
+  device id is unchanged (deviceIdentity), so login/logout never registers a new
+  device.
+
+### Accessibility
+Buttons carry `aria-label`/`role="status"` and progress communicates percent.
+State indicators are not color-only (text labels + icons for busy/alert).
+
+### Tests
+`src/native/installUi.test.ts` (11 tests) covers GET / OPEN / UPDATE, downloading
+percent, verifying/checking labels, installing ≠ open, retry on all failures,
+updating wording, accessible statuses, and that current-device detection decides
+OPEN (never other-device data).
