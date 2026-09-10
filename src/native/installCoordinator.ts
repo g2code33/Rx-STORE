@@ -34,6 +34,7 @@ import { getRuntimePlatform } from './deviceIdentity';
 import { invalidateDetectionCache } from '../platform/nativeDetection';
 import { isAndroidShell, isDesktopShell } from '../platform/nativeInstaller';
 import { saveAttempt, clearAttempt, type PersistedPhase } from './transactionRecovery.ts';
+import { log, recordMetric, reportFailure } from './logger.ts';
 
 export interface PackageResolution {
   platform: string;
@@ -169,6 +170,16 @@ export class InstallCoordinator {
     let tx = createTransaction({ previousVersion, targetVersion: packageMeta.version, platform });
     const emit = (next: TransactionResult) => {
       tx = next;
+      // Structured transition log: attemptId + appId + platform + version + state.
+      log.info('install_state', `Transaction ${tx.state}`, {
+        attemptId: tx.attemptId,
+        appId: app.id,
+        appSlug: app.slug,
+        platform: tx.platform,
+        version: tx.targetVersion,
+        state: tx.state,
+        isUpdate: !!isUpdate,
+      });
       // Persist the attempt so a crash/close mid-install can be reconciled on the
       // next launch (see transactionRecovery). Cleared on any terminal state.
       persist(tx, app, previousVersion, !!isUpdate, tx.artifactPath);
@@ -188,6 +199,8 @@ export class InstallCoordinator {
       });
       data = dl.data; path = dl.path;
     } catch (e: any) {
+      recordMetric('download_failure');
+      reportFailure('download_failure', e?.message || 'Download failed', { attemptId: tx.attemptId, appSlug: app.slug, platform: tx.platform, version: tx.targetVersion });
       emit(transition(tx, { state: 'DOWNLOAD_FAILED', message: e?.message || 'Download failed' }));
       return tx;
     }
@@ -199,10 +212,14 @@ export class InstallCoordinator {
     try {
       verification = await this.verify(data, path, packageMeta);
     } catch (e: any) {
+      recordMetric('checksum_failure');
+      reportFailure('checksum_failure', e?.message || 'Verification failed', { attemptId: tx.attemptId, appSlug: app.slug, platform: tx.platform, version: tx.targetVersion, state: 'VERIFICATION_FAILED' });
       emit(transition(tx, { state: 'VERIFICATION_FAILED', message: e?.message || 'Verification failed' }));
       return tx;
     }
     if (!verification.ok) {
+      recordMetric('checksum_failure');
+      reportFailure('checksum_failure', verifyReason(verification), { attemptId: tx.attemptId, appSlug: app.slug, platform: tx.platform, version: tx.targetVersion, reason: verification.reason });
       emit(transition(tx, { state: 'VERIFICATION_FAILED', message: verifyReason(verification), verification }));
       return tx;
     }
@@ -215,6 +232,8 @@ export class InstallCoordinator {
     try {
       await this.ops.launchInstall(app, data, packageMeta, path);
     } catch (e: any) {
+      recordMetric('install_failure');
+      reportFailure('install_failure', e?.message || 'Install failed', { attemptId: tx.attemptId, appSlug: app.slug, platform: tx.platform, version: tx.targetVersion });
       emit(transition(tx, { state: 'INSTALL_FAILED', message: e?.message || 'Install failed' }));
       return tx;
     }
@@ -302,12 +321,17 @@ export class InstallCoordinator {
       await sleep(DETECT_POLL_MS);
     }
     if (!sawDetection && !this.runtime.canDetect()) {
+      recordMetric('detection_failure');
+      reportFailure('detection_failure', 'Native detection unavailable for install verification', { appSlug: app.slug, version: targetVersion });
       return { detected: false, unknown: true, message: 'Native detection unavailable — cannot confirm installation' };
     }
+    recordMetric('detection_failure');
+    reportFailure('detection_failure', 'Installation not detected within the verification window', { appSlug: app.slug, version: targetVersion });
     return { detected: false, message: 'Installation was not detected within the verification window' };
   }
 
   private async syncInstalled(app: App, version: string, source?: string): Promise<void> {
+    log.info('install_sync', 'Synchronizing confirmed installation', { appSlug: app.slug, version, platform: getRuntimePlatform() });
     await reportCurrentInstallation({
       appSlug: app.slug,
       platform: getRuntimePlatform(),

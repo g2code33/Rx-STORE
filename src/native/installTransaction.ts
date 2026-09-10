@@ -18,7 +18,7 @@
  * The UI consumes this state via a lightweight subscription; components never
  * infer the lifecycle on their own.
  */
-import { sha256Hex, verifyArtifactHash, type PackageMetadata, type VerificationResult } from './verify.ts';
+import type { VerificationResult } from './verify.ts';
 
 /** The full set of transaction states. */
 export type TransactionState =
@@ -96,23 +96,6 @@ export function createTransaction(opts?: {
 /** Apply a transition (mutating a copy) and return it. */
 export function transition(tx: TransactionResult, patch: Partial<TransactionResult>): TransactionResult {
   return { ...tx, ...patch, updatedAt: Date.now() };
-}
-
-/**
- * Verify a downloaded artifact's bytes against authoritative metadata.
- * Returns the verification result and (optionally) indicates size/hash results.
- */
-export async function verifyArtifactBytes(
-  data: ArrayBuffer,
-  meta: PackageMetadata,
-  opts?: { requireChecksum?: boolean; isPwa?: boolean },
-): Promise<VerificationResult> {
-  return verifyArtifactHash(data, meta, opts);
-}
-
-/** Compute the SHA-256 of an artifact (used before install). */
-export function computeSha256(data: ArrayBuffer): Promise<string> {
-  return sha256Hex(data);
 }
 
 /** True when a transaction is in a terminal (non-transient) successful state. */

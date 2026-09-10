@@ -4,7 +4,6 @@ import DownloadModal from './DownloadModal';
 import { Star, Download, ArrowRight } from 'lucide-react';
 import { App } from '../../types';
 import { formatDownloadCount, getRatingColor } from '../../utils/helpers';
-import { useApps } from '../../context/AppContext';
 import { useEditMode } from '../edit/EditMode';
 import AppLogo from './AppLogo';
 import { useInstalledState } from '../../platform/nativeDetection';
@@ -18,16 +17,15 @@ interface AppCardProps {
 }
 
 export default function AppCard({ app, variant = 'default' }: AppCardProps) {
-  const { installedApps, installApp } = useApps();
   const [showDl, setShowDl] = useState(false);
-  const isInstalled = installedApps.includes(app.id);
-  // Real OS detection (desktop + Android). Web/PWA -> DETECTION_UNAVAILABLE.
+  // NO FAKE STATE: the card's action is driven purely by native detection (+ the
+  // centralized transaction state). A localStorage record must never make a card
+  // look installed when the OS says the app is absent.
   const { state: detectedState, installed: osInstalled } = useInstalledState(app);
   // Single source of truth for the button state (GET / Downloading X% /
   // Verifying… / Installing… / Checking… / OPEN / UPDATE / Updating X% / RETRY).
   const { button: installBtn, isBusy } = useInstallButton(app);
   const { currentDevice, installations } = useDevices();
-  const present = isInstalled || osInstalled;
   const isUpdate = detectedState === 'UPDATE_AVAILABLE';
   // "Installed on another device" hint — only for OTHER devices, never flips OPEN.
   const otherDevices = React.useMemo(() => installations.filter((i) => i.appSlug === app.slug && i.deviceId !== currentDevice.deviceId).length, [installations, app.slug, currentDevice.deviceId]);

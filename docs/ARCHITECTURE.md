@@ -24,8 +24,8 @@
                                  │
         ┌────────────┬───────────┼───────────┬────────────┐
         │            │           │           │            │
-   Web Store   Mobile App  Windows App  Linux App   Future Platforms
-   (Pages)     (Flutter)   (Tauri)      (Tauri)
+   Web Store   Android      Desktop App  Desktop App   Future Platforms
+   (Pages/PWA) (Capacitor)  (Electron)   (Electron)
         │            │           │           │
         └────────────┴─────┬─────┴───────────┘
                            │
@@ -41,6 +41,27 @@
                     Rx Account (JWT/OAuth)
                     Single Sign-On across all apps
 ```
+
+### ACTIVE CLIENTS (authoritative — Prompt 9 audit)
+
+The diagram above previously listed Tauri and Flutter as the native clients. That
+is **no longer accurate**. The shipping clients are:
+
+| Client | Technology | Status |
+| --- | --- | --- |
+| Web store / PWA | React + Vite (Cloudflare Pages) | **active** |
+| Windows / Linux desktop | **Electron** (`electron/`, electron-builder) | **active** |
+| Android | **Capacitor** (`android/`, `AppInstallerPlugin.java`) | **active** |
+| iOS | PWA only (no native build) | **active (PWA)** |
+
+Legacy code that is **not** part of the shipping path (do not build on it):
+
+* `desktop/tauri/` — an early Tauri spike; detection logic was mirrored there for
+  completeness but it is not wired to the frontend and is not built in CI.
+* `mobile/flutter/` — an early Flutter spike; unused.
+
+**Native detection ownership:** Electron + Capacitor are the only clients that
+perform OS-level detection. Web/PWA reports `DETECTION_UNAVAILABLE`.
 
 ### Key Principle: API-Only Integration
 

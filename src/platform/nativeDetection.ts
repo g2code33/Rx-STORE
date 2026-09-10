@@ -113,13 +113,6 @@ export async function detectInstalledApp(app: App): Promise<InstalledApp | null>
   return result;
 }
 
-/** Resolve `app`'s normalized UI state from real detection (web -> Get). */
-export async function detectAppState(app: App): Promise<DetectionState> {
-  const detection = await detectInstalledApp(app);
-  if (!detection) return 'DETECTION_UNAVAILABLE';
-  return stateForDetection(detection, app.version);
-}
-
 export type { InstalledApp, DetectionState };
 
 /** Coerce a raw native result into a normalized model (unit-test friendly). */

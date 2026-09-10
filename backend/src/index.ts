@@ -35,11 +35,8 @@ router.use('/users', authMiddleware, usersRoutes);
 router.use('/payments', authMiddleware, paymentsRoutes);
 router.use('/admin', authMiddleware, adminRoutes);
 
-router.get('/health', () => ({
-  status: 'ok',
-  version: '1.0.0',
-  timestamp: new Date().toISOString(),
-}));
+// NOTE: /health is handled inline in fetch() below. The generic router never
+// dispatches path-mounted handlers, so registering it here would be dead code.
 
 /** Baseline security headers applied to every API response. */
 const SECURITY_HEADERS: Record<string, string> = {
@@ -760,7 +757,44 @@ export default {
       }
     }
 
-    if (path === '/health') return respond({ status: 'ok', version: '1.0.0', timestamp: new Date().toISOString() },200,origin);
+    // ---- Health check: reports real dependency status (no secrets) ----
+    if (path === '/health' || path === '/healthz') {
+      const checks: Record<string, { status: string; latencyMs?: number; error?: string }> = {};
+
+      // Database: a trivial read proves the binding is wired and reachable.
+      const t0 = Date.now();
+      try {
+        await env.DB.prepare('SELECT 1 AS ok').first();
+        checks.database = { status: 'ok', latencyMs: Date.now() - t0 };
+      } catch (e: any) {
+        checks.database = { status: 'unavailable', latencyMs: Date.now() - t0, error: redact(String(e?.message || e)).slice(0, 120) };
+      }
+
+      // Rate-limit / cache store: a KV read (best-effort; KV outages degrade gracefully).
+      const t1 = Date.now();
+      try {
+        if (env.CACHE) { await env.CACHE.get('health:probe'); checks.cache = { status: 'ok', latencyMs: Date.now() - t1 }; }
+        else checks.cache = { status: 'not_configured' };
+      } catch (e: any) {
+        checks.cache = { status: 'degraded', latencyMs: Date.now() - t1, error: redact(String(e?.message || e)).slice(0, 120) };
+      }
+
+      // Object storage: the binding is present (we do not list the bucket on a probe).
+      checks.storage = { status: env.STORAGE ? 'configured' : 'not_configured' };
+
+      // Auth: JWT_SECRET must be set or nobody can sign in.
+      checks.auth = { status: env.JWT_SECRET ? 'ok' : 'misconfigured' };
+
+      const critical = [checks.database, checks.auth];
+      const healthy = critical.every((c) => c.status === 'ok');
+      return respond({
+        status: healthy ? 'ok' : 'degraded',
+        version: env.API_VERSION || 'v1',
+        environment: env.ENVIRONMENT || 'unknown',
+        timestamp: new Date().toISOString(),
+        checks,
+      }, healthy ? 200 : 503, origin);
+    }
 
     const res = await router.handle(normalizedRequest as any, env);
     return withCors(res, origin, env, requestId);
@@ -784,4 +818,9 @@ interface Env {
   AI_BASE_URL_OPENAI?: string;
   AI_BASE_URL_GEMINI?: string;
   PAYSTACK_SECRET_KEY?: string;
+  // Non-secret configuration surfaced by the health check.
+  API_VERSION?: string;
+  ENVIRONMENT?: string;
+  CORS_ALLOWED_ORIGINS?: string;
+  RESET_TOKEN_DEBUG?: string;
 }

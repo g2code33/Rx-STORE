@@ -132,6 +132,30 @@ export function installStateStatus(state: InstallState | 'DETECTION_UNAVAILABLE'
   }
 }
 
+/**
+ * Resolve whether an app should be presented as installed on THIS device.
+ *
+ * AUTHORITY RULE (Prompt 9 §4 — no fake state):
+ *   - native clients: native detection is authoritative. The store's own
+ *     localStorage record must NOT make an app look installed when the OS says
+ *     it is absent.
+ *   - web/PWA: detection is unavailable, so the store's record is the only
+ *     signal we have (clearly the weaker case) and is used as a fallback.
+ *
+ * `detectionAvailable` is true only on a native shell (Electron desktop /
+ * Android Capacitor).
+ */
+export function resolveLocalInstall(input: {
+  detectionAvailable: boolean;
+  osInstalled: boolean;
+  storeInstalled: boolean;
+}): { installed: boolean; source: 'native' | 'store' | 'none' } {
+  if (input.detectionAvailable) {
+    return { installed: !!input.osInstalled, source: input.osInstalled ? 'native' : 'none' };
+  }
+  return { installed: !!input.storeInstalled, source: input.storeInstalled ? 'store' : 'none' };
+}
+
 /** A short, friendly "installed elsewhere" descriptor. */
 export function deviceCountLabel(count: number): string {
   if (count <= 0) return '';

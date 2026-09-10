@@ -65,3 +65,12 @@ export function getCategoryColor(category: string): string {
   };
   return colors[category] || 'from-gray-400 to-gray-600';
 }
+
+/** Human-readable byte count (auto-detected package sizes). Single implementation. */
+export function formatBytes(bytes?: number | null): string {
+  if (!bytes || bytes <= 0) return '—';
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  if (mb >= 1) return `${mb >= 100 ? mb.toFixed(0) : mb.toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}

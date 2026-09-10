@@ -14,6 +14,7 @@ import { installStatusForReport, type InstallState } from '../platform/detect';
 import type { AppInstallation, Device } from '../types/device';
 import { enqueue, flush, pendingCount, type SyncItem } from './syncQueue.ts';
 import { isOnline } from './connectivity.ts';
+import { log, recordMetric, reportFailure } from './logger.ts';
 
 /** Register + heartbeat the current device for the subscribed account. */
 export async function syncDeviceOnAuth(rxStoreVersion?: string): Promise<{ deviceId: string } | null> {
@@ -98,7 +99,20 @@ async function sendItem(item: SyncItem): Promise<void> {
  */
 export async function flushSyncQueue(): Promise<{ sent: number; failed: number; remaining: number }> {
   if (!isApiConfigured()) return { sent: 0, failed: 0, remaining: 0 };
-  const r = await flush(sendItem, { canSync: () => isOnline() });
+  const r = await flush(sendItem, {
+    canSync: () => isOnline(),
+    onError: (item, error) => {
+      recordMetric('sync_failure');
+      reportFailure('sync_failure', error, {
+        kind: item.kind,
+        appSlug: item.appSlug,
+        platform: item.payload?.platform,
+        version: item.payload?.installedVersion,
+        attempts: item.attempts,
+      });
+    },
+  });
+  if (r.sent > 0) log.info('sync_flushed', `Synchronized ${r.sent} queued change(s)`, { state: `remaining:${r.remaining}` });
   return { sent: r.sent, failed: r.failed, remaining: r.remaining };
 }
 

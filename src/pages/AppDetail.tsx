@@ -8,7 +8,7 @@ import { useAuth } from '../context/AuthContext';
 import { useContent } from '../context/ContentContext';
 import Editable from '../components/edit/Editable';
 import PageBlocks from '../components/edit/PageBlocks';
-import { formatDownloadCount, formatDate, getRatingColor } from '../utils/helpers';
+import { formatBytes, formatDownloadCount, formatDate, getRatingColor } from '../utils/helpers';
 import { normalizeWebsiteUrl } from '../utils/url';
 import toast from 'react-hot-toast';
 import { androidStopDownloadProgress, confirmDesktopInstalled, desktopInstall, getNativePackage, isAndroidShell, isDesktopShell, removeNativePackage, type NativePackageState } from '../platform/nativeInstaller';
@@ -17,19 +17,13 @@ import { useInstalledState } from '../platform/nativeDetection';
 import { getNativeRuntime } from '../native/runtime';
 import { useInstallTransaction } from '../native/useInstallTransaction';
 import { useInstallButton } from '../native/useInstallButton';
+import { resolveLocalInstall } from '../native/installUi';
+import { isDetectionAvailable } from '../platform/nativeDetection';
 import { resolvePlatformForDevice } from '../native/installCoordinator';
 import type { PackageResolution } from '../native/installCoordinator';
 import { mapDetectionToInstall } from '../platform/detect';
 import { useDevices } from '../context/DeviceContext';
 
-/** Human-readable byte count (auto-detected package size). */
-function formatBytes(bytes?: number): string {
-  if (!bytes || bytes <= 0) return '—';
-  const mb = bytes / (1024 * 1024);
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
-  if (mb >= 1) return `${mb >= 100 ? mb.toFixed(0) : mb.toFixed(1)} MB`;
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-}
 /** Friendly label for a stored package platform id. */
 function formatSizeLabel(platform: string): string {
   switch (platform) {
@@ -144,7 +138,16 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   }, [lightbox, goodShots.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Hooks first: `app` arrives a render later (context loads async), so no early return before this point.
-  const isInstalled = app ? installedApps.includes(app.id) : false;
+  // NO FAKE STATE: on a native client, native detection is authoritative for
+  // this device. The store's localStorage record is only used as a fallback when
+  // detection is unavailable (web/PWA).
+  const storeInstalled = app ? installedApps.includes(app.id) : false;
+  const localInstall = resolveLocalInstall({
+    detectionAvailable: isDetectionAvailable(),
+    osInstalled,
+    storeInstalled,
+  });
+  const isInstalled = localInstall.installed;
   const nativeUpdateAvailable = detectedState === 'UPDATE_AVAILABLE';
   // Account/device state layer. Other-device installations are LAST-KNOWN cloud
   // info, Purposely NOT used to flip the current device to OPEN — only to render
@@ -226,10 +229,10 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
       const API = (import.meta as any).env?.VITE_API_URL;
       const token = localStorage.getItem('rx-store-token')||'';
       if (!API) {
-        await new Promise((r) => setTimeout(r, 800));
-        installApp(app.id);
-        toast.success(`${app.name} installed`);
+        // NO FAKE INSTALL: without a configured backend we cannot download or
+        // verify an artifact, so we must not claim the app was installed.
         setIsInstalling(false);
+        toast.error('RX Store is not connected to its application service. Install a correctly configured build.');
         return;
       }
       const r = await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/download?platform=${platform}`, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} });
@@ -258,7 +261,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
       // Run the full transaction pipeline: download → verify size+SHA-256 →
       // install → detect → sync. Never treats a download as installed.
       const result = await startTransaction(app, pkg, {
-        isUpdate: isInstalled && nativeUpdateAvailable,
+        isUpdate: osInstalled && nativeUpdateAvailable,
         previousVersion: systemInstalled?.version,
       });
       if (result.state === 'INSTALLED') {
@@ -482,7 +485,12 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
                 </div>
               ) : isInstalled ? (
                 <div className="flex items-center gap-3">
-                  <span className="flex items-center gap-2 text-green-300 font-medium"><Check className="w-5 h-5" /> Installed</span>
+                  <span
+                    className="flex items-center gap-2 text-green-300 font-medium"
+                    title={localInstall.source === 'store' ? 'Recorded by RX Store (this browser cannot inspect installed apps)' : 'Detected on this device'}
+                  >
+                    <Check className="w-5 h-5" /> {localInstall.source === 'store' ? 'In your library' : 'Installed'}
+                  </span>
                   <button onClick={handleUninstall} className="px-4 py-2.5 bg-white/10 backdrop-blur-sm text-white rounded-xl text-sm hover:bg-white/20 transition-colors">Uninstall</button>
                 </div>
               ) : (

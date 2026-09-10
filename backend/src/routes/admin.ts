@@ -83,6 +83,19 @@ function normPlatform(raw: any): string | { error: string } {
   return platform;
 }
 
+/** FormData values may be a File or null — coerce to a trimmed string or null. */
+function formString(v: FormDataEntryValue | null): string | null {
+  if (typeof v === 'string') { const t = v.trim(); return t || null; }
+  return null;
+}
+
+/** FormData values may be a File or null — coerce to a finite number or null. */
+function formNumber(v: FormDataEntryValue | null): number | null {
+  if (typeof v !== 'string') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 function sanitizeName(name: any): string {
   return String(name || 'package.bin').replace(/[^\w.\-]+/g, '_');
 }
@@ -431,7 +444,7 @@ export const adminRoutes = {
     if (!form) return { error: 'Expected multipart form-data (file, platform)' };
     const file: any = form.get('file');
     const platform = normPlatform(form.get('platform'));
-    if ((platform as any)?.error) return platform;
+    if (typeof platform !== 'string') return platform; // invalid platform -> { error }
     if (!file || typeof file.arrayBuffer !== 'function') return { error: 'No file attached' };
 
     const MAX_SINGLE = 50 * 1024 * 1024; // one-shot memory budget; bigger → chunked MPU
@@ -451,7 +464,9 @@ export const adminRoutes = {
     if (!architecture) return { error: `Invalid architecture '${String(form.get('architecture') || '')}'. Use one of: x64, arm64, x86, arm, universal.` };
     const saved = await writePackageRow(env, rel, platform, {
       filename: safeName, storageKey, size: file.size, mime: file.type || 'application/octet-stream', sha256,
-      architecture, minOsVersion: form.get('minOsVersion'), minAndroidSdk: form.get('minAndroidSdk'),
+      architecture,
+      minOsVersion: formString(form.get('minOsVersion')),
+      minAndroidSdk: formNumber(form.get('minAndroidSdk')),
     });
     if ((saved as any)?.error) return saved;
     if (rel.status === 'published') {
@@ -468,7 +483,7 @@ export const adminRoutes = {
     if ((rel as any)?.error) return rel;
     const body: any = await request.json().catch(()=>({}));
     const platform = normPlatform(body.platform);
-    if ((platform as any)?.error) return platform;
+    if (typeof platform !== 'string') return platform; // invalid platform -> { error }
     const MAX = 500 * 1024 * 1024;
     if (!body.size || body.size > MAX) return { error: `Provide size (${(MAX/1024/1024)} MB max)` };
     const architecture = normalizeArchitecture(body.architecture);
@@ -502,7 +517,7 @@ export const adminRoutes = {
     if ((rel as any)?.error) return rel;
     const body: any = await request.json().catch(()=>({}));
     const platform = normPlatform(body.platform);
-    if ((platform as any)?.error) return platform;
+    if (typeof platform !== 'string') return platform; // invalid platform -> { error }
     const { uploadId, key, filename, size, mimeType, sha256, parts } = body || {};
     if (!uploadId || !key || !Array.isArray(parts) || !parts.length) return { error: 'uploadId, key, parts required' };
     if (!/^[a-f0-9]{64}$/i.test(String(sha256 || ''))) return { error: 'sha256 (64 hex chars) required — computed in the browser before upload' };

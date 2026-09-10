@@ -183,7 +183,13 @@ export interface FlushResult {
  */
 export async function flush(
   handler: FlushHandler,
-  opts?: { now?: number; canSync?: () => boolean; maxItems?: number },
+  opts?: {
+    now?: number;
+    canSync?: () => boolean;
+    maxItems?: number;
+    /** Observability hook: called for each failed item (never throws). */
+    onError?: (item: SyncItem, message: string) => void;
+  },
 ): Promise<FlushResult> {
   const now = opts?.now ?? Date.now();
   if (opts?.canSync && !opts.canSync()) {
@@ -197,8 +203,10 @@ export async function flush(
       ack(item.key);
       sent++;
     } catch (e: any) {
-      nack(item.key, e?.message || String(e), now);
+      const message = e?.message || String(e);
+      nack(item.key, message, now);
       failed++;
+      try { opts?.onError?.(item, message); } catch { /* observability must never break sync */ }
     }
   }
   return { sent, failed, skipped: 0, remaining: pendingCount() };

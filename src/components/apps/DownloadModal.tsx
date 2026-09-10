@@ -6,6 +6,10 @@ import PlatformIcon from '../../icons/PlatformIcon';
 const DL_ICON: Record<string, string> = { web: 'web', ios: 'ios', android: 'android', windows: 'windows', macos: 'macos', linux_deb: 'linux', linux_appimage: 'linux', linux: 'linux' };
 import { detectDevice, isPWADisplayStandalone } from '../../hooks/useDeviceDetect';
 import { getPublicSettings } from '../../services/api';
+import { formatBytes } from '../../utils/helpers';
+
+/** Size label for a package row ('' when unknown, unlike the generic formatter). */
+const fmtSize = (bytes?: number) => (bytes && bytes > 0 ? formatBytes(bytes) : '');
 
 type Props = {
   app: any;
@@ -24,14 +28,6 @@ const platforms = [
   { id: 'linux', label: 'Linux', ext: 'DEB', icon: Laptop, desc: 'Linux • DEB / AppImage / Flatpak' },
 ];
 
-/** Human-readable byte count for an auto-detected package size. */
-function fmtSize(bytes?: number): string {
-  if (!bytes || bytes <= 0) return '';
-  const mb = bytes / (1024 * 1024);
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
-  if (mb >= 1) return `${mb >= 100 ? mb.toFixed(0) : mb.toFixed(1)} MB`;
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-}
 
 export default function DownloadModal({ app, onClose, onDownload }: Props) {
   // Admin toggle (Admin → Settings → "Recommend PWA on iPhone/iPad") — when on,

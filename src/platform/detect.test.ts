@@ -49,9 +49,14 @@ test('compareVersions: 2.0.0 > 1.9.99', () => {
 test('compareVersions: equal versions', () => {
   assert.equal(compareVersions('1.0.25', '1.0.25'), 0);
 });
-test('compareVersions: handles leading v and prerelease suffixes', () => {
+test('compareVersions: handles leading v and prerelease suffixes (SemVer)', () => {
   assert.equal(compareVersions('v1.2.3', '1.2.3'), 0);
-  assert.equal(compareVersions('1.0.0', '1.0.0-beta'), 0);
+  // SemVer: a FINAL release is newer than its prerelease. (The previous
+  // numeric-only comparator wrongly reported these as equal, which could hide a
+  // legitimate update between detection and verification.)
+  assert.equal(compareVersions('1.0.0', '1.0.0-beta'), 1);
+  assert.equal(compareVersions('1.0.0-beta', '1.0.0'), -1);
+  assert.equal(compareVersions('1.0.0-alpha', '1.0.0-beta'), -1);
 });
 test('compareVersions: missing / invalid handled without throwing', () => {
   assert.equal(compareVersions(undefined, undefined), 0);

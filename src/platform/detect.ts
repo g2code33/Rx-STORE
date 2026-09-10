@@ -13,6 +13,8 @@
  * turns that into a predictable, normalized UI state.
  */
 
+import { compareSemver } from '../native/verify.ts';
+
 /** OSes the native RX Store clients can detect against. */
 export type DetectedPlatform = 'windows' | 'linux' | 'android';
 
@@ -73,32 +75,22 @@ export function parseVersion(version?: string | null): number[] {
 }
 
 /**
- * Compare two versions numerically, segment by segment.
+ * Compare two versions.
  *
- * Returns:
- *   -1  when a < b
- *    0  when a == b (or either is missing/unparseable)
- *   +1  when a > b
+ * SINGLE SOURCE OF TRUTH: this delegates to the SemVer implementation in
+ * `native/verify.ts` so UPDATE *detection* and UPDATE *verification* can never
+ * disagree. Previously detect.ts had its own numeric-only comparator, which
+ * treated `1.3.0` and `1.3.0-beta` as EQUAL — while the install pipeline (using
+ * SemVer) treated the final release as newer. That inconsistency could hide a
+ * legitimate update.
  *
- * Missing/invalid versions are treated as "0" so they never crash and never
- * falsely produce an update. Examples:
- *   1.0.0  < 1.0.1  -> -1
- *   1.0.9  < 1.0.10 -> -1   (correctly numeric, not lexicographic)
- *   1.1.0  > 1.0.25 -> +1
- *   2.0.0  > 1.9.99 -> +1
+ * Semantics (see compareSemver):
+ *   1.0.0  < 1.0.1     1.0.9  < 1.0.10    1.1.0  > 1.0.25
+ *   2.0.0  > 1.9.99    1.3.0-beta < 1.3.0
+ * Missing/invalid versions never crash and never falsely produce an update.
  */
 export function compareVersions(a?: string | null, b?: string | null): number {
-  const pa = parseVersion(a);
-  const pb = parseVersion(b);
-  if (pa.length === 0 && pb.length === 0) return 0;
-  const len = Math.max(pa.length, pb.length);
-  for (let i = 0; i < len; i++) {
-    const na = pa[i] ?? 0;
-    const nb = pb[i] ?? 0;
-    if (na > nb) return 1;
-    if (na < nb) return -1;
-  }
-  return 0;
+  return compareSemver(a, b);
 }
 
 /**

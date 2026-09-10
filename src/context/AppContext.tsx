@@ -193,7 +193,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const u = localStorage.getItem('rx-store-user');
       const uid = u ? JSON.parse(u).id : '';
       return uid ? `rx-store-installed-${uid}` : 'rx-store-installed';
-    } catch { return 'rx-store-installed'; }
+    } catch {
+      // UNSAFE-FALLBACK FIX: previously this returned the SHARED key, so a parse
+      // failure could expose another account's list. Return a key that can never
+      // contain someone else's data instead.
+      return 'rx-store-installed-anon';
+    }
   };
 
   /**

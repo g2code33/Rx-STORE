@@ -4,6 +4,8 @@
  * Set VITE_API_URL to connect to real backend; defaults to mock mode.
  */
 
+import { log, recordMetric } from '../native/logger.ts';
+
 const API_URL = import.meta.env.VITE_API_URL?.replace(/\/$/, '') || '';
 
 function getToken(): string | null {
@@ -109,12 +111,22 @@ async function request<T>(
   }
 
   const data = await res.json().catch(() => null);
+  // Correlate client and server logs using the response's request id.
+  const requestId = res.headers.get('X-Request-Id') || data?.error?.requestId || undefined;
 
   if (!res.ok) {
     const msg = data?.error?.message || data?.message || `Request failed (${res.status})`;
+    const code = data?.error?.code;
+    // Authentication failures are an observable category (Prompt 9 §6).
+    if (res.status === 401 || res.status === 403) {
+      recordMetric('auth_failure');
+      log.warn('auth_failure', `Authentication rejected (${res.status})`, { requestId, state: code, path });
+    } else {
+      log.warn('request_failed', `Request failed (${res.status})`, { requestId, state: code, path });
+    }
     const err: any = new Error(msg);
-    err.code = data?.error?.code;
-    err.requestId = data?.error?.requestId;
+    err.code = code;
+    err.requestId = requestId;
     err.status = res.status;
     throw err;
   }
