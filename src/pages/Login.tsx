@@ -4,11 +4,18 @@ import { Mail, Lock, User, ArrowRight, Github, Phone, KeyRound } from 'lucide-re
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 import PasswordInput from '../components/common/PasswordInput';
+import { authModeFromSearch, type AuthMode } from '../utils/authMode';
 
 export default function Login() {
-  const [searchParams] = useSearchParams();
-  const initialMode = searchParams.get('mode') === 'register' ? 'register' : 'login';
-  const [mode, setMode] = useState<'login' | 'register'>(initialMode);
+  const [searchParams, setSearchParams] = useSearchParams();
+  // The URL is the single source of truth for the auth mode. The header's
+  // "Sign In" (/login) and "Get Started" (/login?mode=register) links change
+  // ONLY the query string — React Router keeps this page mounted, so a
+  // mount-only useState initializer would miss the switch and the header
+  // buttons would look dead after the first navigation. Deriving the mode
+  // from the URL on every render keeps both links (plus the in-page toggle
+  // and back/forward) working from any state.
+  const mode: AuthMode = authModeFromSearch(searchParams);
   const [formData, setFormData] = useState({ name: '', email: '', phone: '', password: '' });
   const [isLoading, setIsLoading] = useState(false);
   const [forgotOpen, setForgotOpen] = useState(false);
@@ -186,7 +193,13 @@ export default function Login() {
 
         <p className="text-center text-sm text-rx-gray-medium mt-6">
           {mode === 'login' ? "Don't have an account?" : 'Already have an account?'}
-          <button onClick={() => setMode(mode === 'login' ? 'register' : 'login')} className="text-rx-yellow hover:underline ml-1 font-medium">
+          {/* The toggle writes the URL (replace, so Back isn't spammed with
+              toggles). Keeping the URL in sync means the header links always
+              navigate to a DIFFERENT URL and can never look dead. */}
+          <button
+            onClick={() => setSearchParams(mode === 'login' ? { mode: 'register' } : {}, { replace: true })}
+            className="text-rx-yellow hover:underline ml-1 font-medium"
+          >
             {mode === 'login' ? 'Sign Up' : 'Sign In'}
           </button>
         </p>
