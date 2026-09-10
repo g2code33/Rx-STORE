@@ -10,7 +10,9 @@ ENVIRONMENT = "production"
 API_VERSION = "v1"
 # CORS — explicit allowlist (comma-separated EXACT origins). First-party origins
 # are built in; add approved deployment domains here. Never use suffix matching.
-CORS_ALLOWED_ORIGINS = ""
+# rx-store-web.pages.dev is the production web frontend (from the applications.website
+# record). PR-preview subdomains are intentionally NOT allowed.
+CORS_ALLOWED_ORIGINS = "https://rx-store-web.pages.dev"
 # Password reset: email delivery is NOT configured. In non-production the reset
 # token is returned directly for testing; in production it is never returned.
 RESET_TOKEN_DEBUG = "0"
