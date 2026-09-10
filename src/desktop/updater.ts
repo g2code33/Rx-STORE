@@ -165,9 +165,38 @@ export async function resumeUpdate() {
 }
 export async function applyUpdatePolicy(autoUpdate: boolean, allowMetered: boolean) {
   if (!isDesktopApp()) return;
-  const connection: any = (navigator as any).connection;
-  const isMetered = !!connection?.saveData || connection?.type === 'cellular';
+  lastPolicy = { autoUpdate, allowMetered };
+  const isMetered = sampleMetered();
   await window.rxDesktop!.setUpdatePolicy({ autoUpdate, allowMetered, isMetered });
+}
+
+/** Current metered estimate from the Network Information API (Chromium/Electron). */
+function sampleMetered(): boolean {
+  const connection: any = (navigator as any).connection;
+  return !!connection?.saveData || connection?.type === 'cellular';
+}
+
+// The last policy the user applied (Preferences). Kept so a network CHANGE
+// (Wi-Fi -> phone hotspot) can re-apply it immediately — the Wi-Fi-only rule
+// must hold for updates that appear LATER, not only at toggle time.
+let lastPolicy: { autoUpdate: boolean; allowMetered: boolean } | null = null;
+let connectionWatchInit = false;
+
+/**
+ * Re-apply the saved update policy whenever the network changes, so switching
+ * to a metered connection pauses an in-flight/later update and switching back
+ * to Wi-Fi resumes it. No-op outside the desktop shell.
+ */
+export function watchConnectionForUpdatePolicy() {
+  if (!isDesktopApp() || connectionWatchInit) return;
+  connectionWatchInit = true;
+  const connection: any = (navigator as any).connection;
+  if (!connection?.addEventListener) return;
+  connection.addEventListener('change', () => {
+    if (!lastPolicy) return;
+    const isMetered = sampleMetered();
+    void window.rxDesktop!.setUpdatePolicy({ ...lastPolicy, isMetered }).catch(() => {});
+  });
 }
 
 /** Restart the app and swap in the downloaded update. */

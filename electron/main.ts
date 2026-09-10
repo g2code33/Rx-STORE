@@ -46,9 +46,22 @@ let updateToken: CancellationToken | null = null;
 let updateIsAvailable = false;
 let updateIsPaused = false;
 let updatePolicy = { autoUpdate: true, allowMetered: true };
+// Last metered state reported by the renderer (navigator.connection). Updated
+// on every update:policy call AND re-sampled when the network changes, so the
+// Wi-Fi-only rule is enforced at DOWNLOAD time, not just at toggle time.
+let netMetered = false;
 
 function beginUpdateDownload() {
   if (!app.isPackaged || !updateIsAvailable || updateIsPaused || updateToken) return;
+  // Metered enforcement (Wi-Fi-only preference): an update that becomes
+  // available while the user is on a metered/hotspot connection must NOT start
+  // downloading just because auto-update is on.
+  if (!updatePolicy.autoUpdate) return;
+  if (!updatePolicy.allowMetered && netMetered) {
+    updateIsPaused = true;
+    sendToRenderer('update:status', { state: 'paused', message: 'Paused — updates are set to Wi-Fi only and this connection is metered.' });
+    return;
+  }
   updateToken = new CancellationToken();
   autoUpdater.downloadUpdate(updateToken).catch((err: any) => {
     if (!updateIsPaused) sendToRenderer('update:status', { state: 'error', message: err?.message || 'Update download failed' });
@@ -677,7 +690,8 @@ function initIpc() {
   });
   ipcMain.handle('update:policy', (_event, policy: { autoUpdate?: boolean; allowMetered?: boolean; isMetered?: boolean }) => {
     updatePolicy = { autoUpdate: policy.autoUpdate !== false, allowMetered: policy.allowMetered !== false };
-    const mayDownload = updatePolicy.autoUpdate && (updatePolicy.allowMetered || !policy.isMetered);
+    netMetered = !!policy.isMetered;
+    const mayDownload = updatePolicy.autoUpdate && (updatePolicy.allowMetered || !netMetered);
     if (mayDownload) { updateIsPaused = false; beginUpdateDownload(); }
     else if (updateToken) { updateIsPaused = true; updateToken.cancel(); sendToRenderer('update:status', { state: 'paused' }); }
     return { mayDownload };

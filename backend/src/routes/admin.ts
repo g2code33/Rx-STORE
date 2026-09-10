@@ -6,6 +6,7 @@
 import { getSetting } from '../services/settings.ts';
 import { hashPassword, verifyPassword, verifyToken } from '../services/auth.ts';
 import { normalizeArchitecture, normalizeChannel, validatePackageIntegrity, CHANNELS } from '../services/releases.ts';
+import { notifyStableReleaseEmails } from '../services/email.ts';
 
 async function validAdminPassword(request: Request, env: any, password: unknown): Promise<boolean> {
   const auth = request.headers.get('Authorization') || '';
@@ -647,8 +648,9 @@ export const adminRoutes = {
     await updateAppSizeFromPackages(env, rel.application_id);
     await env.DB.prepare(`INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?, ?, ?)`).bind(`log_${Date.now()}`, 'publish_release', 'release', relId, JSON.stringify({ version: rel.version })).run().catch(()=>{});
     // Auto-notify every user who has this app installed about the new version
+    let appRow: any = null;
     try {
-      const appRow: any = await env.DB.prepare('SELECT slug, name FROM applications WHERE id=?').bind(rel.application_id).first();
+      appRow = await env.DB.prepare('SELECT slug, name FROM applications WHERE id=?').bind(rel.application_id).first();
       const rows: any = await env.DB.prepare(`SELECT DISTINCT user_id FROM downloads WHERE app_id=? AND user_id IS NOT NULL AND user_id != ''`).bind(rel.application_id).all().catch(() => ({ results: [] }));
       let i = 0;
       for (const r of rows?.results || []) {
@@ -659,7 +661,15 @@ export const adminRoutes = {
             JSON.stringify({ link: appRow?.slug ? `/app/${appRow.slug}` : '' })).run().catch(() => {});
       }
     } catch { /* notify is best-effort */ }
-    return { success: true, id: relId, version: rel.version };
+    // Email users who enabled "Email notifications" (best-effort; the summary
+    // is returned so the admin sees REAL delivery counts, never a fake "sent").
+    const emailSummary = await notifyStableReleaseEmails(env, {
+      appName: appRow?.name || 'Application',
+      slug: appRow?.slug || '',
+      version: rel.version,
+      channel: rel.channel,
+    }).catch(() => ({ optedIn: 0, emailed: 0, failed: 0, skipped: 'notify_error' }));
+    return { success: true, id: relId, version: rel.version, notify: emailSummary };
   },
 
   async rollbackRelease(request: Request, env: any) {

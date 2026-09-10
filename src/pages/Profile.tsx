@@ -10,7 +10,7 @@ import { deviceActivity, mapDetectionToInstall } from '../platform/detect';
 import { installStateStatus } from '../native/installUi';
 import { formatDate } from '../utils/helpers';
 import AppLogo from '../components/apps/AppLogo';
-import { useUpdateStatus, describeStatus, checkNow, installNow, isDesktopApp, applyUpdatePolicy } from '../desktop/updater';
+import { useUpdateStatus, describeStatus, checkNow, installNow, isDesktopApp, applyUpdatePolicy, watchConnectionForUpdatePolicy } from '../desktop/updater';
 import toast from 'react-hot-toast';
 
 const DEFAULT_PREFERENCES = {
@@ -127,6 +127,10 @@ export default function Profile() {
     void applyUpdatePolicy(p.autoUpdate, p.mobileDataUpdates !== false && !p.wifiOnly);
   }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Keep the update policy honest when the network changes: switching to a
+  // metered connection pauses updates (Wi-Fi-only), switching back resumes.
+  React.useEffect(() => { watchConnectionForUpdatePolicy(); }, []);
+
   if (!user) return <Navigate to="/login" replace />;
 
   const saveProfile = async () => {
@@ -144,6 +148,12 @@ export default function Profile() {
 
   const togglePreference = async (key: keyof typeof preferences) => {
     const next = { ...preferences, [key]: !preferences[key] };
+    // The two network toggles are a PAIR, not independent switches: enabling
+    // one disables the other so the saved state can never be contradictory
+    // (previously "Wi-Fi only" ON + "Allow mobile data" ON was possible and
+    // Wi-Fi-only silently won).
+    if (key === 'wifiOnly' && next.wifiOnly) next.mobileDataUpdates = false;
+    if (key === 'mobileDataUpdates' && next.mobileDataUpdates) next.wifiOnly = false;
     setPreferences(next);
     try {
       await updateProfile({ preferences: next });
@@ -424,10 +434,10 @@ export default function Profile() {
             <div className="card p-6 space-y-4">
               <h3 className="font-semibold text-white">Preferences</h3>
               {[
-                { key: 'emailNotifications' as const, label: 'Email notifications', desc: 'Receive email updates about new apps' },
-                { key: 'autoUpdate' as const, label: 'Auto-update RX Store', desc: 'Download RX Store desktop updates automatically' },
-                { key: 'wifiOnly' as const, label: 'Updates over Wi-Fi only', desc: 'Pause automatic updates on metered/mobile connections' },
-                { key: 'mobileDataUpdates' as const, label: 'Allow updates on mobile internet', desc: 'Use cellular or metered internet when Wi-Fi-only is off' },
+                { key: 'emailNotifications' as const, label: 'Email notifications', desc: 'Get an email when a new stable release is published' },
+                { key: 'autoUpdate' as const, label: 'Auto-update RX Store', desc: 'Download RX Store desktop updates automatically (applies on this account’s desktop devices)' },
+                { key: 'wifiOnly' as const, label: 'Updates over Wi-Fi only', desc: 'Pause automatic downloads on metered/mobile connections — turns “Allow mobile internet” off' },
+                { key: 'mobileDataUpdates' as const, label: 'Allow updates on mobile internet', desc: 'Also download updates over cellular/hotspot — turns “Wi-Fi only” off' },
               ].map((pref) => {
                 const on = preferences[pref.key];
                 return (
