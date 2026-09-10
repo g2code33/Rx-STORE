@@ -10,7 +10,7 @@ interface AuthContextType {
   register: (name: string, email: string, password: string, phone?: string) => Promise<boolean>;
   forgotPassword: (email: string) => Promise<{ message: string; resetToken?: string }>;
   resetPassword: (token: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: (opts?: { allDevices?: boolean }) => void;
   updateProfile: (updates: Partial<User>) => Promise<void>;
   notifications: Notification[];
   markNotificationRead: (id: string) => void;
@@ -147,8 +147,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await api.auth.resetPassword(token, password);
   };
 
-  const logout = () => {
-    if (isApiConfigured()) api.auth.logout().catch(() => {});
+  const logout = (opts?: { allDevices?: boolean }) => {
+    // Revoke the session server-side (current session, or all devices). This
+    // NEVER uninstalls applications — sessions and installations are separate.
+    if (isApiConfigured()) api.auth.logout({ allDevices: opts?.allDevices }).catch(() => {});
     clearToken();
     setUser(null);
     localStorage.removeItem('rx-store-user');

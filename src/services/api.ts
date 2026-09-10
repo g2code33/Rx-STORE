@@ -14,11 +14,62 @@ function setToken(token: string) {
   localStorage.setItem('rx-store-token', token);
 }
 
+/** Refresh token (rotated server-side). Only its presence is persisted. */
+export function getRefreshToken(): string | null {
+  return localStorage.getItem('rx-store-refresh-token');
+}
+export function setRefreshToken(token: string | null) {
+  try {
+    if (token) localStorage.setItem('rx-store-refresh-token', token);
+    else localStorage.removeItem('rx-store-refresh-token');
+  } catch { /* storage unavailable */ }
+}
+
 export function clearToken() {
   localStorage.removeItem('rx-store-token');
+  try { localStorage.removeItem('rx-store-refresh-token'); } catch { /* ignore */ }
 }
 
 export const isApiConfigured = () => Boolean(API_URL);
+
+/** The stable per-install device id (kept in sync with src/native/deviceIdentity). */
+function currentDeviceId(): string | undefined {
+  try { return localStorage.getItem('rx-store-device-id') || undefined; } catch { return undefined; }
+}
+
+/**
+ * Single-flight refresh: rotates the refresh token and returns a new access
+ * token. Concurrent callers share one in-flight request so we never replay a
+ * (single-use) refresh token — replay would be rejected by the server.
+ */
+let refreshInFlight: Promise<string | null> | null = null;
+export async function refreshAccessToken(): Promise<string | null> {
+  if (!API_URL) return null;
+  const rt = getRefreshToken();
+  if (!rt) return null;
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    try {
+      const res = await fetch(`${API_URL}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: rt }),
+      });
+      const json = await res.json().catch(() => null);
+      const payload = json?.data || json;
+      if (!res.ok || !payload?.token) { clearToken(); return null; }
+      setToken(payload.token);
+      // Rotation returns a new refresh token; persist it.
+      if (payload.refreshToken) setRefreshToken(payload.refreshToken);
+      return payload.token as string;
+    } catch {
+      return null;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+  return refreshInFlight;
+}
 
 type ApiOptions = {
   auth?: boolean;
@@ -41,17 +92,31 @@ async function request<T>(
     if (token) headers['Authorization'] = `Bearer ${token}`;
   }
 
-  const res = await fetch(`${API_URL}${path}`, {
+  let res = await fetch(`${API_URL}${path}`, {
     ...options,
     headers,
     signal: options.signal,
   });
 
+  // A 401 on an authenticated request may just mean the access token expired.
+  // Refresh once (rotating the refresh token) and retry the original request.
+  if (res.status === 401 && options.auth !== false && !(options as any)._retried) {
+    const fresh = await refreshAccessToken();
+    if (fresh) {
+      headers['Authorization'] = `Bearer ${fresh}`;
+      res = await fetch(`${API_URL}${path}`, { ...options, headers, signal: options.signal });
+    }
+  }
+
   const data = await res.json().catch(() => null);
 
   if (!res.ok) {
     const msg = data?.error?.message || data?.message || `Request failed (${res.status})`;
-    throw new Error(msg);
+    const err: any = new Error(msg);
+    err.code = data?.error?.code;
+    err.requestId = data?.error?.requestId;
+    err.status = res.status;
+    throw err;
   }
   // API wraps in { success, data }
   if (data && typeof data === 'object' && 'data' in data && 'success' in data) {
@@ -81,24 +146,35 @@ export const api = {
       // email param can be email or phone — backend handles both
       const data = await request<{ user: any; token: string; refreshToken: string }>('/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ email, password, identifier: email }),
+        body: JSON.stringify({ email, password, identifier: email, deviceId: currentDeviceId() }),
         auth: false,
       });
       setToken(data.token);
+      if (data.refreshToken) setRefreshToken(data.refreshToken);
       return data;
     },
     async register(name: string, email: string, password: string, phone?: string) {
-      const data = await request<{ user: any; token: string }>('/auth/register', {
+      const data = await request<{ user: any; token: string; refreshToken?: string }>('/auth/register', {
         method: 'POST',
-        body: JSON.stringify({ name, email, password, phone }),
+        body: JSON.stringify({ name, email, password, phone, deviceId: currentDeviceId() }),
         auth: false,
       });
       setToken(data.token);
+      if (data.refreshToken) setRefreshToken(data.refreshToken);
       return data;
     },
-    async logout() {
+    /** Rotate the refresh token and issue a new access token. */
+    async refresh() {
+      const token = await refreshAccessToken();
+      if (!token) throw new Error('Your session has expired. Please sign in again.');
+      return { token };
+    },
+    async logout(opts?: { allDevices?: boolean }) {
       try {
-        await request('/auth/logout', { method: 'POST' });
+        await request('/auth/logout', {
+          method: 'POST',
+          body: JSON.stringify({ refreshToken: getRefreshToken(), allDevices: opts?.allDevices === true }),
+        });
       } finally {
         clearToken();
       }

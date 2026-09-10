@@ -1,76 +1,79 @@
 /**
- * Payment Routes
- * 
- * POST /payments/subscribe - Create subscription
- * POST /payments/verify/:id - Verify payment
- * GET /payments/history - Payment history
- * 
- * Supports: Paystack, Mobile Money, Hubtel
+ * Payment Routes — DEVELOPMENT/TEST ONLY.
+ *
+ * SECURITY / HONESTY: none of the payment providers below are integrated. The
+ * previous implementation fabricated a successful payment (`success: true`)
+ * with a synthetic transaction id and then created an ACTIVE subscription —
+ * i.e. it granted paid-app access for free.
+ *
+ * This version:
+ *   - refuses to grant access in production (`PAYMENTS_NOT_ENABLED`, HTTP 501)
+ *   - only simulates success when `ENVIRONMENT !== 'production'` (local/dev/testing)
+ *   - clearly marks simulated subscriptions so they can never be mistaken for real
+ *
+ * Do not enable paid-app access based on these stubs in production.
  */
+
+import { apiErrorBody, statusForCode } from '../services/errors.ts';
+import { validateId } from '../utils/validation.ts';
+
+/** True only for non-production environments. */
+function paymentsEnabled(env: any): boolean {
+  return String(env?.ENVIRONMENT || '').toLowerCase() !== 'production';
+}
 
 export const paymentsRoutes = {
   async subscribe(request: Request, env: any) {
     const userId = (request as any).user?.userId;
-    const { appId, plan, paymentMethod, paymentDetails } = await request.json();
-
-    // Get app pricing
-    const app = await env.DB.prepare('SELECT * FROM apps WHERE id = ?').bind(appId).first();
-    if (!app) return { error: 'Application not found' };
-
-    // Process payment with provider
-    let paymentResult;
-    switch (paymentMethod) {
-      case 'paystack':
-        paymentResult = await processPaystack(env.PAYSTACK_SECRET_KEY, paymentDetails, app.price_amount);
-        break;
-      case 'mobile_money':
-        paymentResult = await processMobileMoney(paymentDetails, app.price_amount);
-        break;
-      case 'hubtel':
-        paymentResult = await processHubtel(paymentDetails, app.price_amount);
-        break;
-      default:
-        return { error: 'Unsupported payment method' };
+    if (!paymentsEnabled(env)) {
+      // No provider is integrated: never grant paid access.
+      return {
+        code: 'PAYMENTS_NOT_ENABLED',
+        message: 'Payments are not enabled. No payment provider is connected in this deployment.',
+        details: apiErrorBody('PAYMENTS_NOT_ENABLED', 'Payments are not enabled.').error,
+      };
     }
 
-    if (!paymentResult.success) {
-      return { error: 'Payment failed', details: paymentResult.message };
-    }
+    let body: any;
+    try { body = await request.json(); } catch { return { code: 'VALIDATION_ERROR', message: 'Invalid JSON body' }; }
+    const { appId, plan, paymentMethod } = body || {};
+    if (!validateId(appId)) return { code: 'VALIDATION_ERROR', message: 'A valid appId is required' };
+    if (!validateId(paymentMethod)) return { code: 'VALIDATION_ERROR', message: 'A valid paymentMethod is required' };
 
-    // Create subscription
-    const subscription = await env.DB.prepare(
-      'INSERT INTO subscriptions (user_id, app_id, plan_name, status, amount, start_date) VALUES (?, ?, ?, ?, ?, NOW()) RETURNING *'
-    ).bind(userId, appId, plan, 'active', app.price_amount).first();
+    const app: any = await env.DB.prepare('SELECT id, name, price_amount FROM applications WHERE id = ?').bind(appId).first().catch(() => null);
+    if (!app) return { code: 'NOT_FOUND', message: 'Application not found' };
 
-    // Record payment
+    // DEV/TEST ONLY — a simulated subscription, explicitly marked as such.
+    const subscriptionId = `sub_${crypto.randomUUID()}`;
     await env.DB.prepare(
-      'INSERT INTO payments (user_id, subscription_id, amount, provider, provider_transaction_id, status) VALUES (?, ?, ?, ?, ?, ?)'
-    ).bind(userId, subscription.id, app.price_amount, paymentMethod, paymentResult.transactionId, 'completed').run();
+      `INSERT INTO subscriptions (id, user_id, app_id, plan, status, amount, start_date, created_at)
+       VALUES (?,?,?,?,?,?,datetime('now'),datetime('now'))`
+    ).bind(subscriptionId, userId, appId, String(plan || 'dev-test').slice(0, 40), 'test', app.price_amount ?? 0).run().catch(() => {});
 
-    return { subscription, payment: { status: 'completed' } };
+    await env.DB.prepare(
+      `INSERT INTO payments (id, user_id, subscription_id, amount, provider, provider_transaction_id, status, metadata, created_at)
+       VALUES (?,?,?,?,?,?,?,?,datetime('now'))`
+    ).bind(
+      `pay_${crypto.randomUUID()}`, userId, subscriptionId, app.price_amount ?? 0,
+      String(paymentMethod).slice(0, 30), `sim_${Date.now()}`, 'simulated',
+      JSON.stringify({ simulated: true, note: 'DEV/TEST ONLY — no real payment was processed' }),
+    ).run().catch(() => {});
+
+    return {
+      subscription: { id: subscriptionId, status: 'test', appId },
+      payment: { status: 'simulated' },
+      simulated: true,
+      warning: 'DEV/TEST ONLY — this subscription is simulated and grants no real entitlement.',
+    };
   },
 
   async history(request: Request, env: any) {
     const userId = (request as any).user?.userId;
-    const payments = await env.DB.prepare(
-      'SELECT p.*, a.name as app_name FROM payments p LEFT JOIN subscriptions s ON p.subscription_id = s.id LEFT JOIN apps a ON s.app_id = a.id WHERE p.user_id = ? ORDER BY p.created_at DESC'
-    ).bind(userId).all();
-    return payments.results;
+    const payments: any = await env.DB.prepare(
+      `SELECT p.id, p.amount, p.provider, p.status, p.created_at FROM payments p WHERE p.user_id = ? ORDER BY p.created_at DESC LIMIT 100`
+    ).bind(userId).all().catch(() => ({ results: [] }));
+    return payments.results || [];
   },
 };
 
-// Payment provider implementations (stubs)
-async function processPaystack(secretKey: string, details: any, amount: number) {
-  // Call Paystack API
-  return { success: true, transactionId: `ps_${Date.now()}` };
-}
-
-async function processMobileMoney(details: any, amount: number) {
-  // Call Mobile Money API
-  return { success: true, transactionId: `mm_${Date.now()}` };
-}
-
-async function processHubtel(details: any, amount: number) {
-  // Call Hubtel API
-  return { success: true, transactionId: `hb_${Date.now()}` };
-}
+export { statusForCode };

@@ -178,9 +178,18 @@ export default function Profile() {
               <span className="px-2 py-0.5 bg-rx-yellow/20 text-rx-yellow text-xs font-medium rounded-md capitalize">{user.role}</span>
             </div>
           </div>
-          <button onClick={logout} className="flex items-center gap-2 px-4 py-2 text-sm text-red-400 hover:bg-red-400/10 rounded-xl transition-all">
-            <LogOut className="w-4 h-4" /> Sign Out
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => { if (confirm('Sign out of RX Store on ALL devices? Installed apps are NOT uninstalled.')) logout({ allDevices: true }); }}
+              className="px-3 py-2 text-xs text-rx-gray-medium hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl transition-all"
+              title="Revoke every session for this account (does not remove installed apps)"
+            >
+              Sign out all devices
+            </button>
+            <button onClick={() => logout()} className="flex items-center gap-2 px-4 py-2 text-sm text-red-400 hover:bg-red-400/10 rounded-xl transition-all">
+              <LogOut className="w-4 h-4" /> Sign Out
+            </button>
+          </div>
         </div>
       </div>
 
