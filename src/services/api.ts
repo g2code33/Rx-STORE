@@ -512,6 +512,33 @@ export const api = {
         return request<any>(`/admin/developers/releases/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: JSON.stringify(reason ? { reason } : {}) });
       },
     },
+
+    // ---- Package security (Phase 13) ----
+    security: {
+      async packages(filter?: { state?: string; overall?: string }) {
+        const q = new URLSearchParams();
+        if (filter?.state) q.set('state', filter.state);
+        if (filter?.overall) q.set('overall', filter.overall);
+        const qs = q.toString();
+        return request<{ packages: any[] }>(`/admin/security/packages${qs ? `?${qs}` : ''}`, { method: 'GET' });
+      },
+      async package(id: string) {
+        return request<{ package: any; checks: any[]; history: any[]; overrides: any[] }>(`/admin/security/packages/${encodeURIComponent(id)}`, { method: 'GET' });
+      },
+      async override(id: string, reason: string) {
+        return request<any>(`/admin/security/packages/${encodeURIComponent(id)}/override`, { method: 'POST', body: JSON.stringify({ reason }) });
+      },
+      async rescan(id: string) {
+        return request<any>(`/admin/security/packages/${encodeURIComponent(id)}/rescan`, { method: 'POST', body: '{}' });
+      },
+    },
+  },
+
+  // Developer-side package security (Phase 13 §13)
+  developerSecurity: {
+    async package(packageId: string) {
+      return request<{ package: any; checks: any[]; overridden: boolean; overrideReason: string | null }>(`/developers/security/packages/${encodeURIComponent(packageId)}`, { method: 'GET' });
+    },
   },
 };
 

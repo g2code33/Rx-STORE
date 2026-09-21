@@ -19,6 +19,8 @@ import { updatesRoutes } from './routes/updates';
 import { devicesRoutes } from './routes/devices';
 import { developerRoutes, adminDeveloperRoutes } from './routes/developers';
 import { developerAppRoutes, adminDeveloperAppRoutes } from './routes/developerApps';
+import { securityAdminRoutes } from './routes/securityAdmin';
+import { r2KeyIsPubliclyServed } from './services/packageSecurity';
 import { verifyAccessToken } from './services/auth';
 import { apiErrorBody, statusForCode, requestIdFor, redact, type ErrorCode } from './services/errors';
 import { selectPackage, buildManifest, normalizeChannel, defaultChannel } from './services/releases';
@@ -370,6 +372,13 @@ export default {
     if (path.startsWith('/r2/') && request.method === 'GET') {
       try {
         const key = decodeURIComponent(path.slice(4)); // remove /r2/
+        // SECURITY GATE (Phase 13): package binaries (apps/* and quarantine/*)
+        // are only publicly downloadable once their package row is PUBLISHED.
+        // Quarantined / in-review / rejected packages 404 — this is the
+        // serving-layer half of private quarantine storage.
+        if (!(await r2KeyIsPubliclyServed(env, key))) {
+          return new Response('Not found', { status: 404, headers: corsHeaders(origin) });
+        }
         const obj: any = await env.STORAGE.get(key);
         if (!obj) return new Response('Not found', { status: 404, headers: corsHeaders(origin) });
         // Content-Type: stored metadata first, extension fallback (case-insensitive).
@@ -776,6 +785,7 @@ export default {
         else if (path.match(/^\/developers\/releases\/[^\/]+\/deployment-url$/) && request.method === 'POST') data = await developerAppRoutes.setDeploymentUrl(normalizedRequest as any, env);
         else if (path.match(/^\/developers\/releases\/[^\/]+$/) && request.method === 'GET') data = await developerAppRoutes.getRelease(normalizedRequest as any, env);
         else if (path.match(/^\/developers\/releases\/[^\/]+$/) && request.method === 'PATCH') data = await developerAppRoutes.updateRelease(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/security\/packages\/[^\/]+$/) && request.method === 'GET') data = await developerAppRoutes.getPackageSecurity(normalizedRequest as any, env);
         else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown developer route' } }, 404, origin);
         if (data?.error) {
           const code: ErrorCode = data.code === 'UNAUTHORIZED' ? 'AUTH_REQUIRED' : data.code === 'NOT_FOUND' ? 'NOT_FOUND' : data.code === 'FORBIDDEN' ? 'FORBIDDEN' : 'VALIDATION_ERROR';
@@ -784,6 +794,25 @@ export default {
         return respond({ success: true, data }, 200, origin);
       } catch (e: any) {
         console.error(`[${requestId}] developer op:`, redact(String(e?.message || e))); return fail('INTERNAL', 'Developer operation failed. Please try again.');
+      }
+    }
+
+    // ---- Admin: package security (Phase 13; admin JWT enforced for /admin/*) ----
+    if (path.startsWith('/admin/security')) {
+      try {
+        let data: any;
+        if (path === '/admin/security/packages' && request.method === 'GET') data = await securityAdminRoutes.listPackages(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/security\/packages\/[^\/]+$/) && request.method === 'GET') data = await securityAdminRoutes.getPackage(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/security\/packages\/[^\/]+\/override$/) && request.method === 'POST') data = await securityAdminRoutes.overridePackage(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/security\/packages\/[^\/]+\/rescan$/) && request.method === 'POST') data = await securityAdminRoutes.rescanPackage(normalizedRequest as any, env);
+        else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown security route' } }, 404, origin);
+        if (data?.error) {
+          const code: ErrorCode = data.code === 'NOT_FOUND' ? 'NOT_FOUND' : data.code === 'FORBIDDEN' ? 'FORBIDDEN' : 'VALIDATION_ERROR';
+          return fail(code, String(data.error));
+        }
+        return respond({ success: true, data }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] security admin op:`, redact(String(e?.message || e))); return fail('INTERNAL', 'Security operation failed. Please try again.');
       }
     }
 

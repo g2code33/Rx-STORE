@@ -115,6 +115,7 @@ columns), so back up before applying it.
 0008_packages_architecture.sql       UNIQUE(release, platform, architecture) + compat metadata
 0009_developer_platform.sql          Developer Platform (applications, orgs, team, roles, invitations, audit, threads)
 0010_developer_releases.sql          Developer release lifecycle (rebuilds applications + releases CHECKs; Prompt 13 hooks on packages)
+0011_package_security.sql            Package security pipeline (packages state machine + results + overrides tables)
 ```
 
 ### Migration numbering

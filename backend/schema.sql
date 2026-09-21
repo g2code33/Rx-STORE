@@ -269,6 +269,10 @@ CREATE TABLE IF NOT EXISTS packages (
   signature_status TEXT DEFAULT 'pending',
   scan_at TEXT,
   verified_at TEXT,
+  -- Phase 13: quarantine + the security state machine + overall verdict.
+  quarantine_key TEXT,
+  security_state TEXT DEFAULT 'QUARANTINED' CHECK (security_state IN ('QUARANTINED','STRUCTURE_CHECK','INTEGRITY_CHECK','DUPLICATE_CHECK','MALWARE_SCAN','SIGNATURE_CHECK','CERTIFICATE_CHECK','DEPENDENCY_SECURITY_CHECK','NATIVE_IDENTITY_CHECK','SECURITY_REVIEW_COMPLETE','SECURITY_OVERRIDE','PUBLISHED')),
+  overall_security TEXT DEFAULT 'PENDING' CHECK (overall_security IN ('PENDING','PASSED','FAILED','NEEDS_REVIEW')),
   status TEXT DEFAULT 'stored' CHECK (status IN ('uploading','validating','stored','ready_for_review','published','failed','archived')),
   deleted_at TEXT,
   created_at TEXT DEFAULT (datetime('now')),
@@ -390,3 +394,37 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_sessions_hash ON auth_sessions(token_hash);
+
+-- Phase 13: package security results + admin overrides.
+CREATE INDEX IF NOT EXISTS idx_packages_storage_key ON packages(storage_key);
+CREATE TABLE IF NOT EXISTS package_security_results (
+  id TEXT PRIMARY KEY,
+  package_id TEXT NOT NULL REFERENCES packages(id) ON DELETE CASCADE,
+  release_id TEXT,
+  app_id TEXT,
+  developer_id TEXT,
+  check_type TEXT NOT NULL CHECK (check_type IN ('structure','integrity','duplicate','malware','signature','certificate','dependency','native_identity')),
+  status TEXT NOT NULL,
+  classification TEXT,
+  provider TEXT,
+  provider_version TEXT,
+  result TEXT,
+  details TEXT,
+  fingerprint TEXT,
+  error TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_psr_package ON package_security_results(package_id);
+CREATE INDEX IF NOT EXISTS idx_psr_check ON package_security_results(package_id, check_type);
+CREATE TABLE IF NOT EXISTS package_security_overrides (
+  id TEXT PRIMARY KEY,
+  package_id TEXT NOT NULL REFERENCES packages(id) ON DELETE CASCADE,
+  admin_user_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  prior_state TEXT,
+  prior_overall TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_pso_package ON package_security_overrides(package_id);

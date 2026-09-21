@@ -6,12 +6,12 @@
  * All actions hit server-enforced admin endpoints.
  */
 import React, { useEffect, useState } from 'react';
-import { CheckCircle2, XCircle, Edit3, PauseCircle, PlayCircle, Eye, MessageSquare, Send } from 'lucide-react';
+import { CheckCircle2, XCircle, Edit3, PauseCircle, PlayCircle, Eye, MessageSquare, Send, Shield, RefreshCw } from 'lucide-react';
 import { api } from '../../services/api';
 import { formatDate } from '../../utils/helpers';
 import toast from 'react-hot-toast';
 
-type Tab = 'applications' | 'organizations' | 'apps' | 'releases' | 'communications';
+type Tab = 'applications' | 'organizations' | 'apps' | 'releases' | 'security' | 'communications';
 
 const STATUS_COLORS: Record<string, string> = {
   DRAFT: 'bg-white/5 text-rx-gray-medium',
@@ -44,6 +44,8 @@ export default function DeveloperAdminPanel() {
 
   const [devApps, setDevApps] = useState<any[]>([]);
   const [devReleases, setDevReleases] = useState<any[]>([]);
+  const [securityPackages, setSecurityPackages] = useState<any[]>([]);
+  const [securityDetail, setSecurityDetail] = useState<any>(null);
   const [appDetail, setAppDetail] = useState<any>(null);
   const [releaseDetail, setReleaseDetail] = useState<any>(null);
   const [releaseFilter, setReleaseFilter] = useState('');
@@ -56,12 +58,14 @@ export default function DeveloperAdminPanel() {
       api.developers.admin.threads().catch(() => ({ threads: [] })),
       api.developers.admin.devApps().catch(() => ({ apps: [] })),
       api.developers.admin.devReleases().catch(() => ({ releases: [] })),
-    ]).then(([a, d, t, da, dr]) => {
+      (api as any).developers.security.packages().catch(() => ({ packages: [] })),
+    ]).then(([a, d, t, da, dr, sp]) => {
       setApplications((a as any).applications || []);
       setDevelopers((d as any).developers || []);
       setThreads((t as any).threads || []);
       setDevApps((da as any).apps || []);
       setDevReleases((dr as any).releases || []);
+      setSecurityPackages((sp as any).packages || []);
     }).finally(() => setLoading(false));
   };
   useEffect(() => { load(); }, []);
@@ -125,8 +129,8 @@ export default function DeveloperAdminPanel() {
 
       {/* Tabs */}
       <div className="flex gap-1 bg-rx-dark-secondary rounded-xl p-1 w-fit">
-        {([['applications', `Applications (${applications.length})`], ['apps', `Apps (${devApps.length})`], ['releases', `Releases (${devReleases.filter((r) => ['submitted', 'under_review', 'changes_requested'].includes(r.status)).length} in review)`], ['organizations', `Organizations (${developers.length})`], ['communications', `Messages (${threads.filter((t) => Number(t.unread) > 0).length} new)`]] as [Tab, string][]).map(([id, label]) => (
-          <button key={id} onClick={() => { setTab(id); setDetail(null); setOrgDetail(null); setThread(null); setAppDetail(null); setReleaseDetail(null); }}
+        {([['applications', `Applications (${applications.length})`], ['apps', `Apps (${devApps.length})`], ['releases', `Releases (${devReleases.filter((r) => ['submitted', 'under_review', 'changes_requested'].includes(r.status)).length} in review)`], ['security', `Security (${securityPackages.filter((p) => p.overall_security !== 'PASSED').length} blocked)`], ['organizations', `Organizations (${developers.length})`], ['communications', `Messages (${threads.filter((t) => Number(t.unread) > 0).length} new)`]] as [Tab, string][]).map(([id, label]) => (
+          <button key={id} onClick={() => { setTab(id); setDetail(null); setOrgDetail(null); setThread(null); setAppDetail(null); setReleaseDetail(null); setSecurityDetail(null); }}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${tab === id ? 'bg-rx-yellow text-rx-dark' : 'text-rx-gray-medium hover:text-white'}`}>
             {label}
           </button>
@@ -407,6 +411,114 @@ export default function DeveloperAdminPanel() {
                   <p className="text-xs text-rx-gray-medium">{d.id} · {d.member_count} member{d.member_count === 1 ? '' : 's'} · {d.app_count} app{d.app_count === 1 ? '' : 's'}</p>
                 </div>
                 <StatusBadge status={d.status} />
+              </button>
+            ))}
+          </div>
+        )
+      ) : tab === 'security' ? (
+        securityDetail ? (
+          <div className="card p-6 space-y-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-bold text-white break-all">{securityDetail.package.filename}</h3>
+                <p className="text-sm text-rx-gray-medium mt-0.5">
+                  {securityDetail.package.app?.name} · v{securityDetail.package.release?.version} · {securityDetail.package.platform}
+                  {securityDetail.package.architecture !== 'universal' ? ` (${securityDetail.package.architecture})` : ''} · {(securityDetail.package.sizeBytes / 1024 / 1024).toFixed(1)} MB
+                </p>
+                <p className="text-xs text-rx-gray-medium mt-1 font-mono break-all">{securityDetail.package.sha256}</p>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap justify-end">
+                <StatusBadge status={securityDetail.package.securityState} />
+                <button onClick={() => setSecurityDetail(null)} className="text-xs text-rx-gray-medium hover:text-white">Close</button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+              {[
+                ['Malware', securityDetail.package.malwareStatus],
+                ['Signature', securityDetail.package.signatureStatus],
+                ['Overall', securityDetail.package.overallSecurity],
+                ['State', securityDetail.package.securityState],
+                ['Public', securityDetail.package.publiclyServed ? 'SERVED' : 'PRIVATE'],
+                ['Overrides', String(securityDetail.overrides.length)],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-xl bg-rx-dark-tertiary border border-white/5 p-3 text-center">
+                  <p className="text-[10px] uppercase tracking-wide text-rx-gray-medium">{label}</p>
+                  <p className="text-xs font-bold text-white mt-1 truncate" title={String(value)}>{String(value).replace('_', ' ')}</p>
+                </div>
+              ))}
+            </div>
+
+            <div>
+              <p className="text-sm font-semibold text-white mb-2">Checks</p>
+              <div className="space-y-2">
+                {securityDetail.checks.length === 0 && <p className="text-xs text-rx-gray-medium">No checks recorded yet.</p>}
+                {securityDetail.checks.map((c: any) => (
+                  <div key={c.check_type} className="p-3 rounded-xl bg-rx-dark-tertiary/60 border border-white/5">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <StatusBadge status={c.status} />
+                      <span className="text-sm font-medium text-white">{String(c.check_type).replace('_', ' ')}</span>
+                      {c.provider && <span className="text-[10px] text-rx-gray-medium">via {c.provider}{c.provider_version ? ` ${c.provider_version}` : ''}</span>}
+                      {c.fingerprint && <span className="text-[10px] font-mono text-rx-gray-medium">cert {String(c.fingerprint).slice(0, 12)}…</span>}
+                    </div>
+                    <p className="text-xs text-rx-gray-medium mt-1.5">{c.result}{c.details ? ` — ${c.details}` : ''}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {securityDetail.overrides.length > 0 && (
+              <div>
+                <p className="text-sm font-semibold text-white mb-2">Overrides (audited)</p>
+                {securityDetail.overrides.map((o: any) => (
+                  <div key={o.id} className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-sm">
+                    <p className="text-amber-200 text-xs">{o.admin_name || o.admin_user_id} · {formatDate(o.created_at)} · prior: {String(o.prior_state).replace('_', ' ')} / {String(o.prior_overall)}</p>
+                    <p className="text-rx-gray-medium mt-1">{o.reason}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-2 border-t border-white/5 pt-4">
+              <button onClick={async () => { try { await (api as any).developers.security.rescan(securityDetail.package.id); toast.success('Rescan complete'); setSecurityDetail(await (api as any).developers.security.package(securityDetail.package.id)); load(); } catch (e: any) { toast.error(e?.message || 'Rescan failed'); } }} disabled={busy}
+                className="btn-secondary text-sm flex items-center gap-2"><RefreshCw className="w-4 h-4" /> Re-run security pipeline</button>
+              {securityDetail.package.overallSecurity !== 'PASSED' && (
+                <div className="flex-1 min-w-[260px] space-y-2">
+                  <textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white" placeholder="Override reason (REQUIRED, min 10 characters — this is an audited decision)…" />
+                  <button onClick={async () => {
+                    try {
+                      await (api as any).developers.security.override(securityDetail.package.id, reason);
+                      toast.success('Security override recorded');
+                      setSecurityDetail(await (api as any).developers.security.package(securityDetail.package.id));
+                      setReason(''); load();
+                    } catch (e: any) { toast.error(e?.message || 'Override failed'); }
+                  }} disabled={busy || reason.trim().length < 10}
+                    className="text-sm flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500/10 text-amber-300 border border-amber-500/20 hover:bg-amber-500/20 disabled:opacity-40">
+                    <Shield className="w-4 h-4" /> Override security blocker
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="card divide-y divide-white/5">
+            {securityPackages.length === 0 ? (
+              <p className="p-8 text-center text-sm text-rx-gray-medium">No binary packages yet — uploads appear here with their security state.</p>
+            ) : securityPackages.map((p) => (
+              <button key={p.id} onClick={async () => { setReason(''); try { setSecurityDetail(await (api as any).developers.security.package(p.id)); } catch (e: any) { toast.error(e?.message || 'Could not load'); } }}
+                className="w-full p-4 flex flex-wrap items-center gap-3 hover:bg-white/5 text-left">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-white truncate">{p.filename}</p>
+                  <p className="text-xs text-rx-gray-medium truncate">
+                    {p.app_name} · v{p.version || '—'} · {p.platform}{p.architecture && p.architecture !== 'universal' ? `/${p.architecture}` : ''} · {(Number(p.file_size) / 1024 / 1024).toFixed(1)} MB
+                    {p.publisher_name ? ` · ${p.publisher_name}` : ''}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {p.overridden && <span className="text-[10px] font-bold px-2 py-1 rounded bg-amber-500/10 text-amber-300">OVERRIDDEN</span>}
+                  <StatusBadge status={String(p.security_scan_status || 'pending')} />
+                  <StatusBadge status={String(p.overall_security || 'PENDING')} />
+                </div>
               </button>
             ))}
           </div>

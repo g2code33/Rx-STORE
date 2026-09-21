@@ -43,6 +43,18 @@ binding = "CACHE"
 id = "bb99ae50606c4b6d92ee03c56781bea1"
 preview_id = "e056396b15db4fd490a2f3024ffda05e"
 
+# --- Package security pipeline (Phase 13) ---
+# Malware scanning is PLUGGABLE and FAIL-CLOSED: with no scanner configured,
+# packages stay UNAVAILABLE and are blocked from publication (admin override
+# with a recorded reason is the only bypass).
+#   MALWARE_SCANNER = "virustotal"  + secret VIRUSTOTAL_API_KEY  -> hash-lookup provider
+#   MALWARE_SCANNER = "custom"      + MALWARE_SCANNER_URL (POST {sha256,size,filename,platform}
+#                                    -> {status: CLEAN|DETECTED|FAILED|UNAVAILABLE, provider, version, details})
+#                                    + optional secret MALWARE_SCANNER_KEY (Bearer)
+# Optional dependency/metadata checker: DEP_SECURITY_URL (same response shape).
+MALWARE_SCANNER = ""
+# DEP_SECURITY_URL = ""
+
 # Secrets (set with: wrangler secret put <NAME>)
 # JWT_SECRET (required)
 # NVIDIA_API_KEY (nvapi-...), OPENAI_API_KEY (sk-...), OPENROUTER_API_KEY (sk-or-...), GEMINI_API_KEY (AIza...)

@@ -30,6 +30,7 @@ import {
 import { writePackageRow } from './admin.ts';
 import { parseSemver, normalizeChannel } from '../services/releases.ts';
 import { permissionsForRole } from '../services/developerPermissions.ts';
+import { runSecurityPipeline, latestChecksForPackages } from '../services/packageSecurity.ts';
 
 // ---------------------------------------------------------------------------
 // Constants + helpers
@@ -379,7 +380,13 @@ export const developerAppRoutes = {
        FROM packages WHERE release_id=? ORDER BY created_at ASC`
     ).bind(releaseId).all().catch(() => ({ results: [] }));
     const thread: any = await env.DB.prepare('SELECT id, subject, status, updated_at FROM developer_threads WHERE related_release_id=?').bind(releaseId).first().catch(() => null);
-    return { release: releaseView(rel, app), packages: pkgs?.results || [], app: appView(app), thread: thread || null };
+    const pkgRows = pkgs?.results || [];
+    const checks = await latestChecksForPackages(env, pkgRows.map((p: any) => p.id));
+    return {
+      release: releaseView(rel, app),
+      packages: pkgRows.map((p: any) => ({ ...p, checks: checks[p.id] || [] })),
+      app: appView(app), thread: thread || null,
+    };
   },
 
   /** PATCH /developers/releases/:id — edit draft/changes-requested releases only. */
@@ -544,29 +551,43 @@ export const developerAppRoutes = {
     const digest: ArrayBuffer = await (crypto as any).subtle.digest('SHA-256', buf);
     const sha256 = Array.from(new Uint8Array(digest)).map((b: number) => b.toString(16).padStart(2, '0')).join('');
     const safeName = String(file.name || 'package.bin').replace(/[^\w.\-]+/g, '_');
-    const storageKey = `apps/${app.slug}/${rel.version}/${platform}/${safeName}`;
+    const architecture = String(form.get('architecture') || 'x64').toLowerCase();
+    if (!['x64', 'arm64', 'x86', 'arm', 'universal'].includes(architecture)) {
+      return { error: `Invalid architecture '${architecture}'. Use: x64, arm64, x86, arm, universal.`, code: 'VALIDATION_ERROR' };
+    }
+    // PHASE 13: uploads land in PRIVATE quarantine storage. The /r2/ serving
+    // route blocks quarantine/ (and unpublished apps/) keys entirely — the
+    // binary is unreachable by URL until its package is published.
+    const storageKey = `quarantine/${app.slug}/${rel.version}/${platform}/${architecture}/${safeName}`;
     try {
       await env.STORAGE.put(storageKey, buf, { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
     } catch {
       return { error: 'Storage failed — the package was NOT saved. Try again.', code: 'INTERNAL' };
     }
 
-    const architecture = String(form.get('architecture') || 'x64').toLowerCase();
-    if (!['x64', 'arm64', 'x86', 'arm', 'universal'].includes(architecture)) {
-      return { error: `Invalid architecture '${architecture}'. Use: x64, arm64, x86, arm, universal.`, code: 'VALIDATION_ERROR' };
-    }
     const saved = await writePackageRow(env, { ...rel, app_slug: app.slug }, platform, {
       filename: safeName, storageKey, size: file.size, mime: file.type || 'application/octet-stream', sha256, architecture,
     });
     if ((saved as any)?.error) return saved;
 
-    // (Re-)uploading resets verification to pending — nothing is ever assumed safe.
+    // (Re-)uploading resets verification to pending — nothing is ever assumed
+    // safe — then the real pipeline runs (structure/integrity/duplicate/
+    // malware/signature/certificate/dependency/identity) and quarantines.
     await env.DB.prepare(
-      `UPDATE packages SET security_scan_status='pending', signature_status='pending', scan_at=NULL, verified_at=NULL WHERE release_id=? AND platform=? AND architecture=?`
-    ).bind(releaseId, platform, architecture).run().catch(() => {});
+      `UPDATE packages SET quarantine_key=?, security_state='QUARANTINED', overall_security='PENDING',
+         security_scan_status='pending', signature_status='pending', scan_at=NULL, verified_at=NULL
+       WHERE release_id=? AND platform=? AND architecture=?`
+    ).bind(storageKey, releaseId, platform, architecture).run().catch(() => {});
+    let security: any = null;
+    try {
+      const row: any = await env.DB.prepare(
+        'SELECT id FROM packages WHERE release_id=? AND platform=? AND architecture=?'
+      ).bind(releaseId, platform, architecture).first();
+      if (row) security = await runSecurityPipeline(env, row.id);
+    } catch { /* results are recorded even when the response shape degrades */ }
 
     await auditDev(env, ms.developer.id, userId, 'developer_package_uploaded', { releaseId, platform, architecture, filename: safeName, size: file.size });
-    return { package: saved };
+    return { package: saved, security };
   },
 
   /** POST /developers/releases/:id/deployment-url — web/PWA/iOS URL package. */
@@ -611,6 +632,33 @@ export const developerAppRoutes = {
 
     await auditDev(env, ms.developer.id, userId, 'developer_package_uploaded', { releaseId, platform, deploymentUrl: url });
     return { package: saved };
+  },
+
+  /** GET /developers/security/packages/:id — the developer security view (own packages only). */
+  async getPackageSecurity(request: Request, env: any) {
+    const userId = userIdOf(request);
+    if (!userId) return { error: 'Authentication required', code: 'UNAUTHORIZED' };
+    const ms = await resolveMembership(env, userId);
+    if (!ms) return { error: 'No developer organization for this account', code: 'FORBIDDEN' };
+    const packageId = new URL(request.url).pathname.split('/')[4] || '';
+    const pkg: any = await env.DB.prepare('SELECT * FROM packages WHERE id=?').bind(packageId).first().catch(() => null);
+    if (!pkg) return { error: 'Package not found', code: 'NOT_FOUND' };
+    const res = await ownRelease(env, ms.developer.id, String(pkg.release_id));
+    if ('error' in res && (res as any).error) return res; // ownership: another org's package is "not found"
+    const checks = (await latestChecksForPackages(env, [packageId]))[packageId] || [];
+    const overrides: any = await env.DB.prepare(
+      'SELECT reason, created_at FROM package_security_overrides WHERE package_id=? ORDER BY created_at DESC'
+    ).bind(packageId).all().catch(() => ({ results: [] }));
+    return {
+      package: {
+        id: pkg.id, platform: pkg.platform, architecture: pkg.architecture, filename: pkg.filename,
+        sizeBytes: Number(pkg.file_size) || 0, sha256: pkg.sha256,
+        securityState: pkg.security_state || 'QUARANTINED', overallSecurity: pkg.overall_security || 'PENDING',
+      },
+      checks,
+      overridden: (overrides?.results || []).length > 0,
+      overrideReason: (overrides?.results || [])[0]?.reason || null,
+    };
   },
 };
 

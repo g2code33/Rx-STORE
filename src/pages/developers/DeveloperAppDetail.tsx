@@ -6,7 +6,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
-  ArrowLeft, Plus, Upload, Send, X, AlertCircle, CheckCircle2, PauseCircle, ExternalLink, FileCheck, MessageSquare,
+  ArrowLeft, Plus, Upload, Send, X, AlertCircle, CheckCircle2, PauseCircle, ExternalLink, FileCheck, MessageSquare, ShieldAlert, ShieldCheck,
 } from 'lucide-react';
 import { api, isApiConfigured } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -21,7 +21,17 @@ const STATUS_BADGE: Record<string, string> = {
   published: 'bg-green-400/10 text-green-400', withdrawn: 'bg-white/5 text-rx-gray-medium',
   active: 'bg-green-400/10 text-green-400', suspended: 'bg-amber-500/10 text-amber-300',
   pending: 'bg-white/5 text-rx-gray-medium', passed: 'bg-green-400/10 text-green-400',
-  failed: 'bg-red-400/10 text-red-400', needs_review: 'bg-amber-500/10 text-amber-300',
+  clean: 'bg-green-400/10 text-green-400', detected: 'bg-red-400/10 text-red-400',
+  unavailable: 'bg-amber-500/10 text-amber-300', needs_review: 'bg-amber-500/10 text-amber-300',
+  scanning: 'bg-blue-400/10 text-blue-300', not_applicable: 'bg-white/5 text-rx-gray-medium',
+  quarantined: 'bg-white/5 text-rx-gray-medium', security_review_complete: 'bg-green-400/10 text-green-400',
+  security_override: 'bg-amber-500/10 text-amber-300', structure_check: 'bg-blue-400/10 text-blue-300',
+  integrity_check: 'bg-blue-400/10 text-blue-300', duplicate_check: 'bg-blue-400/10 text-blue-300',
+  malware_scan: 'bg-blue-400/10 text-blue-300', signature_check: 'bg-blue-400/10 text-blue-300',
+  certificate_check: 'bg-blue-400/10 text-blue-300', dependency_security_check: 'bg-blue-400/10 text-blue-300',
+  native_identity_check: 'bg-blue-400/10 text-blue-300', warning: 'bg-amber-500/10 text-amber-300',
+  signed: 'bg-green-400/10 text-green-400', unsigned: 'bg-amber-500/10 text-amber-300',
+  failed: 'bg-red-400/10 text-red-400',
 };
 
 function Badge({ status }: { status: string }) {
@@ -368,6 +378,40 @@ function ReleaseCard({ rel, expanded, onToggle, onChanged }: { rel: any; expande
 
 // ---------------------------------------------------------------------------
 
+const CHECK_LABELS: Record<string, string> = {
+  structure: 'Package structure', integrity: 'Integrity (SHA-256)', duplicate: 'Duplicate check',
+  malware: 'Malware scan', signature: 'Signature', certificate: 'Certificate',
+  dependency: 'Dependency check', native_identity: 'Native identity',
+};
+
+/** Developer security view: actionable per-check status, honest wording. */
+function PackageChecks({ checks }: { checks: any[] }) {
+  if (!checks.length) {
+    return <p className="text-[11px] text-rx-gray-medium/70 mt-1.5">Security verification has not run yet for this package.</p>;
+  }
+  return (
+    <div className="mt-1.5 space-y-0.5">
+      {checks.map((c) => {
+        const ok = c.status === 'PASSED' || c.status === 'CLEAN';
+        const bad = c.status === 'FAILED' || c.status === 'DETECTED';
+        const warn = c.status === 'WARNING' || c.status === 'NEEDS_REVIEW' || c.status === 'UNAVAILABLE';
+        const na = c.status === 'NOT_APPLICABLE';
+        const Icon = bad ? ShieldAlert : ok ? ShieldCheck : warn ? AlertCircle : CheckCircle2;
+        const color = bad ? 'text-red-400' : ok ? 'text-green-400' : warn ? 'text-amber-300' : 'text-rx-gray-medium';
+        return (
+          <div key={c.check_type} className="flex items-start gap-1.5 text-[11px]" title={c.details || c.result}>
+            <Icon className={`w-3 h-3 mt-0.5 flex-shrink-0 ${color}`} />
+            <span className="text-rx-gray-medium">
+              <span className="text-white">{CHECK_LABELS[c.check_type] || c.check_type}:</span>{' '}
+              {ok ? (c.check_type === 'malware' ? 'Automated security checks passed' : 'Passed') : na ? 'Not applicable' : `${String(c.status).replace('_', ' ').toLowerCase()} — ${c.result}`}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function PackagesSection({ rel, canEdit, onChanged }: { rel: any; canEdit: boolean; onChanged: () => void }) {
   const [platform, setPlatform] = useState('windows');
   const [arch, setArch] = useState('x64');
@@ -409,12 +453,20 @@ function PackagesSection({ rel, canEdit, onChanged }: { rel: any; canEdit: boole
         {(rel.packages || []).length === 0 ? (
           <p className="p-3 text-xs text-rx-gray-medium">No packages yet — at least one is required to submit.</p>
         ) : rel.packages.map((p: any) => (
-          <div key={p.id} className="p-3 flex flex-wrap items-center gap-2 text-sm">
-            <span className="font-medium text-white">{p.platform}{p.architecture && p.architecture !== 'universal' ? ` (${p.architecture})` : ''}</span>
-            <span className="text-rx-gray-medium text-xs truncate flex-1 min-w-0">{p.deployment_url || p.filename}</span>
-            <span className="text-xs text-rx-gray-medium">{fmtSize(Number(p.file_size) || 0)}</span>
-            <Badge status={p.status} />
-            <span className="text-[10px] text-rx-gray-medium/70" title="Prompt 13 verifies packages">scan: {p.security_scan_status || 'pending'}</span>
+          <div key={p.id} className="p-3">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="font-medium text-white">{p.platform}{p.architecture && p.architecture !== 'universal' ? ` (${p.architecture})` : ''}</span>
+              <span className="text-rx-gray-medium text-xs truncate flex-1 min-w-0">{p.deployment_url || p.filename}</span>
+              <span className="text-xs text-rx-gray-medium">{fmtSize(Number(p.file_size) || 0)}</span>
+              <Badge status={p.status} />
+              {p.security_state && p.security_state !== 'PUBLISHED' && <Badge status={p.security_state} />}
+              {p.overall_security && p.overall_security !== 'PENDING' && <Badge status={p.overall_security} />}
+            </div>
+            {p.deployment_url ? (
+              <p className="text-[11px] text-rx-gray-medium/70 mt-1.5">URL deployment — no binary to verify (the HTTPS endpoint owns integrity).</p>
+            ) : (
+              <PackageChecks checks={p.checks || []} />
+            )}
           </div>
         ))}
       </div>

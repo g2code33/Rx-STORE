@@ -7,6 +7,7 @@ import { getSetting } from '../services/settings.ts';
 import { hashPassword, verifyPassword, verifyToken } from '../services/auth.ts';
 import { normalizeArchitecture, normalizeChannel, validatePackageIntegrity, CHANNELS } from '../services/releases.ts';
 import { notifyStableReleaseEmails } from '../services/email.ts';
+import { runSecurityPipeline, publicationSecurityGate } from '../services/packageSecurity.ts';
 
 async function validAdminPassword(request: Request, env: any, password: unknown): Promise<boolean> {
   const auth = request.headers.get('Authorization') || '';
@@ -455,14 +456,16 @@ export const adminRoutes = {
     const digest: ArrayBuffer = await (crypto as any).subtle.digest('SHA-256', buf);
     const sha256 = Array.from(new Uint8Array(digest)).map((b:number)=>b.toString(16).padStart(2,'0')).join('');
     const safeName = sanitizeName(file.name);
-    const storageKey = `apps/${rel.app_slug}/${rel.version}/${platform}/${safeName}`;
-    await env.STORAGE.put(storageKey, buf, { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
-
-    const origin = new URL(request.url).origin;
     // Architecture is required for a real multi-arch store; it defaults to x64
     // for backwards compatibility with older admin clients.
     const architecture = normalizeArchitecture(form.get('architecture'));
     if (!architecture) return { error: `Invalid architecture '${String(form.get('architecture') || '')}'. Use one of: x64, arm64, x86, arm, universal.` };
+    // PHASE 13: quarantine storage + the /r2/ serving gate keep the binary
+    // private until the package is published.
+    const storageKey = `quarantine/${rel.app_slug}/${rel.version}/${platform}/${architecture}/${safeName}`;
+    await env.STORAGE.put(storageKey, buf, { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
+
+    const origin = new URL(request.url).origin;
     const saved = await writePackageRow(env, rel, platform, {
       filename: safeName, storageKey, size: file.size, mime: file.type || 'application/octet-stream', sha256,
       architecture,
@@ -470,11 +473,24 @@ export const adminRoutes = {
       minAndroidSdk: formNumber(form.get('minAndroidSdk')),
     });
     if ((saved as any)?.error) return saved;
+    // PHASE 13: quarantine + run the real security pipeline on upload.
+    await env.DB.prepare(
+      `UPDATE packages SET quarantine_key=?, security_state='QUARANTINED', overall_security='PENDING',
+         security_scan_status='pending', signature_status='pending', scan_at=NULL, verified_at=NULL
+       WHERE release_id=? AND platform=? AND architecture=?`
+    ).bind(storageKey, rel.id, platform, architecture).run().catch(() => {});
+    let security: any = null;
+    try {
+      const row: any = await env.DB.prepare(
+        'SELECT id FROM packages WHERE release_id=? AND platform=? AND architecture=?'
+      ).bind(rel.id, platform, architecture).first();
+      if (row) security = await runSecurityPipeline(env, row.id);
+    } catch { /* results are recorded regardless */ }
     if (rel.status === 'published') {
       await mergeAppPlatforms(env, rel.application_id);
       await syncLegacyAppVersion(env, rel.application_id, rel, origin);
     }
-    return { success: true, package: { ...saved, url: `${origin}/r2/${storageKey}`, version: rel.version } };
+    return { success: true, package: { ...saved, url: `${origin}/r2/${storageKey}`, version: rel.version }, security };
   },
 
   // --- Chunked multipart upload for big installers (up to 500 MB) ---
@@ -490,7 +506,7 @@ export const adminRoutes = {
     const architecture = normalizeArchitecture(body.architecture);
     if (!architecture) return { error: `Invalid architecture '${String(body.architecture || '')}'. Use one of: x64, arm64, x86, arm, universal.` };
     const safeName = sanitizeName(body.filename);
-    const storageKey = `apps/${rel.app_slug}/${rel.version}/${platform}/${architecture}/${safeName}`;
+    const storageKey = `quarantine/${rel.app_slug}/${rel.version}/${platform}/${architecture}/${safeName}`;
     const mpu = await env.STORAGE.createMultipartUpload(storageKey, { httpMetadata: { contentType: body.mimeType || 'application/octet-stream' } });
     return { success: true, uploadId: mpu.uploadId, key: storageKey, platform, architecture, filename: safeName };
   },
@@ -534,12 +550,27 @@ export const adminRoutes = {
       architecture, minOsVersion: body.minOsVersion, minAndroidSdk: body.minAndroidSdk,
     });
     if ((saved as any)?.error) return saved;
+    // PHASE 13: chunked packages are quarantined too; the pipeline runs with
+    // the admin-client hash (full in-Worker re-hash of >50MB objects is not
+    // feasible — the integrity check records that honestly).
+    await env.DB.prepare(
+      `UPDATE packages SET quarantine_key=?, security_state='QUARANTINED', overall_security='PENDING',
+         security_scan_status='pending', signature_status='pending', scan_at=NULL, verified_at=NULL
+       WHERE release_id=? AND platform=? AND architecture=?`
+    ).bind(key, rel.id, platform, architecture).run().catch(() => {});
+    let security: any = null;
+    try {
+      const row: any = await env.DB.prepare(
+        'SELECT id FROM packages WHERE release_id=? AND platform=? AND architecture=?'
+      ).bind(rel.id, platform, architecture).first();
+      if (row) security = await runSecurityPipeline(env, row.id);
+    } catch { /* recorded regardless */ }
     const origin = new URL(request.url).origin;
     if (rel.status === 'published') {
       await mergeAppPlatforms(env, rel.application_id);
       await syncLegacyAppVersion(env, rel.application_id, rel, origin);
     }
-    return { success: true, package: { ...saved, url: `${origin}/r2/${key}`, version: rel.version } };
+    return { success: true, package: { ...saved, url: `${origin}/r2/${key}`, version: rel.version }, security };
   },
 
   // POST /admin/releases/:id/upload/abort {uploadId, key}
@@ -610,6 +641,24 @@ export const adminRoutes = {
     // publish flow. Prompt 13 will additionally gate on security verification.
     if (rel.developer_id && rel.status !== 'approved') {
       return { error: `Developer-submitted releases must be approved before publishing (current status: ${rel.status}). Approve it in Admin → Developers → Releases.` };
+    }
+    // PHASE 13 — the security gate. Every binary package of this release must
+    // have PASSED automated verification (or carry an explicit admin override
+    // with a recorded reason). The gate runs the pipeline for anything still
+    // quarantined, then blocks publication on any blocker. No stage can be
+    // skipped: QUARANTINED -> PUBLISHED directly is impossible.
+    {
+      const gate = await publicationSecurityGate(env, relId);
+      if (!gate.ok) {
+        const lines = gate.blockers.map((b: any) =>
+          `• ${b.filename} (${b.platform}): state=${b.state}, overall=${b.overall}` +
+          (b.reasons && b.reasons.length ? ` — ${b.reasons.slice(0, 3).join(' | ')}` : ''));
+        return {
+          error: `Security verification blocked publication. ${gate.blockers.length} package(s) not cleared:\n${lines.join('\n')}\n` +
+            `Fix the reported issues and re-upload, or override explicitly in Admin → Developers → Security with a reason (every override is audited).`,
+        };
+      }
+      await env.DB.prepare(`UPDATE packages SET security_state='PUBLISHED' WHERE release_id=?`).bind(relId).run().catch(() => {});
     }
     // Verify packages exist and are COMPLETE before anything goes live.
     // A release is never published with missing platform/architecture/version,
