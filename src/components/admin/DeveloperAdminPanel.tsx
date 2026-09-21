@@ -11,7 +11,7 @@ import { api } from '../../services/api';
 import { formatDate } from '../../utils/helpers';
 import toast from 'react-hot-toast';
 
-type Tab = 'applications' | 'organizations' | 'communications';
+type Tab = 'applications' | 'organizations' | 'apps' | 'releases' | 'communications';
 
 const STATUS_COLORS: Record<string, string> = {
   DRAFT: 'bg-white/5 text-rx-gray-medium',
@@ -42,16 +42,26 @@ export default function DeveloperAdminPanel() {
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
 
+  const [devApps, setDevApps] = useState<any[]>([]);
+  const [devReleases, setDevReleases] = useState<any[]>([]);
+  const [appDetail, setAppDetail] = useState<any>(null);
+  const [releaseDetail, setReleaseDetail] = useState<any>(null);
+  const [releaseFilter, setReleaseFilter] = useState('');
+
   const load = () => {
     setLoading(true);
     Promise.all([
       api.developers.admin.applications().catch(() => ({ applications: [] })),
       api.developers.admin.developers().catch(() => ({ developers: [] })),
       api.developers.admin.threads().catch(() => ({ threads: [] })),
-    ]).then(([a, d, t]) => {
+      api.developers.admin.devApps().catch(() => ({ apps: [] })),
+      api.developers.admin.devReleases().catch(() => ({ releases: [] })),
+    ]).then(([a, d, t, da, dr]) => {
       setApplications((a as any).applications || []);
       setDevelopers((d as any).developers || []);
       setThreads((t as any).threads || []);
+      setDevApps((da as any).apps || []);
+      setDevReleases((dr as any).releases || []);
     }).finally(() => setLoading(false));
   };
   useEffect(() => { load(); }, []);
@@ -86,6 +96,16 @@ export default function DeveloperAdminPanel() {
     setBusy(false);
   };
 
+  const actRelease = async (id: string, action: 'review' | 'approve' | 'reject' | 'request-changes', reason?: string) => {
+    setBusy(true);
+    try {
+      await api.developers.admin.devReleaseAction(id, action, reason);
+      toast.success(`Release ${action === 'request-changes' ? 'changes requested' : action + 'd'}`);
+      setReleaseDetail(null); setReason(''); load();
+    } catch (e: any) { toast.error(e?.message || 'Action failed'); }
+    setBusy(false);
+  };
+
   const sendReply = async () => {
     if (!reply.trim() || !thread) return;
     setBusy(true);
@@ -105,8 +125,8 @@ export default function DeveloperAdminPanel() {
 
       {/* Tabs */}
       <div className="flex gap-1 bg-rx-dark-secondary rounded-xl p-1 w-fit">
-        {([['applications', `Applications (${applications.length})`], ['organizations', `Organizations (${developers.length})`], ['communications', `Messages (${threads.filter((t) => Number(t.unread) > 0).length} new)`]] as [Tab, string][]).map(([id, label]) => (
-          <button key={id} onClick={() => { setTab(id); setDetail(null); setOrgDetail(null); setThread(null); }}
+        {([['applications', `Applications (${applications.length})`], ['apps', `Apps (${devApps.length})`], ['releases', `Releases (${devReleases.filter((r) => ['submitted', 'under_review', 'changes_requested'].includes(r.status)).length} in review)`], ['organizations', `Organizations (${developers.length})`], ['communications', `Messages (${threads.filter((t) => Number(t.unread) > 0).length} new)`]] as [Tab, string][]).map(([id, label]) => (
+          <button key={id} onClick={() => { setTab(id); setDetail(null); setOrgDetail(null); setThread(null); setAppDetail(null); setReleaseDetail(null); }}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${tab === id ? 'bg-rx-yellow text-rx-dark' : 'text-rx-gray-medium hover:text-white'}`}>
             {label}
           </button>
@@ -177,6 +197,156 @@ export default function DeveloperAdminPanel() {
                     <p className="text-xs text-rx-gray-medium truncate">{a.applicant?.email || '—'} · {formatDate(a.submittedAt || a.createdAt)}</p>
                   </div>
                   <StatusBadge status={a.status} />
+                </button>
+              ))}
+            </div>
+          </div>
+        )
+      ) : tab === 'apps' ? (
+        appDetail ? (
+          <div className="card p-6 space-y-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-bold text-white">{appDetail.app.name}</h3>
+                <p className="text-sm text-rx-gray-medium mt-0.5">{appDetail.app.slug} · {appDetail.publisher?.publisher_name || appDetail.app.developerOrgId}</p>
+              </div>
+              <div className="flex items-center gap-2"><StatusBadge status={appDetail.app.status} /><button onClick={() => setAppDetail(null)} className="text-xs text-rx-gray-medium hover:text-white">Close</button></div>
+            </div>
+            <div className="grid sm:grid-cols-2 gap-3 text-sm">
+              <div className="sm:col-span-2"><p className="text-rx-gray-medium">Description</p><p className="text-white">{appDetail.app.description}</p></div>
+              <div><p className="text-rx-gray-medium">Category</p><p className="text-white">{appDetail.app.category}</p></div>
+              <div><p className="text-rx-gray-medium">Platforms</p><p className="text-white">{(appDetail.app.platforms || []).join(', ')}</p></div>
+              <div><p className="text-rx-gray-medium">Icon</p><p className="text-white break-all">{appDetail.app.icon || '—'}</p></div>
+              <div><p className="text-rx-gray-medium">Website</p><p className="text-white break-all">{appDetail.app.website || '—'}</p></div>
+            </div>
+            {appDetail.releases?.length > 0 && (
+              <div>
+                <p className="text-sm font-semibold text-white mb-2">Releases</p>
+                <div className="space-y-1.5">
+                  {appDetail.releases.map((r: any) => (
+                    <div key={r.id} className="flex items-center justify-between text-sm p-2 rounded-lg bg-white/5">
+                      <span className="text-white">v{r.version} {r.buildNumber ? `(build ${r.buildNumber})` : ''}</span>
+                      <StatusBadge status={r.status} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {['submitted', 'under_review', 'changes_requested'].includes(appDetail.app.status) && (
+              <div className="flex flex-wrap gap-2 border-t border-white/5 pt-4">
+                <button onClick={() => act(() => api.developers.admin.devAppAction(appDetail.app.id, 'approve'), 'App approved and listed')} disabled={busy}
+                  className="btn-primary text-sm flex items-center gap-2"><CheckCircle2 className="w-4 h-4" /> Approve & list</button>
+                <button onClick={() => act(() => api.developers.admin.devAppAction(appDetail.app.id, 'request-changes', reason), 'Changes requested')} disabled={busy || reason.trim().length < 10}
+                  className="btn-secondary text-sm flex items-center gap-2 disabled:opacity-40"><Edit3 className="w-4 h-4" /> Request changes</button>
+                <button onClick={() => act(() => api.developers.admin.devAppAction(appDetail.app.id, 'reject', reason), 'App rejected')} disabled={busy || reason.trim().length < 10}
+                  className="text-sm flex items-center gap-2 px-4 py-2 rounded-xl bg-red-400/10 text-red-400 border border-red-400/20 hover:bg-red-400/20 disabled:opacity-40"><XCircle className="w-4 h-4" /> Reject</button>
+              </div>
+            )}
+            {appDetail.app.status === 'active' && (
+              <button onClick={() => act(() => api.developers.admin.devAppAction(appDetail.app.id, 'suspend'), 'App suspended (unlisted)')} disabled={busy}
+                className="text-sm flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500/10 text-amber-300 border border-amber-500/20 hover:bg-amber-500/20"><PauseCircle className="w-4 h-4" /> Suspend (unlist)</button>
+            )}
+            {appDetail.app.status === 'suspended' && (
+              <button onClick={() => act(() => api.developers.admin.devAppAction(appDetail.app.id, 'reinstate'), 'App reinstated')} disabled={busy}
+                className="btn-primary text-sm flex items-center gap-2"><PlayCircle className="w-4 h-4" /> Reinstate</button>
+            )}
+            {['submitted', 'under_review'].includes(appDetail.app.status) && (
+              <textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white" placeholder="Reason (required for reject / request changes — min 10 characters)…" />
+            )}
+          </div>
+        ) : (
+          <div className="card divide-y divide-white/5">
+            {devApps.length === 0 ? (
+              <p className="p-8 text-center text-sm text-rx-gray-medium">No developer apps yet.</p>
+            ) : devApps.map((a) => (
+              <button key={a.id} onClick={async () => { setReason(''); try { setAppDetail(await api.developers.admin.devApp(a.id)); } catch (e: any) { toast.error(e?.message || 'Could not load'); } }}
+                className="w-full p-4 flex flex-wrap items-center gap-3 hover:bg-white/5 text-left">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-white truncate">{a.name}</p>
+                  <p className="text-xs text-rx-gray-medium truncate">{a.publisherName || a.developerOrgId} · {a.slug}</p>
+                </div>
+                <StatusBadge status={a.status} />
+              </button>
+            ))}
+          </div>
+        )
+      ) : tab === 'releases' ? (
+        releaseDetail ? (
+          <div className="card p-6 space-y-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-bold text-white">{releaseDetail.app?.name} <span className="text-rx-yellow">v{releaseDetail.release?.version}</span></h3>
+                <p className="text-sm text-rx-gray-medium mt-0.5">
+                  build {releaseDetail.release?.buildNumber || '—'} · {releaseDetail.release?.publisherName || releaseDetail.release?.developerId}
+                  {releaseDetail.release?.previousVersion ? ` · previous published: v${releaseDetail.release.previousVersion}` : ' · first release'}
+                </p>
+              </div>
+              <div className="flex items-center gap-2"><StatusBadge status={releaseDetail.release?.status} /><button onClick={() => setReleaseDetail(null)} className="text-xs text-rx-gray-medium hover:text-white">Close</button></div>
+            </div>
+            {(releaseDetail.release?.featureSummary || releaseDetail.release?.reviewReason) && (
+              <div className="text-sm space-y-1">
+                {releaseDetail.release?.featureSummary && <p className="text-white">{releaseDetail.release.featureSummary}</p>}
+                {releaseDetail.release?.reviewReason && <p className="text-amber-300">Previous note: {releaseDetail.release.reviewReason}</p>}
+              </div>
+            )}
+            <div>
+              <p className="text-sm font-semibold text-white mb-2">Packages</p>
+              <div className="rounded-xl border border-white/5 divide-y divide-white/5">
+                {releaseDetail.packages?.length === 0 && <p className="p-3 text-xs text-rx-gray-medium">No packages.</p>}
+                {releaseDetail.packages?.map((p: any) => (
+                  <div key={p.id} className="p-3 flex flex-wrap items-center gap-2 text-sm">
+                    <span className="font-medium text-white">{p.platform}{p.architecture !== 'universal' ? ` (${p.architecture})` : ''}</span>
+                    <span className="text-rx-gray-medium text-xs truncate flex-1 min-w-0">{p.deployment_url || p.filename}</span>
+                    <span className="text-xs text-rx-gray-medium">{p.file_size ? `${(p.file_size / 1024 / 1024).toFixed(1)} MB` : 'URL'}</span>
+                    <span className="text-[10px] text-rx-gray-medium/70 font-mono" title="SHA-256 (server-computed)">{String(p.sha256 || '').slice(0, 10)}…</span>
+                    <StatusBadge status={p.status} />
+                    <span className="text-[10px] text-rx-gray-medium/70">scan: {p.security_scan_status || 'pending'}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {['submitted', 'under_review', 'changes_requested'].includes(releaseDetail.release?.status) && (
+              <>
+                <div className="flex flex-wrap gap-2 border-t border-white/5 pt-4">
+                  {releaseDetail.release?.status === 'submitted' && (
+                    <button onClick={() => actRelease(releaseDetail.release.id, 'review')} disabled={busy}
+                      className="btn-secondary text-sm flex items-center gap-2"><Eye className="w-4 h-4" /> Start review</button>
+                  )}
+                  <button onClick={() => actRelease(releaseDetail.release.id, 'approve')} disabled={busy}
+                    className="btn-primary text-sm flex items-center gap-2"><CheckCircle2 className="w-4 h-4" /> Approve</button>
+                  <button onClick={() => actRelease(releaseDetail.release.id, 'request-changes', reason)} disabled={busy || reason.trim().length < 10}
+                    className="btn-secondary text-sm flex items-center gap-2 disabled:opacity-40"><Edit3 className="w-4 h-4" /> Request changes</button>
+                  <button onClick={() => actRelease(releaseDetail.release.id, 'reject', reason)} disabled={busy || reason.trim().length < 10}
+                    className="text-sm flex items-center gap-2 px-4 py-2 rounded-xl bg-red-400/10 text-red-400 border border-red-400/20 hover:bg-red-400/20 disabled:opacity-40"><XCircle className="w-4 h-4" /> Reject</button>
+                </div>
+                <textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white" placeholder="Reason (required for reject / request changes — min 10 characters)…" />
+                <p className="text-[11px] text-rx-gray-medium/70">Approval is separate from publication — publish approved releases from the Releases section (existing flow). Phase 13 adds the security-verification gate.</p>
+              </>
+            )}
+            {releaseDetail.release?.status === 'approved' && (
+              <p className="text-xs text-green-400">Approved — publish it from the Releases section to make it live.</p>
+            )}
+          </div>
+        ) : (
+          <div className="card">
+            <div className="p-4 border-b border-white/5 flex flex-wrap gap-2 items-center">
+              {['', 'submitted', 'under_review', 'changes_requested', 'approved', 'rejected', 'published'].map((st) => (
+                <button key={st || 'all'} onClick={() => setReleaseFilter(st)} className={`text-xs px-3 py-1.5 rounded-lg ${releaseFilter === st ? 'bg-rx-yellow text-rx-dark font-bold' : 'bg-white/5 text-rx-gray-medium hover:text-white'}`}>
+                  {st ? String(st).replace('_', ' ') : 'All'}
+                </button>
+              ))}
+            </div>
+            <div className="divide-y divide-white/5">
+              {(releaseFilter ? devReleases.filter((r) => r.status === releaseFilter) : devReleases).length === 0 ? (
+                <p className="p-8 text-center text-sm text-rx-gray-medium">No developer releases{releaseFilter ? ` with status ${releaseFilter}` : ''}.</p>
+              ) : (releaseFilter ? devReleases.filter((r) => r.status === releaseFilter) : devReleases).map((r) => (
+                <button key={r.id} onClick={async () => { setReason(''); try { setReleaseDetail(await api.developers.admin.devRelease(r.id)); } catch (e: any) { toast.error(e?.message || 'Could not load'); } }}
+                  className="w-full p-4 flex flex-wrap items-center gap-3 hover:bg-white/5 text-left">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-white truncate">{r.appName} <span className="text-rx-yellow">v{r.version}</span> <span className="text-rx-gray-medium font-normal">build {r.buildNumber || '—'}</span></p>
+                    <p className="text-xs text-rx-gray-medium truncate">{r.publisherName || r.developerId} · {r.packageCount} package{r.packageCount === 1 ? '' : 's'} · {formatDate(r.submittedAt || r.createdAt)}</p>
+                  </div>
+                  <StatusBadge status={r.status} />
                 </button>
               ))}
             </div>

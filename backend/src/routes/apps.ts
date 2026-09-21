@@ -1,9 +1,9 @@
 /**
  * Applications Routes — D1 (SQLite) compatible
  */
-import { getSetting } from '../services/settings';
-import { verifyToken } from '../services/auth';
-import { paginationMeta } from '../services/releases';
+import { getSetting } from '../services/settings.ts';
+import { verifyToken } from '../services/auth.ts';
+import { paginationMeta } from '../services/releases.ts';
 
 /** Display label per stored package platform (used for the auto-derived size). */
 const SIZE_LABEL: Record<string, string> = {
@@ -134,6 +134,13 @@ export const appsRoutes = {
     const slug = url.pathname.split('/').filter(Boolean).pop() || '';
     const app: any = await env.DB.prepare(`SELECT * FROM applications WHERE slug = ?`).bind(slug).first();
     if (!app) return { error: 'Application not found' };
+    // PUBLIC MARKETPLACE RULE (Phase 12 §18): developer drafts, submissions,
+    // changes-requested, rejected and suspended apps are NEVER publicly
+    // reachable — not even by guessing the slug. Admins preview via the
+    // admin endpoints instead.
+    if (!['active', 'beta', 'coming-soon'].includes(String(app.status || 'active'))) {
+      return { error: 'Application not found' };
+    }
     const row = { ...app, platforms: tryParse(app.platforms, []), tags: tryParse(app.tags, []), downloadCount: app.download_count, reviewCount: app.review_count, priceAmount: app.price_amount, price: app.price_type || app.price || 'free' };
     // Provide frontend defaults for fields not stored in D1
     row.longDescription = app.long_description || app.description || '';

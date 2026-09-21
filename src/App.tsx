@@ -76,6 +76,8 @@ const DeveloperPortal = lazy(() => import('./pages/developers/DeveloperPortal'))
 const DeveloperApply = lazy(() => import('./pages/developers/DeveloperApply'));
 const DeveloperStatusPage = lazy(() => import('./pages/developers/DeveloperStatus'));
 const DeveloperCenter = lazy(() => import('./pages/developers/DeveloperCenter'));
+const DeveloperAppDetail = lazy(() => import('./pages/developers/DeveloperAppDetail'));
+const DeveloperAppCreate = lazy(() => import('./pages/developers/DeveloperAppCreate'));
 const InviteAccept = lazy(() => import('./pages/developers/InviteAccept'));
 const PublicDeveloperProfile = lazy(() => import('./pages/developers/PublicDeveloperProfile'));
 
@@ -197,6 +199,8 @@ export default function App() {
             <Route path="/developers/invite" element={<InviteAccept />} />
             {/* Developer Center — one component, sectioned by route */}
             <Route path="/developers/center" element={<DeveloperCenter />} />
+            <Route path="/developers/apps/new" element={<DeveloperAppCreate />} />
+            <Route path="/developers/apps/:id" element={<DeveloperAppDetail />} />
             <Route path="/developers/apps" element={<DeveloperCenter />} />
             <Route path="/developers/releases" element={<DeveloperCenter />} />
             <Route path="/developers/submissions" element={<DeveloperCenter />} />

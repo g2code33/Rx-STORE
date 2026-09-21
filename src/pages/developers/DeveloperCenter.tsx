@@ -137,11 +137,7 @@ export default function DeveloperCenter() {
               {section === 'center' && <Overview org={org} />}
               {section === 'apps' && <MyApps org={org} />}
               {section === 'releases' && <Releases org={org} />}
-              {section === 'submissions' && (
-                <Section title="Submissions" desc="App submission to the RX Store review pipeline.">
-                  <Empty icon={FileCheck} title="App submissions open in a later phase" desc="Developer approval, teams, releases and admin communication are live today. The app submission pipeline (security review, signed packages) attaches to this organization model next." />
-                </Section>
-              )}
+              {section === 'submissions' && <Submissions />}
               {section === 'analytics' && <Analytics org={org} />}
               {section === 'reviews' && <Reviews org={org} />}
               {section === 'team' && <Team org={org} onChanged={refresh} />}
@@ -206,21 +202,48 @@ function Overview({ org }: { org: any }) {
   );
 }
 
+const APP_STATUS_BADGE: Record<string, string> = {
+  active: 'bg-green-400/10 text-green-400', draft: 'bg-white/5 text-rx-gray-medium',
+  submitted: 'bg-rx-yellow/10 text-rx-yellow', under_review: 'bg-blue-400/10 text-blue-300',
+  changes_requested: 'bg-amber-500/10 text-amber-300', suspended: 'bg-amber-500/10 text-amber-300',
+};
+
 function MyApps({ org }: { org: any }) {
-  const apps = org.apps || [];
+  const [apps, setApps] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const canCreate = (org?.organization?.permissions || []).includes('app.create');
+
+  useEffect(() => {
+    api.developers.apps.list().then((d: any) => setApps(d.apps || [])).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+
   return (
-    <Section title="My Apps" desc="Applications connected to your organization.">
-      {apps.length === 0 ? (
-        <Empty icon={Package} title="No apps yet" desc="Apps you already publish under your account are connected automatically on approval. New app submission opens in a later phase." />
+    <Section title="My Apps" desc="Create apps, manage metadata and ship releases.">
+      {canCreate && (
+        <Link to="/developers/apps/new" className="btn-primary text-sm inline-flex items-center gap-2 mb-4">
+          <Package className="w-4 h-4" /> Create app
+        </Link>
+      )}
+      {loading ? (
+        <div className="card p-6 animate-pulse space-y-3"><div className="h-12 bg-white/5 rounded" /><div className="h-12 bg-white/5 rounded" /></div>
+      ) : apps.length === 0 ? (
+        <Empty icon={Package} title="No apps yet" desc="Create your first app — it starts as a draft and becomes public after admin approval. Apps you already publish were connected automatically on approval." />
       ) : (
-        <div className="grid sm:grid-cols-2 gap-3">
+        <div className="space-y-3">
           {apps.map((a: any) => (
-            <Link key={a.id} to={`/app/${a.slug}`} className="card p-4 flex items-center gap-4 hover:bg-white/[0.03] transition-colors">
+            <Link key={a.id} to={`/developers/apps/${a.id}`} className="card p-4 flex items-center gap-4 hover:bg-white/[0.03] transition-colors">
               <AppLogo app={a} size="w-14 h-14" />
               <div className="flex-1 min-w-0">
-                <p className="font-semibold text-white truncate">{a.name}</p>
-                <p className="text-xs text-rx-gray-medium mt-0.5">v{a.current_version || '—'} · ⭐ {a.rating || 0} ({a.review_count || 0})</p>
-                <p className="text-xs text-rx-gray-medium">{a.download_count || 0} downloads</p>
+                <div className="flex items-center gap-2">
+                  <p className="font-semibold text-white truncate">{a.name}</p>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded whitespace-nowrap ${APP_STATUS_BADGE[a.status] || APP_STATUS_BADGE.draft}`}>{String(a.status).replace('_', ' ')}</span>
+                </div>
+                <p className="text-xs text-rx-gray-medium mt-0.5 truncate">
+                  v{a.latestRelease?.version || a.currentVersion || '—'}
+                  {a.latestRelease ? ` (${String(a.latestRelease.status).replace('_', ' ')})` : ''}
+                  {` · ⭐ ${a.rating || 0} · ${a.downloadCount || a.download_count || 0} downloads`}
+                </p>
+                {a.pendingReview && <p className="text-[11px] text-rx-yellow mt-0.5">Pending review</p>}
               </div>
             </Link>
           ))}
@@ -578,6 +601,40 @@ function PublicProfile({ org, onChanged }: { org: any; onChanged: () => void }) 
           <Link to={`/developer/${org?.organization?.id}`} className="text-sm text-rx-yellow hover:underline">View public page →</Link>
         </div>
         {!canManage && <p className="text-xs text-rx-gray-medium">Your role can view but not edit the public profile (organization.manage required).</p>}
+      </div>
+    </Section>
+  );
+}
+
+function Submissions() {
+  const [apps, setApps] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    api.developers.apps.list().then((d: any) => setApps(d.apps || [])).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+
+  const pendingApps = apps.filter((a) => ['submitted', 'under_review', 'changes_requested', 'rejected'].includes(a.status));
+  if (loading) return <Section title="Submissions"><div className="card p-6 animate-pulse h-20" /></Section>;
+  if (!pendingApps.length) {
+    return (
+      <Section title="Submissions" desc="Apps and releases currently in the review pipeline.">
+        <Empty icon={FileCheck} title="Nothing in review" desc="App submissions and release submissions appear here while they await admin review." />
+      </Section>
+    );
+  }
+  return (
+    <Section title="Submissions" desc="Apps and releases currently in the review pipeline.">
+      <div className="space-y-3">
+        {pendingApps.map((a) => (
+          <Link key={a.id} to={`/developers/apps/${a.id}`} className="card p-4 flex items-center gap-3 hover:bg-white/[0.03] transition-colors">
+            <AppLogo app={a} size="w-12 h-12" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-white truncate">{a.name}</p>
+              <p className="text-xs text-rx-gray-medium">App · {String(a.status).replace('_', ' ')}</p>
+            </div>
+            <span className={`text-[10px] font-bold px-2 py-1 rounded ${APP_STATUS_BADGE[a.status] || APP_STATUS_BADGE.draft}`}>{String(a.status).replace('_', ' ')}</span>
+          </Link>
+        ))}
       </div>
     </Section>
   );

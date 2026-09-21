@@ -87,8 +87,9 @@ async function request<T>(
 ): Promise<T> {
   if (!API_URL) throw new Error('API not configured');
 
+  const isForm = typeof FormData !== 'undefined' && (options.body instanceof FormData);
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+    ...(isForm ? {} : { 'Content-Type': 'application/json' }),
     ...(options.headers as Record<string, string> | undefined),
   };
   if (options.auth !== false) {
@@ -385,6 +386,66 @@ export const api = {
     async sendMessage(threadId: string, message: string) {
       return request<{ success: boolean }>(`/developers/communications/${encodeURIComponent(threadId)}/messages`, { method: 'POST', body: JSON.stringify({ message }) });
     },
+    // ---- App & release management (Phase 12) ----
+    apps: {
+      async list() {
+        return request<{ apps: any[] }>('/developers/apps', { method: 'GET' });
+      },
+      async create(body: Record<string, unknown>) {
+        return request<{ app: { id: string; slug: string; status: string } }>('/developers/apps', { method: 'POST', body: JSON.stringify(body) });
+      },
+      async get(id: string) {
+        return request<{ app: any; releases: any[]; thread: any; myRole: string; permissions: string[] }>(`/developers/apps/${encodeURIComponent(id)}`, { method: 'GET' });
+      },
+      async update(id: string, body: Record<string, unknown>) {
+        return request<{ success: boolean }>(`/developers/apps/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) });
+      },
+      async submit(id: string) {
+        return request<any>(`/developers/apps/${encodeURIComponent(id)}/submit`, { method: 'POST', body: '{}' });
+      },
+      async createRelease(appId: string, body: Record<string, unknown>) {
+        return request<{ release: any }>(`/developers/apps/${encodeURIComponent(appId)}/releases`, { method: 'POST', body: JSON.stringify(body) });
+      },
+      async getRelease(releaseId: string) {
+        return request<{ release: any; packages: any[]; app: any; thread: any }>(`/developers/releases/${encodeURIComponent(releaseId)}`, { method: 'GET' });
+      },
+      async updateRelease(releaseId: string, body: Record<string, unknown>) {
+        return request<{ success: boolean }>(`/developers/releases/${encodeURIComponent(releaseId)}`, { method: 'PATCH', body: JSON.stringify(body) });
+      },
+      async submitRelease(releaseId: string) {
+        return request<any>(`/developers/releases/${encodeURIComponent(releaseId)}/submit`, { method: 'POST', body: '{}' });
+      },
+      async withdrawRelease(releaseId: string) {
+        return request<any>(`/developers/releases/${encodeURIComponent(releaseId)}/withdraw`, { method: 'POST', body: '{}' });
+      },
+      /** Upload with real progress (XHR). onProgress receives 0-100. */
+      uploadPackage(releaseId: string, file: File, platform: string, architecture: string, onProgress?: (pct: number) => void): Promise<any> {
+        return new Promise((resolve, reject) => {
+          const form = new FormData();
+          form.append('file', file);
+          form.append('platform', platform);
+          form.append('architecture', architecture);
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', `${API_URL}/developers/releases/${encodeURIComponent(releaseId)}/packages`);
+          const token = getToken();
+          if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+          xhr.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100)); };
+          xhr.onload = () => {
+            try {
+              const j = JSON.parse(xhr.responseText);
+              if (xhr.status >= 200 && xhr.status < 300) resolve(j?.data ?? j);
+              else reject(new Error(j?.error?.message || j?.message || `Upload failed (${xhr.status})`));
+            } catch { reject(new Error(`Upload failed (${xhr.status})`)); }
+          };
+          xhr.onerror = () => reject(new Error('Upload failed — network error'));
+          xhr.send(form);
+        });
+      },
+      async setDeploymentUrl(releaseId: string, url: string, platform: string) {
+        return request<any>(`/developers/releases/${encodeURIComponent(releaseId)}/deployment-url`, { method: 'POST', body: JSON.stringify({ url, platform }) });
+      },
+    },
+
     /** PUBLIC developer profile (no auth needed at the HTTP level). */
     async publicProfile(developerId: string) {
       return request<{ developer: any; apps: any[] }>(`/developers/public/${encodeURIComponent(developerId)}`, { method: 'GET', auth: false });
@@ -430,6 +491,25 @@ export const api = {
       },
       async sendMessage(threadId: string, message: string) {
         return request<{ success: boolean }>(`/admin/developers/communications/${encodeURIComponent(threadId)}/messages`, { method: 'POST', body: JSON.stringify({ message }) });
+      },
+      // ---- App & release review (Phase 12) ----
+      async devApps(status?: string) {
+        return request<{ apps: any[] }>(`/admin/developers/apps${status ? `?status=${encodeURIComponent(status)}` : ''}`, { method: 'GET' });
+      },
+      async devApp(id: string) {
+        return request<{ app: any; publisher: any; releases: any[] }>(`/admin/developers/apps/${encodeURIComponent(id)}`, { method: 'GET' });
+      },
+      async devAppAction(id: string, action: 'review' | 'approve' | 'reject' | 'request-changes' | 'suspend' | 'reinstate', reason?: string) {
+        return request<any>(`/admin/developers/apps/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: JSON.stringify(reason ? { reason } : {}) });
+      },
+      async devReleases(status?: string) {
+        return request<{ releases: any[] }>(`/admin/developers/releases${status ? `?status=${encodeURIComponent(status)}` : ''}`, { method: 'GET' });
+      },
+      async devRelease(id: string) {
+        return request<{ release: any; packages: any[]; app: any }>(`/admin/developers/releases/${encodeURIComponent(id)}`, { method: 'GET' });
+      },
+      async devReleaseAction(id: string, action: 'review' | 'approve' | 'reject' | 'request-changes', reason?: string) {
+        return request<any>(`/admin/developers/releases/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: JSON.stringify(reason ? { reason } : {}) });
       },
     },
   },

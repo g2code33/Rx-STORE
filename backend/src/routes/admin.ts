@@ -97,7 +97,7 @@ function formNumber(v: FormDataEntryValue | null): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function sanitizeName(name: any): string {
+export function sanitizeName(name: any): string {
   return String(name || 'package.bin').replace(/[^\w.\-]+/g, '_');
 }
 
@@ -107,7 +107,7 @@ function sanitizeName(name: any): string {
 // Order matters: a prod table missing the constraint makes D1 say
 // 'ON CONFLICT clause does not match any ... constraint' — that message ALSO
 // contains 'constraint', so ON CONFLICT must be handled BEFORE generic CHECK errors.
-async function writePackageRow(
+export async function writePackageRow(
   env: any,
   rel: any,
   platform: string,
@@ -604,6 +604,13 @@ export const adminRoutes = {
     const rel: any = await env.DB.prepare(`SELECT * FROM releases WHERE id=?`).bind(relId).first();
     if (!rel) return { error: 'Release not found' };
     if (rel.status === 'published') return { error: 'Already published' };
+    // Developer-submitted releases (Phase 12) follow the full review pipeline:
+    // an admin APPROVAL (status='approved') is required before publication.
+    // Admin-created releases (developer_id NULL) keep the historical direct
+    // publish flow. Prompt 13 will additionally gate on security verification.
+    if (rel.developer_id && rel.status !== 'approved') {
+      return { error: `Developer-submitted releases must be approved before publishing (current status: ${rel.status}). Approve it in Admin → Developers → Releases.` };
+    }
     // Verify packages exist and are COMPLETE before anything goes live.
     // A release is never published with missing platform/architecture/version,
     // checksum, size, or a missing storage object.

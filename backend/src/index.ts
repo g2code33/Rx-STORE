@@ -18,6 +18,7 @@ import { trackAdEvent, getAdStats, createAdShare, listAdShares, revokeAdShare, g
 import { updatesRoutes } from './routes/updates';
 import { devicesRoutes } from './routes/devices';
 import { developerRoutes, adminDeveloperRoutes } from './routes/developers';
+import { developerAppRoutes, adminDeveloperAppRoutes } from './routes/developerApps';
 import { verifyAccessToken } from './services/auth';
 import { apiErrorBody, statusForCode, requestIdFor, redact, type ErrorCode } from './services/errors';
 import { selectPackage, buildManifest, normalizeChannel, defaultChannel } from './services/releases';
@@ -762,6 +763,19 @@ export default {
         else if (is('/developers/communications/threads', 'POST')) data = await developerRoutes.createThread(normalizedRequest as any, env);
         else if (path.match(/^\/developers\/communications\/[^\/]+$/) && request.method === 'GET') data = await developerRoutes.getThread(normalizedRequest as any, env);
         else if (path.match(/^\/developers\/communications\/[^\/]+\/messages$/) && request.method === 'POST') data = await developerRoutes.sendMessage(normalizedRequest as any, env);
+        // Phase 12 — app & release management
+        else if (is('/developers/apps', 'POST')) data = await developerAppRoutes.createApp(normalizedRequest as any, env);
+        else if (is('/developers/apps', 'GET')) data = await developerAppRoutes.listApps(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/apps\/[^\/]+\/submit$/) && request.method === 'POST') data = await developerAppRoutes.submitApp(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/apps\/[^\/]+\/releases$/) && request.method === 'POST') data = await developerAppRoutes.createRelease(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/apps\/[^\/]+$/) && request.method === 'GET') data = await developerAppRoutes.getApp(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/apps\/[^\/]+$/) && request.method === 'PATCH') data = await developerAppRoutes.updateApp(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/releases\/[^\/]+\/submit$/) && request.method === 'POST') data = await developerAppRoutes.submitRelease(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/releases\/[^\/]+\/withdraw$/) && request.method === 'POST') data = await developerAppRoutes.withdrawRelease(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/releases\/[^\/]+\/packages$/) && request.method === 'POST') data = await developerAppRoutes.uploadPackage(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/releases\/[^\/]+\/deployment-url$/) && request.method === 'POST') data = await developerAppRoutes.setDeploymentUrl(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/releases\/[^\/]+$/) && request.method === 'GET') data = await developerAppRoutes.getRelease(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/releases\/[^\/]+$/) && request.method === 'PATCH') data = await developerAppRoutes.updateRelease(normalizedRequest as any, env);
         else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown developer route' } }, 404, origin);
         if (data?.error) {
           const code: ErrorCode = data.code === 'UNAUTHORIZED' ? 'AUTH_REQUIRED' : data.code === 'NOT_FOUND' ? 'NOT_FOUND' : data.code === 'FORBIDDEN' ? 'FORBIDDEN' : 'VALIDATION_ERROR';
@@ -784,6 +798,21 @@ export default {
         else if (path.match(/^\/admin\/developers\/applications\/[^\/]+\/approve$/) && request.method === 'POST') data = await adminDeveloperRoutes.approveApplication(normalizedRequest as any, env);
         else if (path.match(/^\/admin\/developers\/applications\/[^\/]+\/reject$/) && request.method === 'POST') data = await adminDeveloperRoutes.rejectApplication(normalizedRequest as any, env);
         else if (path.match(/^\/admin\/developers\/applications\/[^\/]+\/request-changes$/) && request.method === 'POST') data = await adminDeveloperRoutes.requestChanges(normalizedRequest as any, env);
+        // Phase 12 — app & release review (must precede the org detail route)
+        else if (is('/admin/developers/apps', 'GET')) data = await adminDeveloperAppRoutes.listApps(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/apps\/[^\/]+$/) && request.method === 'GET') data = await adminDeveloperAppRoutes.getApp(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/apps\/[^\/]+\/review$/) && request.method === 'POST') data = await adminDeveloperAppRoutes.startAppReview(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/apps\/[^\/]+\/approve$/) && request.method === 'POST') data = await adminDeveloperAppRoutes.approveApp(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/apps\/[^\/]+\/reject$/) && request.method === 'POST') data = await adminDeveloperAppRoutes.rejectApp(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/apps\/[^\/]+\/request-changes$/) && request.method === 'POST') data = await adminDeveloperAppRoutes.requestAppChanges(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/apps\/[^\/]+\/suspend$/) && request.method === 'POST') data = await adminDeveloperAppRoutes.suspendApp(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/apps\/[^\/]+\/reinstate$/) && request.method === 'POST') data = await adminDeveloperAppRoutes.reinstateApp(normalizedRequest as any, env);
+        else if (is('/admin/developers/releases', 'GET')) data = await adminDeveloperAppRoutes.listReleases(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/releases\/[^\/]+$/) && request.method === 'GET') data = await adminDeveloperAppRoutes.getRelease(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/releases\/[^\/]+\/review$/) && request.method === 'POST') data = await adminDeveloperAppRoutes.startReleaseReview(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/releases\/[^\/]+\/approve$/) && request.method === 'POST') data = await adminDeveloperAppRoutes.approveRelease(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/releases\/[^\/]+\/reject$/) && request.method === 'POST') data = await adminDeveloperAppRoutes.rejectRelease(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/releases\/[^\/]+\/request-changes$/) && request.method === 'POST') data = await adminDeveloperAppRoutes.requestReleaseChanges(normalizedRequest as any, env);
         else if (is('/admin/developers/communications', 'GET')) data = await adminDeveloperRoutes.adminListThreads(normalizedRequest as any, env);
         else if (path.match(/^\/admin\/developers\/communications\/[^\/]+$/) && request.method === 'GET') data = await adminDeveloperRoutes.adminGetThread(normalizedRequest as any, env);
         else if (path.match(/^\/admin\/developers\/communications\/[^\/]+\/messages$/) && request.method === 'POST') data = await adminDeveloperRoutes.adminSendMessage(normalizedRequest as any, env);

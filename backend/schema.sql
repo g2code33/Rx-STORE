@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS applications (
   screenshots TEXT DEFAULT '[]',
   features TEXT DEFAULT '[]',
   release_notes TEXT DEFAULT '[]',
-  status TEXT DEFAULT 'active' CHECK (status IN ('active','beta','coming-soon','archived')),
+  status TEXT DEFAULT 'active' CHECK (status IN ('active','beta','coming-soon','archived','draft','submitted','under_review','changes_requested','suspended')),
   deleted_at TEXT,
   current_version TEXT,
   size_mb INTEGER,
@@ -217,17 +217,32 @@ CREATE TABLE IF NOT EXISTS releases (
   id TEXT PRIMARY KEY,
   application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
   version TEXT NOT NULL,
+  build_number TEXT,
   release_notes TEXT DEFAULT '[]',
+  feature_summary TEXT,
+  call_to_action TEXT,
   release_type TEXT DEFAULT 'patch' CHECK (release_type IN ('major','minor','patch')),
   channel TEXT DEFAULT 'stable' CHECK (channel IN ('stable','beta','alpha')),
   minimum_supported_version TEXT,
-  status TEXT DEFAULT 'draft' CHECK (status IN ('draft','processing','ready_for_review','published','disabled','rolled_back','archived')),
+  status TEXT DEFAULT 'draft' CHECK (status IN ('draft','processing','ready_for_review','submitted','under_review','changes_requested','approved','rejected','published','withdrawn','disabled','rolled_back','archived')),
+  developer_id TEXT REFERENCES developers(id),
+  reviewer_id TEXT,
+  review_reason TEXT,
+  security_status TEXT DEFAULT 'pending' CHECK (security_status IN ('pending','processing','passed','failed','needs_review')),
+  verification_status TEXT DEFAULT 'pending' CHECK (verification_status IN ('pending','processing','passed','failed','needs_review')),
   deleted_at TEXT,
   published_at TEXT,
+  submitted_at TEXT,
+  reviewed_at TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   UNIQUE(application_id, version)
 );
+CREATE INDEX IF NOT EXISTS idx_releases_app ON releases(application_id);
+CREATE INDEX IF NOT EXISTS idx_releases_status ON releases(status);
+CREATE INDEX IF NOT EXISTS idx_releases_version ON releases(version);
+CREATE INDEX IF NOT EXISTS idx_releases_developer ON releases(developer_id);
+CREATE INDEX IF NOT EXISTS idx_releases_submitted ON releases(submitted_at);
 CREATE INDEX IF NOT EXISTS idx_releases_app ON releases(application_id);
 CREATE INDEX IF NOT EXISTS idx_releases_status ON releases(status);
 CREATE INDEX IF NOT EXISTS idx_releases_version ON releases(version);
@@ -249,6 +264,11 @@ CREATE TABLE IF NOT EXISTS packages (
   -- Optional OS compatibility metadata (informational; an app without it is not blocked)
   min_os_version TEXT,
   min_android_sdk INTEGER,
+  -- Prompt 13 hooks: real verification pipeline fills these (never the client).
+  security_scan_status TEXT DEFAULT 'pending',
+  signature_status TEXT DEFAULT 'pending',
+  scan_at TEXT,
+  verified_at TEXT,
   status TEXT DEFAULT 'stored' CHECK (status IN ('uploading','validating','stored','ready_for_review','published','failed','archived')),
   deleted_at TEXT,
   created_at TEXT DEFAULT (datetime('now')),

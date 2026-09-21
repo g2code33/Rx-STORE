@@ -41,7 +41,7 @@ async function bodyOf(request: Request): Promise<any> {
 }
 
 /** Prefixed unique id, existing project convention (app_…, n_…, log_…). */
-function rid(prefix: string): string {
+export function rid(prefix: string): string {
   const rand = Math.random().toString(36).slice(2, 8);
   return `${prefix}_${Date.now().toString(36)}${rand}`;
 }
@@ -63,7 +63,7 @@ function newInviteToken(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function auditDev(env: any, developerId: string, actorUserId: string | null, action: string, details: Record<string, unknown> = {}) {
+export async function auditDev(env: any, developerId: string, actorUserId: string | null, action: string, details: Record<string, unknown> = {}) {
   await env.DB.prepare('INSERT INTO developer_audit_logs (id, developer_id, actor_user_id, action, details) VALUES (?,?,?,?,?)')
     .bind(rid('dl'), developerId, actorUserId, action, JSON.stringify(details)).run().catch(() => {});
 }
@@ -74,19 +74,19 @@ async function auditGlobal(env: any, action: string, resourceId: string, details
     .bind(rid('log'), action, 'developer', resourceId, JSON.stringify(details)).run().catch(() => {});
 }
 
-async function notify(env: any, userId: string, type: 'update' | 'message' | 'system', title: string, message: string, data: Record<string, unknown> = {}) {
+export async function notify(env: any, userId: string, type: 'update' | 'message' | 'system', title: string, message: string, data: Record<string, unknown> = {}) {
   if (!userId) return;
   await env.DB.prepare('INSERT INTO notifications (id, user_id, type, title, message, data, read) VALUES (?,?,?,?,?,?,0)')
     .bind(rid('n'), userId, type, title, message, JSON.stringify(data)).run().catch(() => {});
 }
 
-async function notifyAdmins(env: any, title: string, message: string, data: Record<string, unknown> = {}) {
+export async function notifyAdmins(env: any, title: string, message: string, data: Record<string, unknown> = {}) {
   const rows: any = await env.DB.prepare("SELECT id FROM users WHERE role='admin'").all().catch(() => ({ results: [] }));
   for (const r of rows?.results || []) await notify(env, r.id, 'message', title, message, data);
 }
 
 /** Resolve the caller's developer organization from their OWN membership. */
-async function resolveMembership(env: any, userId: string): Promise<{ member: any; developer: any } | null> {
+export async function resolveMembership(env: any, userId: string): Promise<{ member: any; developer: any } | null> {
   const row: any = await env.DB.prepare(
     `SELECT m.id AS member_id, m.role, m.created_at AS member_since, d.*
      FROM developer_members m JOIN developers d ON d.id = m.developer_id
@@ -100,7 +100,7 @@ async function resolveMembership(env: any, userId: string): Promise<{ member: an
 }
 
 /** Resolve membership AND require a permission. Returns an error object on failure. */
-async function requirePermission(env: any, userId: string, permission: string) {
+export async function requirePermission(env: any, userId: string, permission: string) {
   const ms = await resolveMembership(env, userId);
   if (!ms) return { error: 'No developer organization for this account', code: 'FORBIDDEN' as const };
   if (!hasPermission(ms.member.role, permission)) {
@@ -109,11 +109,11 @@ async function requirePermission(env: any, userId: string, permission: string) {
   return { ms };
 }
 
-function str(v: unknown, max = 500): string {
+export function str(v: unknown, max = 500): string {
   return String(v ?? '').trim().slice(0, max);
 }
 
-function isHttpUrl(v: string): boolean {
+export function isHttpUrl(v: string): boolean {
   try { const u = new URL(v); return u.protocol === 'https:' || u.protocol === 'http:'; } catch { return false; }
 }
 
