@@ -901,6 +901,9 @@ export async function publicationSecurityGate(env: any, releaseId: string): Prom
  * stays public as before.
  */
 export async function r2KeyIsPubliclyServed(env: any, key: string): Promise<boolean> {
+  // Conversation attachments (Phase 14) are NEVER public — they are served
+  // only through the authorized attachment endpoints.
+  if (key.startsWith('attachments/')) return false;
   if (!key.startsWith('apps/') && !key.startsWith('quarantine/')) return true;
   const row: any = await env.DB.prepare('SELECT status FROM packages WHERE storage_key=? LIMIT 1').bind(key).first().catch(() => null);
   return !!row && row.status === 'published';

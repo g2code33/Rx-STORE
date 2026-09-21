@@ -112,6 +112,34 @@ export async function notifyStableReleaseEmails(
   return { optedIn, emailed, failed: batch.length - emailed };
 }
 
+/**
+ * Email the members of one developer organization who enabled "Email
+ * notifications" (Profile -> Preferences) about a review decision. Uses the
+ * same preference + provider as release emails; best-effort and bounded.
+ */
+export async function notifyOrgMembersEmail(
+  env: any,
+  input: { developerId: string; subject: string; bodyText: string; ctaUrl?: string },
+): Promise<{ emailed: number; skipped?: string }> {
+  if (!env?.RESEND_API_KEY || !env?.FROM_EMAIL) return { emailed: 0, skipped: 'email_not_configured' };
+  const rows: any = await env.DB
+    .prepare("SELECT u.email FROM developer_members m JOIN users u ON u.id = m.user_id WHERE m.developer_id = ? AND u.preferences LIKE ? AND u.email IS NOT NULL AND u.email != '' LIMIT 20")
+    .bind(input.developerId, '%"emailNotifications":true%')
+    .all()
+    .catch(() => ({ results: [] }));
+  const emails: string[] = (rows?.results || []).map((r: any) => r.email);
+  if (!emails.length) return { emailed: 0, skipped: 'no_opted_in_members' };
+  const html = [
+    `<div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto">`,
+    `<p style="color:#4b5563">${escapeHtml(input.bodyText)}</p>`,
+    input.ctaUrl ? `<p style="margin:12px 0"><a href="${escapeHtml(input.ctaUrl)}" style="background:#FFD600;color:#0F1419;padding:10px 18px;border-radius:10px;text-decoration:none;font-weight:700">Open RX Store Developer Center</a></p>` : '',
+    `<p style="color:#9ca3af;font-size:12px;margin-top:24px">You receive this because you enabled email notifications in RX Store. Turn it off anytime in Profile → Preferences.</p>`,
+    `</div>`,
+  ].join('');
+  const results = await Promise.all(emails.map((to) => sendEmail(env, { to, subject: input.subject, html })));
+  return { emailed: results.filter((r) => r.ok).length };
+}
+
 /** Minimal HTML escaping for user-controlled names in email bodies. */
 function escapeHtml(s: string): string {
   return String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));

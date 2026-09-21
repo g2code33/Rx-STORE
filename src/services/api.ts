@@ -540,6 +540,79 @@ export const api = {
       return request<{ package: any; checks: any[]; overridden: boolean; overrideReason: string | null }>(`/developers/security/packages/${encodeURIComponent(packageId)}`, { method: 'GET' });
     },
   },
+
+  // Developer submissions (Phase 14)
+  submissions: {
+    async list() {
+      return request<{ submissions: any[] }>('/developers/submissions', { method: 'GET' });
+    },
+    async get(id: string) {
+      return request<any>(`/developers/submissions/${encodeURIComponent(id)}`, { method: 'GET' });
+    },
+    async resubmit(id: string, message?: string) {
+      return request<any>(`/developers/submissions/${encodeURIComponent(id)}/resubmit`, { method: 'POST', body: JSON.stringify(message ? { message } : {}) });
+    },
+    /** Upload a private attachment to a communication thread (multipart). */
+    uploadAttachment(threadId: string, file: File, message?: string): Promise<any> {
+      return new Promise((resolve, reject) => {
+        const form = new FormData();
+        form.append('file', file);
+        if (message) form.append('message', message);
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${API_URL}/developers/communications/${encodeURIComponent(threadId)}/attachments`);
+        const token = getToken();
+        if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        xhr.onload = () => {
+          try {
+            const j = JSON.parse(xhr.responseText);
+            if (xhr.status >= 200 && xhr.status < 300) resolve(j?.data ?? j);
+            else reject(new Error(j?.error?.message || j?.message || `Upload failed (${xhr.status})`));
+          } catch { reject(new Error(`Upload failed (${xhr.status})`)); }
+        };
+        xhr.onerror = () => reject(new Error('Upload failed — network error'));
+        xhr.send(form);
+      });
+    },
+    attachmentUrl(attachmentId: string): string {
+      return `${API_URL}/developers/attachments/${encodeURIComponent(attachmentId)}`;
+    },
+  },
+
+  // Admin submission review (Phase 14)
+  adminSubmissions: {
+    async list(status?: string) {
+      return request<{ submissions: any[] }>(`/admin/submissions${status ? `?status=${encodeURIComponent(status)}` : ''}`, { method: 'GET' });
+    },
+    async get(id: string) {
+      return request<any>(`/admin/submissions/${encodeURIComponent(id)}`, { method: 'GET' });
+    },
+    async action(id: string, action: 'assign' | 'review' | 'approve' | 'reject' | 'request-changes' | 'suspend' | 'resume', body: Record<string, unknown> = {}) {
+      return request<any>(`/admin/submissions/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: JSON.stringify(body) });
+    },
+    uploadAttachment(threadId: string, file: File, message?: string): Promise<any> {
+      return new Promise((resolve, reject) => {
+        const form = new FormData();
+        form.append('file', file);
+        if (message) form.append('message', message);
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${API_URL}/admin/developers/communications/${encodeURIComponent(threadId)}/attachments`);
+        const token = getToken();
+        if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        xhr.onload = () => {
+          try {
+            const j = JSON.parse(xhr.responseText);
+            if (xhr.status >= 200 && xhr.status < 300) resolve(j?.data ?? j);
+            else reject(new Error(j?.error?.message || j?.message || `Upload failed (${xhr.status})`));
+          } catch { reject(new Error(`Upload failed (${xhr.status})`)); }
+        };
+        xhr.onerror = () => reject(new Error('Upload failed — network error'));
+        xhr.send(form);
+      });
+    },
+    attachmentUrl(attachmentId: string): string {
+      return `${API_URL}/admin/developers/attachments/${encodeURIComponent(attachmentId)}`;
+    },
+  },
 };
 
 export { API_URL };

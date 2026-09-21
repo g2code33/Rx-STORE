@@ -31,6 +31,7 @@ import { writePackageRow } from './admin.ts';
 import { parseSemver, normalizeChannel } from '../services/releases.ts';
 import { permissionsForRole } from '../services/developerPermissions.ts';
 import { runSecurityPipeline, latestChecksForPackages } from '../services/packageSecurity.ts';
+import { ensureSubmission, syncSubmissionOnReleaseAction } from './submissions.ts';
 
 // ---------------------------------------------------------------------------
 // Constants + helpers
@@ -473,8 +474,11 @@ export const developerAppRoutes = {
     // Communication context (existing developer ↔ admin threads).
     const threadId = await releaseThread(env, ms.developer.id, app, rel);
     await postToThread(env, threadId, userId, 'DEVELOPER', `Release ${rel.version} (build ${rel.build_number}) submitted for review.`);
-    await notifyAdmins(env, `Release submitted: ${app.name} ${rel.version}`, 'A developer release is waiting for review.', { releaseId, appId: app.id });
-    return { release: { id: releaseId, status: 'submitted' } };
+
+    // PHASE 14: the first-class submission record (security stage -> review).
+    const submission = await ensureSubmission(env, { developerId: ms.developer.id, userId, app, release: rel }).catch(() => null);
+
+    return { release: { id: releaseId, status: 'submitted' }, submission: submission ? { id: submission.id, status: submission.status } : null };
   },
 
   /** POST /developers/releases/:id/withdraw — developer withdraws a submission. */
@@ -494,6 +498,8 @@ export const developerAppRoutes = {
     await auditDev(env, ms.developer.id, userId, 'developer_release_withdrawn', { releaseId, version: rel.version });
     const threadId = await releaseThread(env, ms.developer.id, app, rel);
     await postToThread(env, threadId, userId, 'DEVELOPER', `Release ${rel.version} was withdrawn by the developer.`);
+    // PHASE 14: sync the submission record.
+    await syncSubmissionOnReleaseAction(env, { releaseId, releaseStatus: 'withdrawn', adminId: userId }).catch(() => {});
     return { release: { id: releaseId, status: 'withdrawn' } };
   },
 
@@ -838,6 +844,7 @@ export const adminDeveloperAppRoutes = {
     if (!rel) return { error: 'Release not found', code: 'NOT_FOUND' };
     if (rel.status !== 'submitted') return { error: `Only submitted releases can enter review (current: ${rel.status})`, code: 'FORBIDDEN' };
     await env.DB.prepare(`UPDATE releases SET status='under_review', updated_at=datetime('now') WHERE id=?`).bind(releaseId).run();
+    await syncSubmissionOnReleaseAction(env, { releaseId, releaseStatus: 'under_review', adminId: userIdOf(request) }).catch(() => {});
     await auditDev(env, rel.developer_id, userIdOf(request), 'developer_release_review_started', { releaseId });
     await adminAudit(env, 'developer_release_review_started', releaseId, {});
     await notifyOrg(env, rel.developer_id, 'Release under review', `Release ${rel.version} is now under review.`);
@@ -855,6 +862,7 @@ export const adminDeveloperAppRoutes = {
     await env.DB.prepare(
       `UPDATE releases SET status='approved', reviewed_at=datetime('now'), reviewer_id=?, review_reason=NULL, updated_at=datetime('now') WHERE id=?`
     ).bind(userIdOf(request), releaseId).run();
+    await syncSubmissionOnReleaseAction(env, { releaseId, releaseStatus: 'approved', adminId: userIdOf(request) }).catch(() => {});
     await auditDev(env, rel.developer_id, userIdOf(request), 'developer_release_approved', { releaseId, version: rel.version });
     await adminAudit(env, 'developer_release_approved', releaseId, { version: rel.version });
     const app: any = await env.DB.prepare('SELECT id, name FROM applications WHERE id=?').bind(rel.application_id).first().catch(() => null);
@@ -875,6 +883,7 @@ export const adminDeveloperAppRoutes = {
     await env.DB.prepare(
       `UPDATE releases SET status='rejected', reviewed_at=datetime('now'), reviewer_id=?, review_reason=?, updated_at=datetime('now') WHERE id=?`
     ).bind(userIdOf(request), reason, releaseId).run();
+    await syncSubmissionOnReleaseAction(env, { releaseId, releaseStatus: 'rejected', adminId: userIdOf(request), reason }).catch(() => {});
     await auditDev(env, rel.developer_id, userIdOf(request), 'developer_release_rejected', { releaseId, reason });
     await adminAudit(env, 'developer_release_rejected', releaseId, { reason });
     const app: any = await env.DB.prepare('SELECT id, name FROM applications WHERE id=?').bind(rel.application_id).first().catch(() => null);
@@ -897,6 +906,7 @@ export const adminDeveloperAppRoutes = {
     await env.DB.prepare(
       `UPDATE releases SET status='changes_requested', reviewed_at=datetime('now'), reviewer_id=?, review_reason=?, updated_at=datetime('now') WHERE id=?`
     ).bind(userIdOf(request), reason, releaseId).run();
+    await syncSubmissionOnReleaseAction(env, { releaseId, releaseStatus: 'changes_requested', adminId: userIdOf(request), reason }).catch(() => {});
     await auditDev(env, rel.developer_id, userIdOf(request), 'developer_release_changes_requested', { releaseId, reason });
     await adminAudit(env, 'developer_release_changes_requested', releaseId, { reason });
     const app: any = await env.DB.prepare('SELECT id, name FROM applications WHERE id=?').bind(rel.application_id).first().catch(() => null);

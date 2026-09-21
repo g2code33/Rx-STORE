@@ -10,8 +10,9 @@ import { CheckCircle2, XCircle, Edit3, PauseCircle, PlayCircle, Eye, MessageSqua
 import { api } from '../../services/api';
 import { formatDate } from '../../utils/helpers';
 import toast from 'react-hot-toast';
+import SubmissionReviewWorkspace from './SubmissionReviewWorkspace';
 
-type Tab = 'applications' | 'organizations' | 'apps' | 'releases' | 'security' | 'communications';
+type Tab = 'applications' | 'organizations' | 'apps' | 'releases' | 'submissions' | 'security' | 'communications';
 
 const STATUS_COLORS: Record<string, string> = {
   DRAFT: 'bg-white/5 text-rx-gray-medium',
@@ -46,6 +47,8 @@ export default function DeveloperAdminPanel() {
   const [devReleases, setDevReleases] = useState<any[]>([]);
   const [securityPackages, setSecurityPackages] = useState<any[]>([]);
   const [securityDetail, setSecurityDetail] = useState<any>(null);
+  const [submissions, setSubmissions] = useState<any[]>([]);
+  const [activeSubmission, setActiveSubmission] = useState<string | null>(null);
   const [appDetail, setAppDetail] = useState<any>(null);
   const [releaseDetail, setReleaseDetail] = useState<any>(null);
   const [releaseFilter, setReleaseFilter] = useState('');
@@ -59,13 +62,15 @@ export default function DeveloperAdminPanel() {
       api.developers.admin.devApps().catch(() => ({ apps: [] })),
       api.developers.admin.devReleases().catch(() => ({ releases: [] })),
       (api as any).developers.security.packages().catch(() => ({ packages: [] })),
-    ]).then(([a, d, t, da, dr, sp]) => {
+      (api as any).adminSubmissions.list().catch(() => ({ submissions: [] })),
+    ]).then(([a, d, t, da, dr, sp, sub]) => {
       setApplications((a as any).applications || []);
       setDevelopers((d as any).developers || []);
       setThreads((t as any).threads || []);
       setDevApps((da as any).apps || []);
       setDevReleases((dr as any).releases || []);
       setSecurityPackages((sp as any).packages || []);
+      setSubmissions((sub as any).submissions || []);
     }).finally(() => setLoading(false));
   };
   useEffect(() => { load(); }, []);
@@ -129,8 +134,8 @@ export default function DeveloperAdminPanel() {
 
       {/* Tabs */}
       <div className="flex gap-1 bg-rx-dark-secondary rounded-xl p-1 w-fit">
-        {([['applications', `Applications (${applications.length})`], ['apps', `Apps (${devApps.length})`], ['releases', `Releases (${devReleases.filter((r) => ['submitted', 'under_review', 'changes_requested'].includes(r.status)).length} in review)`], ['security', `Security (${securityPackages.filter((p) => p.overall_security !== 'PASSED').length} blocked)`], ['organizations', `Organizations (${developers.length})`], ['communications', `Messages (${threads.filter((t) => Number(t.unread) > 0).length} new)`]] as [Tab, string][]).map(([id, label]) => (
-          <button key={id} onClick={() => { setTab(id); setDetail(null); setOrgDetail(null); setThread(null); setAppDetail(null); setReleaseDetail(null); setSecurityDetail(null); }}
+        {([['applications', `Applications (${applications.length})`], ['apps', `Apps (${devApps.length})`], ['releases', `Releases (${devReleases.filter((r) => ['submitted', 'under_review', 'changes_requested'].includes(r.status)).length} in review)`], ['submissions', `Submissions (${submissions.filter((x) => ['SUBMITTED', 'SECURITY_REVIEW', 'ADMIN_REVIEW'].includes(x.status)).length} in review)`], ['security', `Security (${securityPackages.filter((p) => p.overall_security !== 'PASSED').length} blocked)`], ['organizations', `Organizations (${developers.length})`], ['communications', `Messages (${threads.filter((t) => Number(t.unread) > 0).length} new)`]] as [Tab, string][]).map(([id, label]) => (
+          <button key={id} onClick={() => { setTab(id); setDetail(null); setOrgDetail(null); setThread(null); setAppDetail(null); setReleaseDetail(null); setSecurityDetail(null); setActiveSubmission(null); }}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${tab === id ? 'bg-rx-yellow text-rx-dark' : 'text-rx-gray-medium hover:text-white'}`}>
             {label}
           </button>
@@ -413,6 +418,36 @@ export default function DeveloperAdminPanel() {
                 <StatusBadge status={d.status} />
               </button>
             ))}
+          </div>
+        )
+      ) : tab === 'submissions' ? (
+        activeSubmission ? (
+          <SubmissionReviewWorkspace submissionId={activeSubmission} onClose={() => { setActiveSubmission(null); load(); }} onChanged={load} />
+        ) : (
+          <div className="card">
+            <div className="p-4 border-b border-white/5 flex flex-wrap gap-2 items-center">
+              {['', 'SUBMITTED', 'SECURITY_REVIEW', 'ADMIN_REVIEW', 'CHANGES_REQUESTED', 'APPROVED', 'REJECTED'].map((st) => (
+                <button key={st || 'all'} onClick={() => setFilter(st)} className={`text-xs px-3 py-1.5 rounded-lg ${filter === st ? 'bg-rx-yellow text-rx-dark font-bold' : 'bg-white/5 text-rx-gray-medium hover:text-white'}`}>
+                  {st ? String(st).replace(/_/g, ' ') : 'All'}
+                </button>
+              ))}
+            </div>
+            <div className="divide-y divide-white/5">
+              {(filter ? submissions.filter((x) => x.status === filter) : submissions).length === 0 ? (
+                <p className="p-8 text-center text-sm text-rx-gray-medium">No submissions{filter ? ` with status ${filter}` : ''}.</p>
+              ) : (filter ? submissions.filter((x) => x.status === filter) : submissions).map((x) => (
+                <button key={x.id} onClick={() => setActiveSubmission(x.id)} className="w-full p-4 flex flex-wrap items-center gap-3 hover:bg-white/5 text-left">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-white truncate">{x.appName} <span className="text-rx-yellow">v{x.version}</span> <span className="text-rx-gray-medium font-normal">build {x.buildNumber || '—'}</span></p>
+                    <p className="text-xs text-rx-gray-medium truncate">
+                      {x.publisherName || x.developerId} · {x.packageCount} package{x.packageCount === 1 ? '' : 's'} · submitted {formatDate(x.submittedAt)}
+                      {x.reviewerName ? ` · reviewer: ${x.reviewerName}` : ''}
+                    </p>
+                  </div>
+                  <StatusBadge status={x.status} />
+                </button>
+              ))}
+            </div>
           </div>
         )
       ) : tab === 'security' ? (

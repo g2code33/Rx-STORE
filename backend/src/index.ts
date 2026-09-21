@@ -20,6 +20,7 @@ import { devicesRoutes } from './routes/devices';
 import { developerRoutes, adminDeveloperRoutes } from './routes/developers';
 import { developerAppRoutes, adminDeveloperAppRoutes } from './routes/developerApps';
 import { securityAdminRoutes } from './routes/securityAdmin';
+import { developerSubmissionRoutes, adminSubmissionRoutes } from './routes/submissions';
 import { r2KeyIsPubliclyServed } from './services/packageSecurity';
 import { verifyAccessToken } from './services/auth';
 import { apiErrorBody, statusForCode, requestIdFor, redact, type ErrorCode } from './services/errors';
@@ -82,6 +83,18 @@ function withCors(res: Response, origin: string, env?: any, requestId?: string):
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) headers.set(k, v);
   if (requestId) headers.set('X-Request-Id', requestId);
   return new Response(res.body, { status: res.status, headers });
+}
+
+/** Stream a private conversation attachment after authorization (never /r2/). */
+async function streamAttachment(env: any, att: any, origin: string): Promise<Response> {
+  if (!att?.storage_key) return new Response('Not found', { status: 404 });
+  const obj: any = await env.STORAGE.get(att.storage_key).catch(() => null);
+  if (!obj) return new Response('Not found', { status: 404, headers: corsHeaders(origin) });
+  const headers = new Headers(corsHeaders(origin));
+  headers.set('Content-Type', att.mime_type || 'application/octet-stream');
+  headers.set('Content-Disposition', `attachment; filename="${String(att.filename || 'attachment').replace(/["\\]/g, '_')}"`);
+  headers.set('Cache-Control', 'private, no-store');
+  return new Response(obj.body, { headers });
 }
 
 export default {
@@ -376,7 +389,9 @@ export default {
         // are only publicly downloadable once their package row is PUBLISHED.
         // Quarantined / in-review / rejected packages 404 — this is the
         // serving-layer half of private quarantine storage.
-        if (!(await r2KeyIsPubliclyServed(env, key))) {
+        // PHASE 14: conversation attachments (attachments/*) are NEVER public —
+        // they are served only through the authorized attachment endpoints.
+        if (key.startsWith('attachments/') || !(await r2KeyIsPubliclyServed(env, key))) {
           return new Response('Not found', { status: 404, headers: corsHeaders(origin) });
         }
         const obj: any = await env.STORAGE.get(key);
@@ -786,6 +801,17 @@ export default {
         else if (path.match(/^\/developers\/releases\/[^\/]+$/) && request.method === 'GET') data = await developerAppRoutes.getRelease(normalizedRequest as any, env);
         else if (path.match(/^\/developers\/releases\/[^\/]+$/) && request.method === 'PATCH') data = await developerAppRoutes.updateRelease(normalizedRequest as any, env);
         else if (path.match(/^\/developers\/security\/packages\/[^\/]+$/) && request.method === 'GET') data = await developerAppRoutes.getPackageSecurity(normalizedRequest as any, env);
+        // Phase 14 — submissions + private attachments
+        else if (is('/developers/submissions', 'GET')) data = await developerSubmissionRoutes.list(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/submissions\/[^\/]+$/) && request.method === 'GET') data = await developerSubmissionRoutes.get(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/submissions\/[^\/]+\/resubmit$/) && request.method === 'POST') data = await developerSubmissionRoutes.resubmit(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/communications\/[^\/]+\/attachments$/) && request.method === 'POST') data = await developerSubmissionRoutes.uploadAttachment(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/attachments\/[^\/]+$/) && request.method === 'GET') {
+          // Authorized attachment download (private storage — never /r2/).
+          const att: any = await developerSubmissionRoutes.downloadAttachment(normalizedRequest as any, env);
+          if (att?.error) return fail(att.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'FORBIDDEN', String(att.error));
+          return streamAttachment(env, att.attachment, origin);
+        }
         else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown developer route' } }, 404, origin);
         if (data?.error) {
           const code: ErrorCode = data.code === 'UNAUTHORIZED' ? 'AUTH_REQUIRED' : data.code === 'NOT_FOUND' ? 'NOT_FOUND' : data.code === 'FORBIDDEN' ? 'FORBIDDEN' : 'VALIDATION_ERROR';
@@ -794,6 +820,30 @@ export default {
         return respond({ success: true, data }, 200, origin);
       } catch (e: any) {
         console.error(`[${requestId}] developer op:`, redact(String(e?.message || e))); return fail('INTERNAL', 'Developer operation failed. Please try again.');
+      }
+    }
+
+    // ---- Admin: submission review workspace (Phase 14; admin JWT enforced for /admin/*) ----
+    if (path.startsWith('/admin/submissions')) {
+      try {
+        let data: any;
+        if (path === '/admin/submissions' && request.method === 'GET') data = await adminSubmissionRoutes.list(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/submissions\/[^\/]+$/) && request.method === 'GET') data = await adminSubmissionRoutes.get(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/submissions\/[^\/]+\/assign$/) && request.method === 'POST') data = await adminSubmissionRoutes.assign(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/submissions\/[^\/]+\/review$/) && request.method === 'POST') data = await adminSubmissionRoutes.startReview(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/submissions\/[^\/]+\/approve$/) && request.method === 'POST') data = await adminSubmissionRoutes.approve(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/submissions\/[^\/]+\/reject$/) && request.method === 'POST') data = await adminSubmissionRoutes.reject(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/submissions\/[^\/]+\/request-changes$/) && request.method === 'POST') data = await adminSubmissionRoutes.requestChanges(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/submissions\/[^\/]+\/suspend$/) && request.method === 'POST') data = await adminSubmissionRoutes.suspend(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/submissions\/[^\/]+\/resume$/) && request.method === 'POST') data = await adminSubmissionRoutes.resume(normalizedRequest as any, env);
+        else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown submission route' } }, 404, origin);
+        if (data?.error) {
+          const code: ErrorCode = data.code === 'NOT_FOUND' ? 'NOT_FOUND' : data.code === 'FORBIDDEN' ? 'FORBIDDEN' : 'VALIDATION_ERROR';
+          return fail(code, String(data.error));
+        }
+        return respond({ success: true, data }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] submission op:`, redact(String(e?.message || e))); return fail('INTERNAL', 'Submission operation failed. Please try again.');
       }
     }
 
@@ -842,6 +892,13 @@ export default {
         else if (path.match(/^\/admin\/developers\/releases\/[^\/]+\/approve$/) && request.method === 'POST') data = await adminDeveloperAppRoutes.approveRelease(normalizedRequest as any, env);
         else if (path.match(/^\/admin\/developers\/releases\/[^\/]+\/reject$/) && request.method === 'POST') data = await adminDeveloperAppRoutes.rejectRelease(normalizedRequest as any, env);
         else if (path.match(/^\/admin\/developers\/releases\/[^\/]+\/request-changes$/) && request.method === 'POST') data = await adminDeveloperAppRoutes.requestReleaseChanges(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/communications\/[^\/]+\/attachments$/) && request.method === 'POST') data = await adminSubmissionRoutes.uploadAttachment(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/attachments\/[^\/]+$/) && request.method === 'GET') {
+          // Authorized admin attachment download (private storage — never /r2/).
+          const att: any = await adminSubmissionRoutes.downloadAttachment(normalizedRequest as any, env);
+          if (att?.error) return fail(att.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'FORBIDDEN', String(att.error));
+          return streamAttachment(env, att.attachment, origin);
+        }
         else if (is('/admin/developers/communications', 'GET')) data = await adminDeveloperRoutes.adminListThreads(normalizedRequest as any, env);
         else if (path.match(/^\/admin\/developers\/communications\/[^\/]+$/) && request.method === 'GET') data = await adminDeveloperRoutes.adminGetThread(normalizedRequest as any, env);
         else if (path.match(/^\/admin\/developers\/communications\/[^\/]+\/messages$/) && request.method === 'POST') data = await adminDeveloperRoutes.adminSendMessage(normalizedRequest as any, env);

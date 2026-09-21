@@ -9,7 +9,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Package, Upload, FileCheck, BarChart3, Star, Users, MessageSquare,
+  LayoutDashboard, Package, Upload, FileCheck, BarChart3, Star, Users, MessageSquare, Paperclip,
   User as UserIcon, Settings as SettingsIcon, AlertTriangle, Send, Copy, X,
 } from 'lucide-react';
 import { api, isApiConfigured } from '../../services/api';
@@ -463,6 +463,8 @@ function Communications() {
   const [subject, setSubject] = useState('');
   const [firstMessage, setFirstMessage] = useState('');
   const [reply, setReply] = useState('');
+  const [attachFile, setAttachFile] = useState<File | null>(null);
+  const [attachments, setAttachments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
@@ -472,10 +474,28 @@ function Communications() {
   const open = async (t: any) => {
     setActive(t);
     setMessages([]);
+    setAttachments([]);
     try {
       const d = await api.developers.thread(t.id);
       setActive(d.thread); setMessages(d.messages || []);
     } catch (e: any) { toast.error(e?.message || 'Could not open thread'); }
+  };
+
+  const sendWithAttachment = async () => {
+    const message = reply.trim();
+    if (!message && !attachFile) { toast.error('Write a message or attach a file'); return; }
+    setBusy(true);
+    try {
+      if (attachFile) {
+        await api.submissions.uploadAttachment(active.id, attachFile, message || undefined);
+        setAttachFile(null); setReply('');
+        toast.success('Message + attachment sent');
+        open(active);
+      } else {
+        await send();
+      }
+    } catch (e: any) { toast.error(e?.message || 'Could not send'); }
+    setBusy(false);
   };
 
   const createThread = async () => {
@@ -544,11 +564,27 @@ function Communications() {
                   </div>
                 ))}
                 {messages.length === 0 && <p className="text-xs text-rx-gray-medium">No messages.</p>}
+                {attachments.length > 0 && (
+                  <div className="flex flex-wrap gap-2 pt-2 border-t border-white/5">
+                    {attachments.map((a: any) => (
+                      <a key={a.id} href={api.submissions.attachmentUrl(a.id)} target="_blank" rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 text-xs text-rx-yellow hover:underline">
+                        <Paperclip className="w-3.5 h-3.5" /> {a.filename}
+                        <span className="text-[9px] text-rx-gray-medium">({String(a.scan_status || 'PENDING').toLowerCase()})</span>
+                      </a>
+                    ))}
+                  </div>
+                )}
               </div>
               {active.status !== 'CLOSED' && (
-                <div className="flex gap-2 border-t border-white/5 pt-3">
+                <div className="flex flex-col sm:flex-row gap-2 border-t border-white/5 pt-3">
                   <input className="flex-1 bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white" placeholder="Reply…" value={reply} onChange={(e) => setReply(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()} />
-                  <button onClick={send} disabled={busy} className="btn-primary text-sm px-4 disabled:opacity-40"><Send className="w-4 h-4" /></button>
+                  <label className="btn-secondary text-sm flex items-center gap-2 cursor-pointer">
+                    <Paperclip className="w-4 h-4" /> {attachFile ? attachFile.name.slice(0, 16) : 'Attach'}
+                    <input type="file" className="hidden" accept=".png,.jpg,.jpeg,.webp,.gif,.pdf,.txt,.log,.md,.json"
+                      onChange={(e) => setAttachFile(e.target.files?.[0] || null)} />
+                  </label>
+                  <button onClick={sendWithAttachment} disabled={busy} className="btn-primary text-sm px-4 disabled:opacity-40"><Send className="w-4 h-4" /></button>
                 </div>
               )}
             </>
@@ -607,33 +643,96 @@ function PublicProfile({ org, onChanged }: { org: any; onChanged: () => void }) 
 }
 
 function Submissions() {
-  const [apps, setApps] = useState<any[]>([]);
+  const [subs, setSubs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    api.developers.apps.list().then((d: any) => setApps(d.apps || [])).catch(() => {}).finally(() => setLoading(false));
-  }, []);
+  const [open, setOpen] = useState<string | null>(null);
+  const [detail, setDetail] = useState<any>(null);
+  const [response, setResponse] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  const pendingApps = apps.filter((a) => ['submitted', 'under_review', 'changes_requested', 'rejected'].includes(a.status));
+  const load = () => api.submissions.list().then((d: any) => setSubs(d.submissions || [])).catch(() => {});
+  useEffect(() => { load().finally(() => setLoading(false)); }, []);
+
+  const openSubmission = async (id: string) => {
+    setOpen(open === id ? null : id);
+    if (open !== id) {
+      try { setDetail(await api.submissions.get(id)); } catch { setDetail(null); }
+    }
+  };
+
+  const resubmit = async (id: string) => {
+    setBusy(true);
+    try {
+      await api.submissions.resubmit(id, response.trim() || undefined);
+      toast.success('Resubmitted for review');
+      setResponse('');
+      await load();
+      setDetail(await api.submissions.get(id));
+    } catch (e: any) { toast.error(e?.message || 'Could not resubmit'); }
+    setBusy(false);
+  };
+
   if (loading) return <Section title="Submissions"><div className="card p-6 animate-pulse h-20" /></Section>;
-  if (!pendingApps.length) {
+  if (!subs.length) {
     return (
-      <Section title="Submissions" desc="Apps and releases currently in the review pipeline.">
-        <Empty icon={FileCheck} title="Nothing in review" desc="App submissions and release submissions appear here while they await admin review." />
+      <Section title="Submissions" desc="Release submissions and their review status.">
+        <Empty icon={FileCheck} title="No submissions yet" desc="When you submit a release for review it appears here with its status, reviewer feedback and action items." />
       </Section>
     );
   }
   return (
-    <Section title="Submissions" desc="Apps and releases currently in the review pipeline.">
+    <Section title="Submissions" desc="Release submissions and their review status.">
       <div className="space-y-3">
-        {pendingApps.map((a) => (
-          <Link key={a.id} to={`/developers/apps/${a.id}`} className="card p-4 flex items-center gap-3 hover:bg-white/[0.03] transition-colors">
-            <AppLogo app={a} size="w-12 h-12" />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-white truncate">{a.name}</p>
-              <p className="text-xs text-rx-gray-medium">App · {String(a.status).replace('_', ' ')}</p>
-            </div>
-            <span className={`text-[10px] font-bold px-2 py-1 rounded ${APP_STATUS_BADGE[a.status] || APP_STATUS_BADGE.draft}`}>{String(a.status).replace('_', ' ')}</span>
-          </Link>
+        {subs.map((x) => (
+          <div key={x.id} className="card overflow-hidden">
+            <button onClick={() => openSubmission(x.id)} className="w-full p-4 flex flex-wrap items-center gap-3 hover:bg-white/[0.03] text-left">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-white truncate">{x.appName} <span className="text-rx-yellow">v{x.version}</span></p>
+                <p className="text-xs text-rx-gray-medium">submitted {formatDate(x.submittedAt)}{x.reviewedAt ? ` · reviewed ${formatDate(x.reviewedAt)}` : ''}</p>
+              </div>
+              <span className={`text-[10px] font-bold px-2 py-1 rounded ${APP_STATUS_BADGE[x.status] || APP_STATUS_BADGE.draft}`}>{String(x.status).replace(/_/g, ' ')}</span>
+            </button>
+            {open === x.id && detail && (
+              <div className="border-t border-white/5 p-4 space-y-4">
+                {detail.submission?.reviewNotes && ['CHANGES_REQUESTED', 'REJECTED'].includes(x.status) && (
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-sm">
+                    <p className="font-semibold text-amber-200 text-xs uppercase tracking-wide">Reviewer feedback</p>
+                    <p className="text-rx-gray-medium mt-1">{detail.submission.reviewNotes}</p>
+                  </div>
+                )}
+                {(detail.submission?.actionItems || []).length > 0 && x.status === 'CHANGES_REQUESTED' && (
+                  <div>
+                    <p className="text-xs font-semibold text-white uppercase tracking-wide">Action items</p>
+                    <ol className="mt-2 space-y-1.5">
+                      {detail.submission.actionItems.map((item: string, i: number) => (
+                        <li key={i} className="text-sm text-rx-gray-medium flex gap-2"><span className="text-rx-yellow font-bold">{i + 1}.</span> {item}</li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+                {x.status === 'CHANGES_REQUESTED' && (
+                  <div className="space-y-2">
+                    <textarea rows={2} value={response} onChange={(e) => setResponse(e.target.value)} className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white" placeholder="Describe what you changed (sent to the review thread)…" />
+                    <button onClick={() => resubmit(x.id)} disabled={busy} className="btn-primary text-sm disabled:opacity-40">
+                      {busy ? 'Resubmitting…' : 'Resubmit for review'}
+                    </button>
+                  </div>
+                )}
+                {(detail.packages || []).length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold text-white uppercase tracking-wide mb-1.5">Security status</p>
+                    {detail.packages.map((p: any) => (
+                      <div key={p.id} className="flex items-center gap-2 text-xs">
+                        <span className="text-white">{p.platform}</span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${APP_STATUS_BADGE[String(p.overall_security).toLowerCase()] || APP_STATUS_BADGE.draft}`}>{String(p.overall_security).replace(/_/g, ' ')}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <Link to="/developers/messages" className="text-xs text-rx-yellow hover:underline inline-flex items-center gap-1.5"><MessageSquare className="w-3.5 h-3.5" /> Open communication</Link>
+              </div>
+            )}
+          </div>
         ))}
       </div>
     </Section>

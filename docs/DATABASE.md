@@ -116,6 +116,7 @@ columns), so back up before applying it.
 0009_developer_platform.sql          Developer Platform (applications, orgs, team, roles, invitations, audit, threads)
 0010_developer_releases.sql          Developer release lifecycle (rebuilds applications + releases CHECKs; Prompt 13 hooks on packages)
 0011_package_security.sql            Package security pipeline (packages state machine + results + overrides tables)
+0012_submissions_review.sql           Submission review lifecycle + events + private thread attachments
 ```
 
 ### Migration numbering
