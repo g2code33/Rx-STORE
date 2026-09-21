@@ -9,7 +9,8 @@ import { useCategories } from '../hooks/useCategories';
 import WelcomeIntro from '../components/home/WelcomeIntro';
 import PageBlocks from '../components/edit/PageBlocks';
 import PlatformIcon from '../icons/PlatformIcon';
-import { getPublicSettings } from '../services/api';
+import { getPublicSettings, api, isApiConfigured } from '../services/api';
+import { formatBytes } from '../utils/helpers';
 
 const HOME_PLATFORM_FILTERS = [
   { id: 'all', label: 'All', icon: '✨' },
@@ -56,6 +57,142 @@ function platformCardIconId(name: string): string {
 function CLink({ to, className, children }: { to: string; className?: string; children: React.ReactNode }) {
   if (/^https?:\/\//.test(to)) return <a href={to} target="_blank" rel="noreferrer" className={className}>{children}</a>;
   return <Link to={to || '/'} className={className}>{children}</Link>;
+}
+
+/**
+ * Phase 15 storefront sections — every row is REAL backend data from
+ * GET /storefront/home (admin curation + marketplace signals). No fake apps.
+ * Renders nothing extra when the API is not configured (existing Home stays).
+ */
+function StorefrontSections() {
+  const [data, setData] = React.useState<any>(null);
+  const [loading, setLoading] = React.useState(isApiConfigured());
+
+  React.useEffect(() => {
+    if (!isApiConfigured()) return;
+    let alive = true;
+    api.storefront.home()
+      .then((d: any) => { if (alive) setData(d); })
+      .catch(() => {})
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="section-container py-14 space-y-8">
+        {[0, 1].map((i) => (
+          <div key={i}>
+            <div className="h-6 w-48 bg-white/5 rounded animate-pulse mb-4" />
+            <div className="flex gap-4 overflow-hidden">
+              {Array.from({ length: 5 }).map((_, j) => <div key={j} className="card w-44 h-56 animate-pulse flex-shrink-0" />)}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (!data?.sections) return null;
+
+  const sectionLink = (key: string): string => {
+    switch (key) {
+      case 'games': return '/games';
+      case 'apps': return '/apps';
+      case 'newNoteworthy': return '/browse?sort=newest';
+      default: return '/browse';
+    }
+  };
+  const sectionIcon = (key: string): string => {
+    switch (key) {
+      case 'games': return '🎮';
+      case 'featured': return '⭐';
+      case 'recommended': return '💡';
+      case 'recentlyUpdated': return '🔄';
+      case 'mostUsed': return '📊';
+      case 'newNoteworthy': return '✨';
+      default: return '🔥';
+    }
+  };
+
+  const hero = data.hero;
+  const sections = Object.entries(data.sections || {}) as Array<[string, { title: string; apps: any[] }]>;
+  const withApps = sections.filter(([, v]) => (v.apps || []).length > 0);
+
+  return (
+    <>
+      {hero?.bannerUrl && (
+        <section className="section-container pt-10">
+          <div className="relative rounded-3xl overflow-hidden border border-white/10 group">
+            <img src={hero.bannerUrl} alt="" className="w-full h-52 sm:h-64 object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-t from-rx-dark via-rx-dark/40 to-transparent" />
+            <div className="absolute bottom-0 p-6 sm:p-8 max-w-xl">
+              {hero.title && <h2 className="text-2xl sm:text-3xl font-black text-white">{hero.title}</h2>}
+              {hero.subtitle && <p className="text-sm text-rx-gray-medium mt-1.5">{hero.subtitle}</p>}
+              {hero.ctaLabel && (
+                <Link to={hero.ctaTo || '/browse'} className="btn-primary text-sm mt-4 inline-flex items-center gap-2">
+                  {hero.ctaLabel} <ArrowRight className="w-4 h-4" />
+                </Link>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {withApps.map(([key, section]) => (
+        <section key={key} className="section-container py-8" id={`home-${key}`}>
+          <div className="flex items-center justify-between mb-5">
+            <h2 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2">
+              <span>{sectionIcon(key)}</span> {section.title}
+            </h2>
+            <Link to={sectionLink(key)} className="text-sm text-rx-yellow hover:underline flex items-center gap-1">
+              See all <ArrowRight className="w-4 h-4" />
+            </Link>
+          </div>
+          {/* Horizontal scroll row — works on mobile/tablet/desktop */}
+          <div className="flex gap-4 overflow-x-auto pb-3 -mx-4 px-4 sm:mx-0 sm:px-0 snap-x">
+            {section.apps.map((app: any) => (
+              <Link key={app.id} to={`/app/${app.slug}`} className="card p-4 w-44 sm:w-52 flex-shrink-0 snap-start hover:bg-white/[0.04] transition-colors group">
+                <div className="relative">
+                  {app.icon ? (
+                    <img src={app.icon} alt={app.name} className="w-16 h-16 rounded-2xl object-cover border border-white/10 group-hover:scale-105 transition-transform" />
+                  ) : (
+                    <div className="w-16 h-16 rounded-2xl bg-rx-dark-tertiary border border-white/10 flex items-center justify-center text-2xl">📦</div>
+                  )}
+                  {app.isNew && <span className="absolute -top-1.5 -right-1.5 badge-new">New</span>}
+                </div>
+                <p className="font-semibold text-white text-sm mt-3 truncate">{app.name}</p>
+                <p className="text-[11px] text-rx-gray-medium truncate">{app.developer}</p>
+                <div className="flex items-center gap-1 mt-2">
+                  <Star className="w-3 h-3 text-yellow-400 fill-yellow-400" />
+                  <span className="text-[11px] text-rx-gray-medium">{app.rating || 0} ({app.reviewCount || 0})</span>
+                </div>
+                <p className="text-[11px] text-rx-gray-medium mt-1">
+                  {app.sizes && Object.values(app.sizes)[0] ? formatBytes(Number(Object.values(app.sizes)[0])) : `${(app.platforms || []).length} platform${(app.platforms || []).length === 1 ? '' : 's'}`}
+                </p>
+              </Link>
+            ))}
+          </div>
+        </section>
+      ))}
+
+      {(data.categories || []).length > 0 && (
+        <section className="section-container py-8">
+          <div className="flex items-center justify-between mb-5">
+            <h2 className="text-xl sm:text-2xl font-bold text-white">🗂️ Categories</h2>
+            <Link to="/categories" className="text-sm text-rx-yellow hover:underline flex items-center gap-1">All categories <ArrowRight className="w-4 h-4" /></Link>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            {data.categories.map((c: any) => (
+              <Link key={c.id} to={`/categories/${c.id}`} className="card p-4 text-center hover:bg-white/[0.04] transition-colors">
+                <p className="text-sm font-semibold text-white capitalize">{c.name}</p>
+                <p className="text-xs text-rx-gray-medium mt-1">{c.count} app{c.count === 1 ? '' : 's'}</p>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+    </>
+  );
 }
 
 export default function Home() {
@@ -149,6 +286,9 @@ export default function Home() {
           )}
         </div>
       </section>
+
+      {/* Phase 15: dynamic storefront sections (real backend data) */}
+      <StorefrontSections />
 
       {/* Categories */}
       <section className="section-container py-20">

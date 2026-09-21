@@ -541,6 +541,35 @@ export const api = {
     },
   },
 
+  // Storefront (Phase 15)
+  storefront: {
+    async home() {
+      return request<{ hero: any; sections: Record<string, { title: string; apps: any[] }>; categories: any[] }>('/storefront/home', { method: 'GET', auth: false });
+    },
+    async related(slug: string) {
+      return request<{ apps: any[] }>(`/apps/related/${encodeURIComponent(slug)}`, { method: 'GET', auth: false });
+    },
+  },
+
+  // Admin storefront configuration (Phase 15)
+  adminStorefront: {
+    async get() {
+      return request<{ hero: any; featured: any[] }>('/admin/storefront', { method: 'GET' });
+    },
+    async saveFeatured(body: Record<string, unknown>) {
+      return request<any>('/admin/storefront/featured', { method: 'POST', body: JSON.stringify(body) });
+    },
+    async deleteFeatured(id: string) {
+      return request<any>(`/admin/storefront/featured/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    },
+    async saveHero(body: Record<string, unknown>) {
+      return request<any>('/admin/storefront/hero', { method: 'PUT', body: JSON.stringify(body) });
+    },
+    async searchApps(q: string) {
+      return request<{ apps: any[] }>(`/admin/storefront/apps?q=${encodeURIComponent(q)}`, { method: 'GET' });
+    },
+  },
+
   // Developer submissions (Phase 14)
   submissions: {
     async list() {

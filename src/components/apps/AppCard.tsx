@@ -3,9 +3,10 @@ import { Link } from 'react-router-dom';
 import DownloadModal from './DownloadModal';
 import { Star, Download, ArrowRight } from 'lucide-react';
 import { App } from '../../types';
-import { formatDownloadCount, getRatingColor } from '../../utils/helpers';
+import { formatDownloadCount, getRatingColor, formatBytes} from '../../utils/helpers';
 import { useEditMode } from '../edit/EditMode';
 import AppLogo from './AppLogo';
+import PlatformIcon from '../../icons/PlatformIcon';
 import { useInstalledState } from '../../platform/nativeDetection';
 import { useInstallButton } from '../../native/useInstallButton';
 import { deviceCountLabel } from '../../native/installUi';
@@ -30,6 +31,9 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
   // "Installed on another device" hint — only for OTHER devices, never flips OPEN.
   const otherDevices = React.useMemo(() => installations.filter((i) => i.appSlug === app.slug && i.deviceId !== currentDevice.deviceId).length, [installations, app.slug, currentDevice.deviceId]);
   const edit = useEditMode(); // Live Website Builder: pencil opens the full AppEditor
+  // Auto-detected package size (Phase 15 card requirement) — smallest platform
+  // size we have a real measurement for.
+  const firstSize = app.sizes ? (Object.values(app.sizes).filter((v: any) => Number(v) > 0).sort((a: any, b: any) => Number(a) - Number(b))[0] as number | undefined) ?? null : null;
 
   if (variant === 'horizontal') {
     return (
@@ -145,7 +149,14 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
             <h3 className="font-bold text-white group-hover:text-rx-yellow transition-colors text-lg">
               {app.name}
             </h3>
-            <p className="text-xs text-rx-gray-medium mt-0.5">{app.developer}</p>
+            {app.developerOrgId ? (
+              <Link to={`/developer/${app.developerOrgId}`} onClick={(e) => e.stopPropagation()}
+                className="text-xs text-rx-gray-medium mt-0.5 hover:text-rx-yellow transition-colors">
+                {app.developer}
+              </Link>
+            ) : (
+              <p className="text-xs text-rx-gray-medium mt-0.5">{app.developer}</p>
+            )}
           </div>
         </div>
 
@@ -168,7 +179,23 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
               <Download className="w-3.5 h-3.5" />
               <span className="text-xs">{formatDownloadCount(app.downloadCount)}</span>
             </div>
+            {!!app.reviewCount && (
+              <span className="text-[11px] text-rx-gray-medium">({app.reviewCount} review{app.reviewCount === 1 ? '' : 's'})</span>
+            )}
           </div>
+
+        {/* Meta row: category + auto-detected size + platform availability */}
+        <div className="flex items-center gap-2 flex-wrap mb-3">
+          <span className="text-[10px] bg-rx-dark-tertiary text-rx-gray-medium px-2 py-0.5 rounded capitalize">{app.category}</span>
+          {firstSize != null && (
+            <span className="text-[10px] bg-rx-dark-tertiary text-rx-gray-medium px-2 py-0.5 rounded">{formatBytes(firstSize)}</span>
+          )}
+          <span className="flex items-center gap-0.5">
+            {(app.platforms || []).slice(0, 4).map((pf: string) => (
+              <PlatformIcon key={pf} id={pf} className="text-sm leading-none" imgClassName="w-3.5 h-3.5 inline-block" />
+            ))}
+          </span>
+        </div>
 
           {osInstalled || installBtn.state === 'OPEN' ? (
             <span className={`text-xs font-medium px-2.5 py-1 rounded-lg ${isUpdate ? 'text-rx-yellow bg-rx-yellow/10' : 'text-green-400 bg-green-400/10'}`}>{isUpdate ? 'Update' : 'Open'}</span>

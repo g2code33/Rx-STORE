@@ -4,8 +4,7 @@ import toast from 'react-hot-toast';
 import {
   LayoutDashboard, Package, Users, BarChart3, DollarSign, Upload,
   Download, Star, Settings, Shield, Plus, Edit, Trash2, Activity, Database, Cloud, Bot, Key, Globe, FileText, Bell, Megaphone,
-  Monitor, Eye, Paintbrush, Loader2, Rocket, MousePointerClick, Tablet, Smartphone, PanelRight, Shapes
-} from 'lucide-react';
+  Monitor, Eye, Paintbrush, Loader2, Rocket, MousePointerClick, Tablet, Smartphone, PanelRight, Shapes, Store} from 'lucide-react';
 import { useApps } from '../context/AppContext';
 import { useCategories } from '../hooks/useCategories';
 import { formatDownloadCount } from '../utils/helpers';
@@ -55,6 +54,7 @@ import ReleasesManager from '../components/admin/ReleasesManager';
 import UserRoleEditor from '../components/admin/UserRoleEditor';
 import RevenuePanel from '../components/admin/RevenuePanel';
 import DeveloperAdminPanel from '../components/admin/DeveloperAdminPanel';
+import StorefrontAdminPanel from '../components/admin/StorefrontAdminPanel';
 import AdminSettings from '../components/admin/AdminSettings';
 import RecycleBin from '../components/admin/RecycleBin';
 import { useAuth } from '../context/AuthContext';
@@ -161,6 +161,7 @@ export default function Admin() {
     { id: 'releases', label: 'Releases', icon: Upload },
     { id: 'users', label: 'Users', icon: Users },
     { id: 'icons', label: 'Icons', icon: Shapes },
+    { id: 'storefront', label: 'Storefront', icon: Store },
     { id: 'developers', label: 'Developers', icon: Shield },
     { id: 'ai', label: 'AI Providers', icon: Bot },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
@@ -469,6 +470,11 @@ export default function Admin() {
           {activeSection === 'users' && (<div className="animate-fade-in"><UserRoleEditor /></div>)}
           {activeSection === 'icons' && (<div className="animate-fade-in"><IconManager /></div>)}
 
+          {activeSection === 'storefront' && (
+            <div className="animate-fade-in">
+              <StorefrontAdminPanel />
+            </div>
+          )}
           {activeSection === 'developers' && (
             <div className="animate-fade-in">
               <DeveloperAdminPanel />

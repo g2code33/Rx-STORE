@@ -21,6 +21,7 @@ import { developerRoutes, adminDeveloperRoutes } from './routes/developers';
 import { developerAppRoutes, adminDeveloperAppRoutes } from './routes/developerApps';
 import { securityAdminRoutes } from './routes/securityAdmin';
 import { developerSubmissionRoutes, adminSubmissionRoutes } from './routes/submissions';
+import { storefrontRoutes, adminStorefrontRoutes, adminStorefrontAppSearch } from './routes/storefront';
 import { r2KeyIsPubliclyServed } from './services/packageSecurity';
 import { verifyAccessToken } from './services/auth';
 import { apiErrorBody, statusForCode, requestIdFor, redact, type ErrorCode } from './services/errors';
@@ -419,6 +420,13 @@ export default {
         return fail('INTERNAL', 'The file could not be served. Please try again.');
       }
     }
+    // Discovery (Phase 15): factual related-apps for the app detail page.
+    if (path.match(/^\/apps\/related\/[^\/]+$/) && request.method === 'GET') {
+      const data = await storefrontRoutes.related(normalizedRequest as any, env);
+      if ((data as any)?.error) return respond({ success: false, error: { code: 'NOT_FOUND', message: (data as any).error } }, 404, origin);
+      return respond({ success: true, data }, 200, origin);
+    }
+
     // Download — record and return URL (packages of the latest PUBLISHED release win, legacy app_versions fallback)
     if (path.match(/^\/apps\/[^\/]+\/download$/) && request.method === 'GET') {
       try {
@@ -581,6 +589,12 @@ export default {
       ];
       return respond({ success: true, data: cats }, 200, origin);
     }
+    // ---- Storefront (Phase 15) — public home payload ----
+    if (path === '/storefront/home' && request.method === 'GET') {
+      const data = await storefrontRoutes.home(normalizedRequest as any, env);
+      return respond({ success: true, data }, 200, origin);
+    }
+
     if (path.startsWith('/apps/') && (request.method === 'GET' || request.method === 'POST')) {
       try {
         if (path.endsWith('/reviews')) {
@@ -820,6 +834,26 @@ export default {
         return respond({ success: true, data }, 200, origin);
       } catch (e: any) {
         console.error(`[${requestId}] developer op:`, redact(String(e?.message || e))); return fail('INTERNAL', 'Developer operation failed. Please try again.');
+      }
+    }
+
+    // ---- Admin: storefront configuration (Phase 15; admin JWT enforced for /admin/*) ----
+    if (path.startsWith('/admin/storefront')) {
+      try {
+        let data: any;
+        if (path === '/admin/storefront' && request.method === 'GET') data = await adminStorefrontRoutes.get(normalizedRequest as any, env);
+        else if (path === '/admin/storefront/featured' && request.method === 'POST') data = await adminStorefrontRoutes.saveFeatured(normalizedRequest as any, env);
+        else if (path === '/admin/storefront/hero' && request.method === 'PUT') data = await adminStorefrontRoutes.saveHero(normalizedRequest as any, env);
+        else if (path === '/admin/storefront/apps' && request.method === 'GET') data = { apps: await adminStorefrontAppSearch(env, new URL(request.url).searchParams.get('q') || '') };
+        else if (path.match(/^\/admin\/storefront\/featured\/[^\/]+$/) && request.method === 'DELETE') data = await adminStorefrontRoutes.deleteFeatured(normalizedRequest as any, env);
+        else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown storefront admin route' } }, 404, origin);
+        if (data?.error) {
+          const code: ErrorCode = data.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'VALIDATION_ERROR';
+          return fail(code, String(data.error));
+        }
+        return respond({ success: true, data }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] storefront admin op:`, redact(String(e?.message || e))); return fail('INTERNAL', 'Storefront operation failed. Please try again.');
       }
     }
 

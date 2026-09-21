@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { Home, LayoutGrid, Layers, Info, User } from 'lucide-react';
+import { Home, LayoutGrid, Layers, Info, User , Gamepad2, Library} from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
 /** App-Store-style bottom navigation for phones (replaces the hamburger menu). */
@@ -9,9 +9,9 @@ export default function MobileTabBar() {
 
   const tabs = [
     { to: '/', label: 'Home', icon: Home, exact: true },
+    { to: '/games', label: 'Games', icon: Gamepad2 },
     { to: '/browse', label: 'Browse', icon: LayoutGrid },
-    { to: '/categories', label: 'Categories', icon: Layers },
-    { to: '/about', label: 'About', icon: Info },
+    { to: '/library', label: 'Library', icon: Library },
     { to: user ? '/profile' : '/login', label: 'Account', icon: User },
   ];
 

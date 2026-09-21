@@ -150,12 +150,25 @@ export const appsRoutes = {
     row.gradient = app.gradient || 'from-rx-dark to-rx-dark-secondary';
     row.color = app.color || '#FFD600';
     row.version = app.current_version || app.version || '1.0.0';
+    row.privacyUrl = app.privacy_url || null;
+    row.supportUrl = app.support_url || null;
+    row.videoUrl = app.video_url || null;
+    row.developerOrgId = app.developer_org_id || null;
     row.releaseDate = app.release_date || app.created_at;
     row.lastUpdated = app.last_updated || app.updated_at || app.created_at;
     row.developer = app.developer || 'Calcitonin Technologies';
     row.status = app.status || 'active';
     row.category = app.category || 'healthcare';
     const sizes = await appSizesFor(env, [app.id]);
+    // Phase 15: published version history (release channel + dates).
+    const versionRows: any = await env.DB.prepare(
+      `SELECT version, channel, published_at, created_at, release_notes FROM releases
+       WHERE application_id = ? AND status = 'published' ORDER BY published_at DESC, created_at DESC LIMIT 10`
+    ).bind(app.id).all().catch(() => ({ results: [] }));
+    row.versions = (versionRows?.results || []).map((v: any) => ({
+      version: v.version, channel: v.channel, publishedAt: v.published_at || v.created_at,
+      releaseNotes: tryParse(v.release_notes, []),
+    }));
     return withSize(env, app.id, row, sizes[app.id] || {});
   },
   async reviews(request: Request, env: any) {

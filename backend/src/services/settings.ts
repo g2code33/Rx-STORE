@@ -51,6 +51,9 @@ export async function getAllSettings(env: any): Promise<Record<string, string>> 
   return map;
 }
 
+/** Reset the in-memory settings cache (used by tests and after admin saves). */
+export function clearSettingsCache() { cache = null; }
+
 export async function getSetting(env: any, key: string, fallback = ''): Promise<string> {
   const all = await getAllSettings(env);
   return all[key] ?? SETTING_DEFAULTS[key] ?? fallback;

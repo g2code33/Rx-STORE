@@ -13,7 +13,8 @@ export const ADVERTISE_LINK: NavLink = { label: 'Advertise', to: '/advertise' };
 
 export const DEFAULT_NAV: NavLink[] = [
   { label: 'Home', to: '/' },
-  { label: 'Browse', to: '/browse' },
+  { label: 'Games', to: '/games' },
+  { label: 'Apps', to: '/apps' },
   { label: 'Categories', to: '/categories' },
   { label: 'Advertise', to: '/advertise' },
   { label: 'About', to: '/about' },

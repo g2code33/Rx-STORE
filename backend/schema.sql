@@ -471,3 +471,20 @@ CREATE TABLE IF NOT EXISTS developer_thread_attachments (
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_thread_attachments_thread ON developer_thread_attachments(thread_id);
+
+-- Phase 15: storefront curation + discovery metadata.
+CREATE TABLE IF NOT EXISTS storefront_featured (
+  id TEXT PRIMARY KEY,
+  app_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  placement TEXT NOT NULL DEFAULT 'home_featured' CHECK (placement IN ('home_featured','games_featured','apps_featured')),
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  starts_at TEXT,
+  ends_at TEXT,
+  banner_url TEXT,
+  promo_text TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_storefront_featured_placement ON storefront_featured(placement, enabled, sort_order);
+-- applications gains privacy_url / support_url / video_url (nullable adds).

@@ -41,6 +41,7 @@ export interface App {
    * build / update is published. Keys are platform ids (windows, linux_deb,
    * linux_appimage, android, ios, macos, web, flatpak).
    */
+  developerOrgId?: string;
   sizes?: Record<string, number>;
   status: 'active' | 'beta' | 'coming-soon';
 }

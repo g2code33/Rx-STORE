@@ -10,7 +10,7 @@ import PageBlocks from '../components/edit/PageBlocks';
 import SearchBox from '../components/search/SearchBox';
 import { getPublicSettings } from '../services/api';
 
-export default function Browse() {
+export default function Browse({ presetCategory, excludeCategory, title }: { presetCategory?: string; excludeCategory?: string; title?: string }) {
   const { apps, isLoading, error, refresh, searchQuery, setSearchQuery, selectedCategory, setSelectedCategory, selectedPlatform, setSelectedPlatform, getFilteredApps } = useApps();
   const categories = useCategories();
   const { get } = useContent();
@@ -23,7 +23,9 @@ export default function Browse() {
     window.addEventListener('resize', apply);
     return () => { alive = false; window.removeEventListener('resize', apply); };
   }, []);
-  const [sortBy, setSortBy] = React.useState<'popular' | 'rating' | 'newest' | 'name'>('popular');
+  const [sortBy, setSortBy] = React.useState<'popular' | 'rating' | 'newest' | 'name' | 'recently_updated' | 'most_used' | 'reviews'>('popular');
+  const [page, setPage] = React.useState(1);
+  const PAGE_SIZE = 24;
 
   // Deep links: ?featured=1 → only featured, ?sort=newest, ?q=… → run that
   // search (header search submits here — open Browse and search for you).
@@ -35,17 +37,29 @@ export default function Browse() {
     if (p.get('sort') === 'newest') setSortBy('newest');
     const q = p.get('q');
     if (q !== null && q !== searchQuery) setSearchQuery(q);
-  }, [location.search]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Preset routes (/games, /apps) pin the category filter on entry.
+    if (presetCategory) setSelectedCategory(presetCategory as any);
+  }, [location.search, presetCategory]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const filteredApps = useMemo(() => {
     let result = getFilteredApps();
     if (featuredOnly) result = result.filter((a: any) => a.isFeatured);
+    if (excludeCategory) result = result.filter((a: any) => a.category !== excludeCategory);
     switch (sortBy) {
       case 'rating':
         result = [...result].sort((a, b) => b.rating - a.rating);
         break;
       case 'newest':
         result = [...result].sort((a, b) => new Date(b.releaseDate).getTime() - new Date(a.releaseDate).getTime());
+        break;
+      case 'recently_updated':
+        result = [...result].sort((a, b) => new Date(b.lastUpdated || 0).getTime() - new Date(a.lastUpdated || 0).getTime());
+        break;
+      case 'most_used':
+        result = [...result].sort((a, b) => (b.downloadCount || 0) - (a.downloadCount || 0) || (b.rating || 0) - (a.rating || 0));
+        break;
+      case 'reviews':
+        result = [...result].sort((a, b) => (b.reviewCount || 0) - (a.reviewCount || 0));
         break;
       case 'name':
         result = [...result].sort((a, b) => a.name.localeCompare(b.name));
@@ -54,7 +68,14 @@ export default function Browse() {
         result = [...result].sort((a, b) => b.downloadCount - a.downloadCount);
     }
     return result;
-  }, [getFilteredApps, sortBy]);
+  }, [getFilteredApps, sortBy, featuredOnly, excludeCategory]);
+
+  // Pagination (client-side over the real catalog — matches the existing
+  // context architecture; the backend list endpoint already paginates too).
+  const totalPages = Math.max(1, Math.ceil(filteredApps.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pagedApps = useMemo(() => filteredApps.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE), [filteredApps, safePage]);
+  React.useEffect(() => { setPage(1); }, [searchQuery, selectedCategory, selectedPlatform, sortBy, featuredOnly]);
 
   const clearFilters = () => {
     setSearchQuery('');
@@ -72,8 +93,10 @@ export default function Browse() {
     <div className="section-container py-8 lg:py-12">
       <div className="mb-8">
         <h1 className="text-3xl sm:text-4xl font-bold text-white">
-          <Editable id="browse.title" label="Browse title (part 1)">{get('browse.title', 'Browse')}</Editable>{' '}
-          <span className="gradient-text"><Editable id="browse.titleHi" label="Browse title (highlight)">{get('browse.titleHi', 'Applications')}</Editable></span>
+          {title ? <>{title === 'Games' ? '🎮 ' : '📦 '}{title}</> : (<>
+            <Editable id="browse.title" label="Browse title (part 1)">{get('browse.title', 'Browse')}</Editable>{' '}
+            <span className="gradient-text"><Editable id="browse.titleHi" label="Browse title (highlight)">{get('browse.titleHi', 'Applications')}</Editable></span>
+          </>)}
         </h1>
         <p className="mt-2 text-rx-gray-medium">
           <Editable id="browse.sub" type="textarea" label="Browse subtitle ({count} = live number)">{subtitle}</Editable>
@@ -94,6 +117,9 @@ export default function Browse() {
             <option value="popular">Most Popular</option>
             <option value="rating">Highest Rated</option>
             <option value="newest">Newest</option>
+            <option value="recently_updated">Recently Updated</option>
+            <option value="most_used">Most Used</option>
+            <option value="reviews">Most Reviewed</option>
             <option value="name">Name A-Z</option>
           </select>
 
@@ -178,13 +204,13 @@ export default function Browse() {
       {filteredApps.length > 0 ? (
         viewMode === 'grid' ? (
           <div className={mobileStoreView ? 'rounded-2xl bg-rx-dark-secondary/50 px-3' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6'}>
-            {filteredApps.map((app) => (
+            {pagedApps.map((app) => (
               <AppCard key={app.id} app={app} variant={mobileStoreView ? 'mobile-store' : 'default'} />
             ))}
           </div>
         ) : (
           <div className="space-y-3">
-            {filteredApps.map((app) => (
+            {pagedApps.map((app) => (
               <AppCard key={app.id} app={app} variant="horizontal" />
             ))}
           </div>
@@ -216,6 +242,16 @@ export default function Browse() {
           <button onClick={clearFilters} className="btn-primary">
             <Editable id="browse.emptyBtn" label="Empty-state button">{get('browse.emptyBtn', 'Clear Filters')}</Editable>
           </button>
+        </div>
+      )}
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-3 mt-10">
+          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={safePage <= 1}
+            className="btn-secondary text-sm disabled:opacity-30">Previous</button>
+          <span className="text-sm text-rx-gray-medium">Page {safePage} of {totalPages}</span>
+          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages}
+            className="btn-secondary text-sm disabled:opacity-30">Next</button>
         </div>
       )}
 

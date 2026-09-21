@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Star, Download, ArrowLeft, Share2, ExternalLink, Check, ChevronRight, Shield, Clock, Monitor, Calendar, Tag, ThumbsUp, AlertTriangle } from 'lucide-react';
+import { Star, Download, ArrowLeft, Share2, ExternalLink, Check, ChevronRight, Shield, Clock, Monitor, Calendar, Tag, ThumbsUp, AlertTriangle, ShieldCheck, LifeBuoy} from 'lucide-react';
 import DownloadModal from '../components/apps/DownloadModal';
 import AppLogo from '../components/apps/AppLogo';
 import { useApps } from '../context/AppContext';
@@ -10,6 +10,7 @@ import Editable from '../components/edit/Editable';
 import PageBlocks from '../components/edit/PageBlocks';
 import { formatBytes, formatDownloadCount, formatDate, getRatingColor } from '../utils/helpers';
 import { normalizeWebsiteUrl } from '../utils/url';
+import { api as storefrontApi, isApiConfigured } from '../services/api';
 import toast from 'react-hot-toast';
 import { androidStopDownloadProgress, confirmDesktopInstalled, desktopInstall, getNativePackage, isAndroidShell, isDesktopShell, removeNativePackage, type NativePackageState } from '../platform/nativeInstaller';
 import { getRuntimePlatform } from '../native/deviceIdentity';
@@ -75,6 +76,15 @@ function DetailLink({ to, className, children }: { to: string; className?: strin
 }
 
 /** previewSlug: the Live Builder renders this page with a real app, no route. */
+/** YouTube/Vimeo link -> embed URL; anything else is used as-is. */
+function videoEmbedUrl(url: string): string {
+  const yt = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{6,})/);
+  if (yt) return `https://www.youtube-nocookie.com/embed/${yt[1]}`;
+  const vm = url.match(/vimeo\.com\/(\d+)/);
+  if (vm) return `https://player.vimeo.com/video/${vm[1]}`;
+  return url;
+}
+
 export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   const { slug: routeSlug } = useParams<{ slug: string }>();
   const slug = previewSlug ?? routeSlug;
@@ -405,7 +415,11 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
                 {!!app.isNew && <span className="px-2.5 py-1 bg-white/20 backdrop-blur-sm text-white text-xs font-bold rounded-lg">NEW</span>}
                 {app.status === 'beta' && <span className="px-2.5 py-1 bg-purple-500/30 backdrop-blur-sm text-white text-xs font-bold rounded-lg">BETA</span>}
               </div>
-              <p className="text-white/70 mt-1">{app.developer}</p>
+              {(app as any).developerOrgId ? (
+                <Link to={`/developer/${(app as any).developerOrgId}`} className="text-rx-yellow/90 hover:text-rx-yellow hover:underline mt-1 inline-block">{app.developer}</Link>
+              ) : (
+                <p className="text-white/70 mt-1">{app.developer}</p>
+              )}
               <div className="flex items-center gap-6 mt-4 flex-wrap">
                 <div className="flex items-center gap-1.5">
                   <Star className="w-5 h-5 text-yellow-300 fill-yellow-300" />
@@ -522,12 +536,36 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
                   aria-label="Visit app website"
                   className={`p-2 rounded-lg transition-all ${appWebsite ? 'bg-white/10 text-white/70 hover:text-white hover:bg-white/20' : 'bg-white/5 text-white/30 hover:text-white/60 hover:bg-white/10'}`}
                 ><ExternalLink className="w-4 h-4" /></button>
+                {(app as any).privacyUrl && (
+                  <a href={normalizeWebsiteUrl((app as any).privacyUrl)} target="_blank" rel="noreferrer"
+                    title="Privacy policy" aria-label="Privacy policy"
+                    className="p-2 rounded-lg bg-white/10 text-white/70 hover:text-white hover:bg-white/20 transition-all"><ShieldCheck className="w-4 h-4" /></a>
+                )}
+                {(app as any).supportUrl && (
+                  <a href={normalizeWebsiteUrl((app as any).supportUrl)} target="_blank" rel="noreferrer"
+                    title="Support" aria-label="Support"
+                    className="p-2 rounded-lg bg-white/10 text-white/70 hover:text-white hover:bg-white/20 transition-all"><LifeBuoy className="w-4 h-4" /></a>
+                )}
               </div>
             </div>
           </div>
         </div>
       </div>
       {showDownload && <DownloadModal app={app} onClose={()=>setShowDownload(false)} onDownload={doDownload} />}
+
+      {(app as any).videoUrl && (
+        <div className="section-container pt-6">
+          <div className="rounded-2xl overflow-hidden border border-white/10 aspect-video max-w-3xl mx-auto bg-black">
+            <iframe
+              src={videoEmbedUrl((app as any).videoUrl)}
+              title={`${app.name} video`}
+              className="w-full h-full"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+            />
+          </div>
+        </div>
+      )}
 
       <div className="section-container py-8">
         <div className="flex gap-1 border-b border-white/10 mb-8 overflow-x-auto">
@@ -787,6 +825,9 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
         <PageBlocks pageId="appDetail" inContainer />
       </div>
 
+      {/* Discovery (Phase 15): related apps from factual marketplace signals */}
+      <RelatedApps slug={app.slug} />
+
       {/* Full-size screenshot viewer (lightbox) */}
       {lightbox !== null && goodShots[lightbox] && (
         <div
@@ -830,6 +871,50 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Discovery: related apps (factual signals only — category/tags/platforms/
+// popularity computed server-side by GET /apps/related/:slug).
+// ---------------------------------------------------------------------------
+function RelatedApps({ slug }: { slug: string }) {
+  const [apps, setApps] = React.useState<any[] | null>(null);
+  React.useEffect(() => {
+    if (!isApiConfigured()) return;
+    let alive = true;
+    storefrontApi.storefront.related(slug)
+      .then((d: any) => { if (alive) setApps(d.apps || []); })
+      .catch(() => { if (alive) setApps([]); });
+    return () => { alive = false; };
+  }, [slug]);
+
+  if (apps === null) return null;
+  if (!apps.length) return null;
+  return (
+    <div className="section-container py-10">
+      <h2 className="text-xl sm:text-2xl font-bold text-white mb-5">You might also like</h2>
+      <div className="flex gap-4 overflow-x-auto pb-3 snap-x">
+        {apps.map((a: any) => (
+          <Link key={a.id} to={`/app/${a.slug}`} className="card p-4 w-44 sm:w-52 flex-shrink-0 snap-start hover:bg-white/[0.04] transition-colors group">
+            {a.icon ? (
+              <img src={a.icon} alt={a.name} className="w-16 h-16 rounded-2xl object-cover border border-white/10 group-hover:scale-105 transition-transform" />
+            ) : (
+              <div className="w-16 h-16 rounded-2xl bg-rx-dark-tertiary border border-white/10 flex items-center justify-center text-2xl">📦</div>
+            )}
+            <p className="font-semibold text-white text-sm mt-3 truncate">{a.name}</p>
+            <p className="text-[11px] text-rx-gray-medium truncate capitalize">{a.category}</p>
+            {a.relatedReasons?.length > 0 && (
+              <p className="text-[10px] text-rx-gray-medium/70 mt-1 truncate">{a.relatedReasons.slice(0, 2).join(' · ')}</p>
+            )}
+            <div className="flex items-center gap-1 mt-2">
+              <Star className="w-3 h-3 text-yellow-400 fill-yellow-400" />
+              <span className="text-[11px] text-rx-gray-medium">{a.rating || 0} ({a.reviewCount || 0})</span>
+            </div>
+          </Link>
+        ))}
+      </div>
     </div>
   );
 }
