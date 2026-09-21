@@ -113,6 +113,7 @@ columns), so back up before applying it.
 0006_devices_installations.sql       devices + app_installations
 0007_auth_sessions.sql               refresh-token sessions
 0008_packages_architecture.sql       UNIQUE(release, platform, architecture) + compat metadata
+0009_developer_platform.sql          Developer Platform (applications, orgs, team, roles, invitations, audit, threads)
 ```
 
 ### Migration numbering

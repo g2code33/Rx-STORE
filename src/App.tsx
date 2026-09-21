@@ -71,6 +71,13 @@ const Terms = lazy(() => import('./pages/Terms'));
 const Advertise = lazy(() => import('./pages/Advertise'));
 const Sponsor = lazy(() => import('./pages/Sponsor'));
 const GetApp = lazy(() => import('./pages/GetApp'));
+// Developer Platform (Phase 11)
+const DeveloperPortal = lazy(() => import('./pages/developers/DeveloperPortal'));
+const DeveloperApply = lazy(() => import('./pages/developers/DeveloperApply'));
+const DeveloperStatusPage = lazy(() => import('./pages/developers/DeveloperStatus'));
+const DeveloperCenter = lazy(() => import('./pages/developers/DeveloperCenter'));
+const InviteAccept = lazy(() => import('./pages/developers/InviteAccept'));
+const PublicDeveloperProfile = lazy(() => import('./pages/developers/PublicDeveloperProfile'));
 
 function LoadingFallback() {
   return (
@@ -183,6 +190,23 @@ export default function App() {
             <Route path="/get-app" element={<GetApp />} />
             <Route path="/sponsor/:token" element={<Sponsor />} />
             <Route path="/admin" element={<Admin />} />
+            {/* Developer Platform (Phase 11) */}
+            <Route path="/developers" element={<DeveloperPortal />} />
+            <Route path="/developers/apply" element={<DeveloperApply />} />
+            <Route path="/developers/status" element={<DeveloperStatusPage />} />
+            <Route path="/developers/invite" element={<InviteAccept />} />
+            {/* Developer Center — one component, sectioned by route */}
+            <Route path="/developers/center" element={<DeveloperCenter />} />
+            <Route path="/developers/apps" element={<DeveloperCenter />} />
+            <Route path="/developers/releases" element={<DeveloperCenter />} />
+            <Route path="/developers/submissions" element={<DeveloperCenter />} />
+            <Route path="/developers/analytics" element={<DeveloperCenter />} />
+            <Route path="/developers/reviews" element={<DeveloperCenter />} />
+            <Route path="/developers/team" element={<DeveloperCenter />} />
+            <Route path="/developers/messages" element={<DeveloperCenter />} />
+            <Route path="/developers/profile" element={<DeveloperCenter />} />
+            <Route path="/developers/settings" element={<DeveloperCenter />} />
+            <Route path="/developer/:id" element={<PublicDeveloperProfile />} />
           </Routes>
           </RouteErrorBoundary>
         </Suspense>

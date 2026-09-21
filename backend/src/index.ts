@@ -17,6 +17,7 @@ import { getAllContent, putContent, getContentHistory, revertContent } from './s
 import { trackAdEvent, getAdStats, createAdShare, listAdShares, revokeAdShare, getPublicShare } from './services/ads';
 import { updatesRoutes } from './routes/updates';
 import { devicesRoutes } from './routes/devices';
+import { developerRoutes, adminDeveloperRoutes } from './routes/developers';
 import { verifyAccessToken } from './services/auth';
 import { apiErrorBody, statusForCode, requestIdFor, redact, type ErrorCode } from './services/errors';
 import { selectPackage, buildManifest, normalizeChannel, defaultChannel } from './services/releases';
@@ -724,6 +725,80 @@ export default {
         return respond({ success: true, data }, 200, origin);
       } catch (e: any) {
         console.error(`[${requestId}] device op:`, redact(String(e?.message||e))); return fail('INTERNAL', 'Device operation failed. Please try again.');
+      }
+    }
+
+    // ---- Developer Platform (Phase 11) ----
+    // Public developer profile (no auth) — must precede the auth-required block.
+    if (path.startsWith('/developers/public/') && request.method === 'GET') {
+      const devId = decodeURIComponent(path.split('/')[3] || '');
+      const data = await developerRoutes.publicProfile(devId, env);
+      if ((data as any)?.error) return respond({ success: false, error: { code: 'NOT_FOUND', message: (data as any).error } }, 404, origin);
+      return respond({ success: true, data }, 200, origin);
+    }
+
+    if (path.startsWith('/developers')) {
+      const auth = request.headers.get('Authorization') || '';
+      let devUserId = '';
+      try { if (auth.startsWith('Bearer ')) devUserId = (await verifyAccessToken(auth.slice(7), env.JWT_SECRET))?.userId || ''; } catch {}
+      if (!devUserId) return respond({ success: false, error: { code: 'UNAUTHORIZED', message: 'Sign in required' } }, 401, origin);
+      (normalizedRequest as any).user = { userId: devUserId };
+      try {
+        let data: any;
+        const is = (p: string, m: string) => path === p && request.method === m;
+        if (is('/developers/me', 'GET')) data = await developerRoutes.getStatus(normalizedRequest as any, env);
+        else if (is('/developers/apply', 'POST') || is('/developers/application', 'PATCH')) data = await developerRoutes.saveApplication(normalizedRequest as any, env);
+        else if (is('/developers/application/submit', 'POST')) data = await developerRoutes.submitApplication(normalizedRequest as any, env);
+        else if (is('/developers/organization', 'GET')) data = await developerRoutes.getOrganization(normalizedRequest as any, env);
+        else if (is('/developers/profile', 'PATCH')) data = await developerRoutes.updateProfile(normalizedRequest as any, env);
+        else if (is('/developers/team', 'GET')) data = await developerRoutes.getTeam(normalizedRequest as any, env);
+        else if (is('/developers/team/invite', 'POST')) data = await developerRoutes.inviteMember(normalizedRequest as any, env);
+        else if (is('/developers/team/role', 'PATCH')) data = await developerRoutes.changeRole(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/team\/[^\/]+$/) && request.method === 'DELETE') data = await developerRoutes.removeMember(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/team\/invitations\/[^\/]+\/cancel$/) && request.method === 'POST') data = await developerRoutes.cancelInvitation(normalizedRequest as any, env);
+        else if (is('/developers/invitations/accept', 'POST')) data = await developerRoutes.acceptInvitation(normalizedRequest as any, env);
+        else if (is('/developers/audit', 'GET')) data = await developerRoutes.listAudit(normalizedRequest as any, env);
+        else if (is('/developers/communications', 'GET')) data = await developerRoutes.listThreads(normalizedRequest as any, env);
+        else if (is('/developers/communications/threads', 'POST')) data = await developerRoutes.createThread(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/communications\/[^\/]+$/) && request.method === 'GET') data = await developerRoutes.getThread(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/communications\/[^\/]+\/messages$/) && request.method === 'POST') data = await developerRoutes.sendMessage(normalizedRequest as any, env);
+        else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown developer route' } }, 404, origin);
+        if (data?.error) {
+          const code: ErrorCode = data.code === 'UNAUTHORIZED' ? 'AUTH_REQUIRED' : data.code === 'NOT_FOUND' ? 'NOT_FOUND' : data.code === 'FORBIDDEN' ? 'FORBIDDEN' : 'VALIDATION_ERROR';
+          return fail(code, String(data.error));
+        }
+        return respond({ success: true, data }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] developer op:`, redact(String(e?.message || e))); return fail('INTERNAL', 'Developer operation failed. Please try again.');
+      }
+    }
+
+    // ---- Admin: developer management (admin JWT already enforced for /admin/*) ----
+    if (path.startsWith('/admin/developers')) {
+      try {
+        let data: any;
+        const is = (p: string, m: string) => path === p && request.method === m;
+        if (is('/admin/developers/applications', 'GET')) data = await adminDeveloperRoutes.listApplications(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/applications\/[^\/]+$/) && request.method === 'GET') data = await adminDeveloperRoutes.getApplication(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/applications\/[^\/]+\/review$/) && request.method === 'POST') data = await adminDeveloperRoutes.startReview(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/applications\/[^\/]+\/approve$/) && request.method === 'POST') data = await adminDeveloperRoutes.approveApplication(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/applications\/[^\/]+\/reject$/) && request.method === 'POST') data = await adminDeveloperRoutes.rejectApplication(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/applications\/[^\/]+\/request-changes$/) && request.method === 'POST') data = await adminDeveloperRoutes.requestChanges(normalizedRequest as any, env);
+        else if (is('/admin/developers/communications', 'GET')) data = await adminDeveloperRoutes.adminListThreads(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/communications\/[^\/]+$/) && request.method === 'GET') data = await adminDeveloperRoutes.adminGetThread(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/communications\/[^\/]+\/messages$/) && request.method === 'POST') data = await adminDeveloperRoutes.adminSendMessage(normalizedRequest as any, env);
+        else if (is('/admin/developers', 'GET')) data = await adminDeveloperRoutes.listDevelopers(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/[^\/]+$/) && request.method === 'GET') data = await adminDeveloperRoutes.getDeveloper(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/[^\/]+\/suspend$/) && request.method === 'POST') data = await adminDeveloperRoutes.suspendDeveloper(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/developers\/[^\/]+\/reinstate$/) && request.method === 'POST') data = await adminDeveloperRoutes.reinstateDeveloper(normalizedRequest as any, env);
+        else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown admin developer route' } }, 404, origin);
+        if (data?.error) {
+          const code: ErrorCode = data.code === 'NOT_FOUND' ? 'NOT_FOUND' : data.code === 'FORBIDDEN' ? 'FORBIDDEN' : 'VALIDATION_ERROR';
+          return fail(code, String(data.error));
+        }
+        return respond({ success: true, data }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] admin developer op:`, redact(String(e?.message || e))); return fail('INTERNAL', 'Developer admin operation failed. Please try again.');
       }
     }
 

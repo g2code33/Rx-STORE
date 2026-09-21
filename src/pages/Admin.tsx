@@ -54,6 +54,7 @@ import AppReleaseManager from '../components/admin/AppReleaseManager';
 import ReleasesManager from '../components/admin/ReleasesManager';
 import UserRoleEditor from '../components/admin/UserRoleEditor';
 import RevenuePanel from '../components/admin/RevenuePanel';
+import DeveloperAdminPanel from '../components/admin/DeveloperAdminPanel';
 import AdminSettings from '../components/admin/AdminSettings';
 import RecycleBin from '../components/admin/RecycleBin';
 import { useAuth } from '../context/AuthContext';
@@ -469,14 +470,8 @@ export default function Admin() {
           {activeSection === 'icons' && (<div className="animate-fade-in"><IconManager /></div>)}
 
           {activeSection === 'developers' && (
-            <div className="space-y-6 animate-fade-in">
-              <div><h2 className="text-xl font-bold text-white">Developers</h2><p className="text-sm text-rx-gray-medium mt-1">Future developer portal — submissions will appear here for review.</p></div>
-              <div className="card p-8 text-center">
-                <div className="w-12 h-12 rounded-xl bg-rx-yellow/10 flex items-center justify-center mx-auto mb-3"><span className="text-2xl">👩‍💻</span></div>
-                <h3 className="font-semibold text-white">Developer Submissions</h3>
-                <p className="text-sm text-rx-gray-medium mt-1 max-w-md mx-auto">When you open to third-party developers, they will submit apps here: <b className="text-white">Submit → Validate → Review → Approve → Publish</b>. Your current <b>Releases</b> flow will be reused for approvals.</p>
-                <p className="text-xs text-rx-gray-medium mt-3">Current: managed via <b className="text-white">Applications → Edit</b> and <b className="text-white">Releases → Create</b> (admin-only).</p>
-              </div>
+            <div className="animate-fade-in">
+              <DeveloperAdminPanel />
             </div>
           )}
           {activeSection === 'analytics' && (

@@ -1,10 +1,12 @@
 import React from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Github, Twitter, Linkedin, Mail, Heart } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { getPublicSettings } from '../../services/api';
 import { useContent } from '../../context/ContentContext';
 import Editable from '../edit/Editable';
+import { useAuth } from '../../context/AuthContext';
+import { useDeveloperStatus, developerDestination } from '../../pages/developers/useDeveloperStatus';
 
 const DEFAULT_PLATFORM_LINKS = [
   { label: 'Get the App', to: '/get-app' },
@@ -34,10 +36,21 @@ export default function Footer() {
   const [settings, setSettings] = React.useState<Record<string, string>>({});
   React.useEffect(() => { getPublicSettings().then(setSettings); }, []);
   const { get, getJSON } = useContent();
+  const { user } = useAuth();
+  const { status: devStatus } = useDeveloperStatus();
+  const navigate = useNavigate();
   const platformName = settings.platform_name || 'RX Store';
   const supportEmail = settings.support_email || 'support@rxstore.com';
   const platformLinks = getJSON('footer.platformLinks', DEFAULT_PLATFORM_LINKS);
   const companyLinks = getJSON('footer.companyLinks', DEFAULT_COMPANY_LINKS);
+
+  // Intelligent developer destinations (Phase 11 §14): signed out -> portal
+  // info, not a developer -> apply, pending -> status, approved -> Center,
+  // suspended -> restricted status view.
+  const submitAnApp = () => {
+    if (!user) { navigate('/developers'); return; }
+    navigate(developerDestination(devStatus?.status));
+  };
 
   return (
     <footer className="bg-rx-dark border-t border-white/5">
@@ -93,11 +106,21 @@ export default function Footer() {
             </Editable>
           </div>
 
-          {/* Developers — not launched yet */}
+          {/* Developers */}
           <div>
             <h3 className="text-sm font-semibold text-white mb-4 uppercase tracking-wider">Developers</h3>
             <ul className="space-y-3">
-              {['Developer Portal', 'API Documentation', 'Submit an App', 'SDK Downloads', 'Community Forum'].map((item) => (
+              <li>
+                <Link to="/developers" className="text-sm text-rx-gray-medium/70 hover:text-rx-yellow transition-colors">
+                  Developer Portal
+                </Link>
+              </li>
+              <li>
+                <button onClick={submitAnApp} className="text-sm text-rx-gray-medium/70 hover:text-rx-yellow transition-colors text-left">
+                  Submit an App
+                </button>
+              </li>
+              {['API Documentation', 'SDK Downloads', 'Community Forum'].map((item) => (
                 <li key={item}>
                   <button
                     onClick={() => toast(`${item} — coming soon 🚧`, { icon: '🛠️' })}

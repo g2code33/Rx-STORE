@@ -330,6 +330,109 @@ export const api = {
       return request<{ installations: any[] }>('/devices/installations', { method: 'GET' });
     },
   },
+
+  // ---- Developer Platform (Phase 11) ----
+  developers: {
+    /** One call for routing: application status + org summary + role. */
+    async status() {
+      return request<{ status: string; application: any; developer: any }>('/developers/me', { method: 'GET' });
+    },
+    /** Create/update the application draft. */
+    async saveApplication(body: Record<string, unknown>) {
+      return request<{ application: { id: string; status: string } }>('/developers/apply', { method: 'POST', body: JSON.stringify(body) });
+    },
+    async submitApplication() {
+      return request<{ application: { id: string; status: string } }>('/developers/application/submit', { method: 'POST', body: '{}' });
+    },
+    /** Organization + real marketplace data (apps, releases, reviews, stats). */
+    async organization() {
+      return request<{ organization: any; apps: any[]; releases: any[]; reviews: any[]; stats: any }>('/developers/organization', { method: 'GET' });
+    },
+    async updateProfile(body: Record<string, unknown>) {
+      return request<{ success: boolean }>('/developers/profile', { method: 'PATCH', body: JSON.stringify(body) });
+    },
+    async team() {
+      return request<{ role: string; permissions: string[]; members: any[]; invitations: any[] }>('/developers/team', { method: 'GET' });
+    },
+    /** Returns inviteToken exactly once — only its hash is stored server-side. */
+    async inviteMember(body: { email: string; role: string }) {
+      return request<{ invitation: any; inviteToken: string }>('/developers/team/invite', { method: 'POST', body: JSON.stringify(body) });
+    },
+    async changeRole(userId: string, role: string) {
+      return request<{ success: boolean }>('/developers/team/role', { method: 'PATCH', body: JSON.stringify({ userId, role }) });
+    },
+    async removeMember(userId: string) {
+      return request<{ success: boolean }>(`/developers/team/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+    },
+    async cancelInvitation(invitationId: string) {
+      return request<{ success: boolean }>(`/developers/team/invitations/${encodeURIComponent(invitationId)}/cancel`, { method: 'POST' });
+    },
+    async acceptInvitation(token: string) {
+      return request<{ success: boolean; developerId: string; role: string }>('/developers/invitations/accept', { method: 'POST', body: JSON.stringify({ token }) });
+    },
+    async audit() {
+      return request<{ events: any[] }>('/developers/audit', { method: 'GET' });
+    },
+    async threads() {
+      return request<{ threads: any[] }>('/developers/communications', { method: 'GET' });
+    },
+    async createThread(body: { subject: string; message: string; relatedAppId?: string }) {
+      return request<{ thread: any }>('/developers/communications/threads', { method: 'POST', body: JSON.stringify(body) });
+    },
+    async thread(threadId: string) {
+      return request<{ thread: any; messages: any[] }>(`/developers/communications/${encodeURIComponent(threadId)}`, { method: 'GET' });
+    },
+    async sendMessage(threadId: string, message: string) {
+      return request<{ success: boolean }>(`/developers/communications/${encodeURIComponent(threadId)}/messages`, { method: 'POST', body: JSON.stringify({ message }) });
+    },
+    /** PUBLIC developer profile (no auth needed at the HTTP level). */
+    async publicProfile(developerId: string) {
+      return request<{ developer: any; apps: any[] }>(`/developers/public/${encodeURIComponent(developerId)}`, { method: 'GET', auth: false });
+    },
+
+    // ---- Admin (admin token required) ----
+    admin: {
+      async applications(status?: string) {
+        return request<{ applications: any[] }>(`/admin/developers/applications${status ? `?status=${encodeURIComponent(status)}` : ''}`, { method: 'GET' });
+      },
+      async application(id: string) {
+        return request<{ application: any; organization: any }>(`/admin/developers/applications/${encodeURIComponent(id)}`, { method: 'GET' });
+      },
+      async startReview(id: string) {
+        return request<any>(`/admin/developers/applications/${encodeURIComponent(id)}/review`, { method: 'POST', body: '{}' });
+      },
+      async approve(id: string) {
+        return request<any>(`/admin/developers/applications/${encodeURIComponent(id)}/approve`, { method: 'POST', body: '{}' });
+      },
+      async reject(id: string, reason: string) {
+        return request<any>(`/admin/developers/applications/${encodeURIComponent(id)}/reject`, { method: 'POST', body: JSON.stringify({ reason }) });
+      },
+      async requestChanges(id: string, reason: string) {
+        return request<any>(`/admin/developers/applications/${encodeURIComponent(id)}/request-changes`, { method: 'POST', body: JSON.stringify({ reason }) });
+      },
+      async developers() {
+        return request<{ developers: any[] }>('/admin/developers', { method: 'GET' });
+      },
+      async developer(id: string) {
+        return request<{ developer: any }>(`/admin/developers/${encodeURIComponent(id)}`, { method: 'GET' });
+      },
+      async suspend(id: string, reason: string) {
+        return request<any>(`/admin/developers/${encodeURIComponent(id)}/suspend`, { method: 'POST', body: JSON.stringify({ reason }) });
+      },
+      async reinstate(id: string) {
+        return request<any>(`/admin/developers/${encodeURIComponent(id)}/reinstate`, { method: 'POST', body: '{}' });
+      },
+      async threads() {
+        return request<{ threads: any[] }>('/admin/developers/communications', { method: 'GET' });
+      },
+      async thread(threadId: string) {
+        return request<{ thread: any; messages: any[] }>(`/admin/developers/communications/${encodeURIComponent(threadId)}`, { method: 'GET' });
+      },
+      async sendMessage(threadId: string, message: string) {
+        return request<{ success: boolean }>(`/admin/developers/communications/${encodeURIComponent(threadId)}/messages`, { method: 'POST', body: JSON.stringify({ message }) });
+      },
+    },
+  },
 };
 
 export { API_URL };
