@@ -6,11 +6,11 @@
  * they never build conflicting states themselves.
  */
 import { useCallback, useMemo } from 'react';
-import type { App } from '../types';
-import { useInstallTransaction } from './useInstallTransaction';
-import { useInstalledState } from '../platform/nativeDetection';
-import { installButtonFor, type InstallButton } from './installUi';
-import { mapDetectionToInstall } from '../platform/detect';
+import type { App } from '../types/index.ts';
+import { useInstallTransaction } from './useInstallTransaction.ts';
+import { useInstalledState } from '../platform/nativeDetection.ts';
+import { installButtonFor, type InstallButton } from './installUi.ts';
+import { mapDetectionToInstall } from '../platform/detect.ts';
 
 export interface UseInstallButtonResult {
   /** The exact button state/label/action to render. */

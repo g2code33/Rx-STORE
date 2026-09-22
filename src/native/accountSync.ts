@@ -8,10 +8,10 @@
  * All calls are best-effort and never block/break the UI when offline. The
  * detail of "current device vs other devices" is resolved by detect.ts.
  */
-import { api, isApiConfigured } from '../services/api';
-import { buildDeviceRecord, getDeviceId, getRuntimePlatform } from './deviceIdentity';
-import { installStatusForReport, type InstallState } from '../platform/detect';
-import type { AppInstallation, Device } from '../types/device';
+import { api, isApiConfigured } from '../services/api.ts';
+import { buildDeviceRecord, getDeviceId, getRuntimePlatform } from './deviceIdentity.ts';
+import { installStatusForReport, type InstallState } from '../platform/detect.ts';
+import type { AppInstallation, Device } from '../types/device.ts';
 import { enqueue, flush, pendingCount, type SyncItem } from './syncQueue.ts';
 import { isOnline } from './connectivity.ts';
 import { log, recordMetric, reportFailure } from './logger.ts';

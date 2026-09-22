@@ -11,8 +11,8 @@
  * GET / OPEN / UPDATE; the transaction state overrides with transient progress;
  * backend "other device" info is only ever a secondary hint.
  */
-import type { TransactionState } from './installTransaction';
-import type { InstallState } from '../platform/detect';
+import type { TransactionState } from './installTransaction.ts';
+import type { InstallState } from '../platform/detect.ts';
 
 /** The normalized action/button states the UI renders. */
 export type InstallButtonState =

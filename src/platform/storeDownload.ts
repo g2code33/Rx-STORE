@@ -1,6 +1,6 @@
 import toast from 'react-hot-toast';
-import { API_URL, isApiConfigured } from '../services/api';
-import { DownloadOption, SELF_APP_SLUG, storeDownloadPath } from './downloads';
+import { API_URL, isApiConfigured } from '../services/api.ts';
+import { DownloadOption, SELF_APP_SLUG, storeDownloadPath } from './downloads.ts';
 
 /**
  * Download a platform build of the RX Store app — served by the STORE ITSELF.

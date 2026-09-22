@@ -3,11 +3,11 @@
  * reconcile-aware uninstall (re-detect before reporting, never assume success).
  */
 import { useCallback, useMemo } from 'react';
-import type { App } from '../types';
-import { getNativeRuntime, type NativeRuntime } from './runtime';
-import { reportCurrentInstallation } from './accountSync';
-import { getRuntimePlatform } from './deviceIdentity';
-import { invalidateDetectionCache } from '../platform/nativeDetection';
+import type { App } from '../types/index.ts';
+import { getNativeRuntime, type NativeRuntime } from './runtime.ts';
+import { reportCurrentInstallation } from './accountSync.ts';
+import { getRuntimePlatform } from './deviceIdentity.ts';
+import { invalidateDetectionCache } from '../platform/nativeDetection.ts';
 
 export interface UseNativeRuntimeResult {
   runtime: NativeRuntime;

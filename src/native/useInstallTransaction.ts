@@ -7,19 +7,13 @@
  * reports.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { App } from '../types';
-import { InstallCoordinator, type PackageResolution } from './installCoordinator';
-import {
-  TransactionResult,
-  TransactionState,
-  TransactionProgress,
-  createTransaction,
-  describeTransaction,
-  isFailed,
-} from './installTransaction.ts';
+import type { App } from '../types/index.ts';
+import { InstallCoordinator, type PackageResolution } from './installCoordinator.ts';
+import { createTransaction, describeTransaction, isFailed } from './installTransaction.ts';
+import type { TransactionProgress, TransactionResult, TransactionState } from './installTransaction.ts';;
 import { loadAttempt, decideRecovery, clearAttempt, phaseNeedsRecovery } from './transactionRecovery.ts';
-import { detectInstalledApp } from '../platform/nativeDetection';
-import { reportCurrentInstallation } from './accountSync';
+import { detectInstalledApp } from '../platform/nativeDetection.ts';
+import { reportCurrentInstallation } from './accountSync.ts';
 
 export interface InstallTransactionApi {
   tx: TransactionResult;

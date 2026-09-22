@@ -7,6 +7,7 @@ import { useContent } from '../context/ContentContext';
 import Editable from '../components/edit/Editable';
 import { useCategories } from '../hooks/useCategories';
 import WelcomeIntro from '../components/home/WelcomeIntro';
+import FirstLaunch from '../components/library/FirstLaunch';
 import PageBlocks from '../components/edit/PageBlocks';
 import PlatformIcon from '../icons/PlatformIcon';
 import { getPublicSettings, api, isApiConfigured } from '../services/api';
@@ -229,6 +230,9 @@ export default function Home() {
     <div className="min-h-screen">
       {/* Header-logo-only 3-second welcome/ad canvas; normal Home opens at apps. */}
       <WelcomeIntro />
+      {/* First-launch restore: "Your apps, ready to go" (once per user+device,
+          only when there is something real to restore; nothing auto-installs). */}
+      <FirstLaunch />
       {/* Ecosystem Apps — visible immediately, with platform quick-filters */}
       {/* Alias anchor: builder-saved buttons pointing at /#docs land here */}
       <span id="docs" aria-hidden className="block scroll-mt-20" />

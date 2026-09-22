@@ -10,21 +10,19 @@
  * update / manual refresh so we don't hammer the OS in every render.
  */
 import { useEffect, useState, useCallback } from 'react';
-import type { App } from '../types';
+import type { App } from '../types/index.ts';
+import type { DetectedPlatform, DetectionState, InstalledApp } from './detect.ts';
 import {
-  DetectedPlatform,
-  DetectionState,
-  InstalledApp,
   normalizeInstalledApp,
   stateForDetection,
-} from './detect';
+} from './detect.ts';
 import {
   androidIsInstalled,
   desktopDetect,
   desktopInvalidateDetect,
   isAndroidShell,
   isDesktopShell,
-} from './nativeInstaller';
+} from './nativeInstaller.ts';
 
 /** How long a detection result is considered fresh (ms). */
 export const DETECTION_TTL_MS = 60_000;
@@ -116,7 +114,7 @@ export async function detectInstalledApp(app: App): Promise<InstalledApp | null>
 export type { InstalledApp, DetectionState };
 
 /** Coerce a raw native result into a normalized model (unit-test friendly). */
-export { normalizeInstalledApp, stateForDetection, detectionState, compareVersions } from './detect';
+export { normalizeInstalledApp, stateForDetection, detectionState, compareVersions } from './detect.ts';
 
 /**
  * Reactive installed state for a single app. Web/PWA degrades to

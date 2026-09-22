@@ -8,7 +8,8 @@
 
 import { log, recordMetric } from '../native/logger.ts';
 
-const API_URL = import.meta.env.VITE_API_URL?.replace(/\/$/, '') || '';
+// import.meta.env exists in Vite builds; guard for non-bundler runtimes (Node tests).
+const API_URL = ((import.meta as any).env?.VITE_API_URL || '').replace(/\/$/, '');
 
 function getToken(): string | null {
   return localStorage.getItem('rx-store-token');
@@ -329,6 +330,11 @@ export const api = {
     /** List the user's installations across all their devices. */
     async listInstallations() {
       return request<{ installations: any[] }>('/devices/installations', { method: 'GET' });
+    },
+
+    /** The user's REAL download history (Phase 16 — honest "most used" data). */
+    async appHistory() {
+      return request<{ history: Array<{ appId: string; appSlug: string; appName: string; downloads: number; lastDownloadAt?: string }> }>('/users/me/app-history', { method: 'GET' });
     },
   },
 

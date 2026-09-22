@@ -726,6 +726,38 @@ export default {
         return respond({ success:true, data:{ user:{ id:user.id, name:user.name, email:user.email, phone:user.phone, avatar:user.avatar_url||'👤', role:user.role, joinDate:(user.created_at||'').slice(0,10), preferences:parsedPreferences }}},200,origin);
       } catch (e:any) { console.error(`[${requestId}] profile update:`, redact(String(e?.message||e))); return fail('VALIDATION_ERROR', 'Unable to save profile. Please check your details and try again.'); }
     }
+    // ---- App usage history (Phase 16) — the signed-in user's REAL download
+    // records, used by Library/first-launch for honest "most used" ordering.
+    // Never fabricates usage: only rows that exist in the downloads ledger.
+    if (path === '/users/me/app-history' && request.method === 'GET') {
+      const auth = request.headers.get('Authorization') || '';
+      const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+      if (!token) return respond({ success: false, error: { code: 'UNAUTHORIZED', message: 'No token' } }, 401, origin);
+      try {
+        const payload = await verifyAccessToken(token, env.JWT_SECRET);
+        const userId = payload.userId;
+        const rows: any = await env.DB.prepare(
+          `SELECT d.app_id, a.slug, a.name, COUNT(*) AS downloads, MAX(d.created_at) AS last_download_at
+           FROM downloads d JOIN applications a ON a.id = d.app_id
+           WHERE d.user_id = ? AND d.user_id IS NOT NULL AND d.user_id != ''
+           GROUP BY d.app_id, a.slug, a.name
+           ORDER BY downloads DESC, last_download_at DESC LIMIT 100`
+        ).bind(userId).all().catch(() => ({ results: [] }));
+        return respond({
+          success: true,
+          data: {
+            history: (rows?.results || []).map((r: any) => ({
+              appId: r.app_id, appSlug: r.slug, appName: r.name,
+              downloads: Number(r.downloads) || 0, lastDownloadAt: r.last_download_at,
+            })),
+          },
+        }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] app-history:`, redact(String(e?.message || e)));
+        return fail('INTERNAL', 'Could not load your app history.');
+      }
+    }
+
     if (path === '/users/me' && request.method === 'GET') {
       const auth = request.headers.get('Authorization') || '';
       const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';

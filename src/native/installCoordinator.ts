@@ -18,21 +18,16 @@
  * honest about platform capabilities. The UI consumes the transaction store,
  * not ad-hoc per-component state.
  */
-import type { App } from '../types';
-import {
-  TransactionState,
-  TransactionResult,
-  TransactionProgress,
-  createTransaction,
-  transition,
-} from './installTransaction';
-import type { PackageMetadata, VerificationResult } from './verify';
-import { verifyArtifactHash, compareSemver, sha256Hex } from './verify';
-import { getNativeRuntime, type NativeRuntime } from './runtime';
-import { reportCurrentInstallation } from './accountSync';
-import { getRuntimePlatform } from './deviceIdentity';
-import { invalidateDetectionCache } from '../platform/nativeDetection';
-import { isAndroidShell, isDesktopShell } from '../platform/nativeInstaller';
+import type { App } from '../types/index.ts';
+import { createTransaction, transition } from './installTransaction.ts';
+import type { TransactionProgress, TransactionResult, TransactionState } from './installTransaction.ts';;
+import type { PackageMetadata, VerificationResult } from './verify.ts';
+import { verifyArtifactHash, compareSemver, sha256Hex } from './verify.ts';
+import { getNativeRuntime, type NativeRuntime } from './runtime.ts';
+import { reportCurrentInstallation } from './accountSync.ts';
+import { getRuntimePlatform } from './deviceIdentity.ts';
+import { invalidateDetectionCache } from '../platform/nativeDetection.ts';
+import { isAndroidShell, isDesktopShell } from '../platform/nativeInstaller.ts';
 import { saveAttempt, clearAttempt, type PersistedPhase } from './transactionRecovery.ts';
 import { log, recordMetric, reportFailure } from './logger.ts';
 
@@ -88,7 +83,7 @@ async function defaultDownload(
   // reported on the 'complete' event). We rely on post-install detection to
   // confirm the real installed package/version.
   if (isAndroidShell()) {
-    const { androidDownloadAndInstall, androidOnDownloadProgress } = await import('../platform/nativeInstaller');
+    const { androidDownloadAndInstall, androidOnDownloadProgress } = await import('../platform/nativeInstaller.ts');
     const handle = await androidOnDownloadProgress((d) => {
       onProgress({ received: d.receivedBytes, total: d.totalBytes, percent: d.percent });
       if (d.status === 'complete') {

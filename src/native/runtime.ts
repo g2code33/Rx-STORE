@@ -17,23 +17,16 @@
  * fed an `App` and a wallet of platform operations; it decides the current
  * device's install state via the pure detectors in detect.ts.
  */
-import type { App } from '../types';
-import {
-  DetectionState,
-  InstallOperation,
-  InstalledApp,
-  currentDeviceInstallState,
-  detectionState,
-  resolveDeviceView,
-  stateForDetection,
-  type InstallState,
-} from '../platform/detect';
+import type { App } from '../types/index.ts';
+import { currentDeviceInstallState, detectionState, resolveDeviceView, stateForDetection, type InstallState } from '../platform/detect.ts';
+import type { InstallOperation } from '../platform/detect.ts';;
+import type { DetectionState, InstalledApp } from '../platform/detect.ts';;
 import {
   detectInstalledApp,
   invalidateDetectionCache,
   refreshInstalledApps,
   isDetectionAvailable,
-} from '../platform/nativeDetection';
+} from '../platform/nativeDetection.ts';
 import {
   androidDownloadAndInstall,
   androidIsInstalled,
@@ -47,8 +40,8 @@ import {
   isAndroidShell,
   isDesktopShell,
   type NativePackageState,
-} from '../platform/nativeInstaller';
-import { buildDeviceRecord, getDeviceId, getRuntimePlatform } from './deviceIdentity';
+} from '../platform/nativeInstaller.ts';
+import { buildDeviceRecord, getDeviceId, getRuntimePlatform } from './deviceIdentity.ts';
 
 export type { NativePackageState, InstallState, InstalledApp, DetectionState, InstallOperation };
 
