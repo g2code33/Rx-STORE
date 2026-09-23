@@ -21,6 +21,7 @@ import { developerRoutes, adminDeveloperRoutes } from './routes/developers';
 import { developerAppRoutes, adminDeveloperAppRoutes } from './routes/developerApps';
 import { securityAdminRoutes } from './routes/securityAdmin';
 import { developerSubmissionRoutes, adminSubmissionRoutes } from './routes/submissions';
+import { reviewRoutes, developerReviewRoutes, adminReviewRoutes } from './routes/reviews';
 import { storefrontRoutes, adminStorefrontRoutes, adminStorefrontAppSearch } from './routes/storefront';
 import { r2KeyIsPubliclyServed } from './services/packageSecurity';
 import { verifyAccessToken } from './services/auth';
@@ -595,11 +596,36 @@ export default {
       return respond({ success: true, data }, 200, origin);
     }
 
+    // ---- Review reporting (Phase 17) ----
+    if (path.match(/^\/reviews\/[^\/]+\/report$/) && request.method === 'POST') {
+      const auth = request.headers.get('Authorization') || '';
+      let repUserId = '';
+      try { if (auth.startsWith('Bearer ')) repUserId = (await verifyAccessToken(auth.slice(7), env.JWT_SECRET))?.userId || ''; } catch {}
+      if (!repUserId) return respond({ success: false, error: { code: 'UNAUTHORIZED', message: 'Sign in to report a review' } }, 401, origin);
+      (normalizedRequest as any).user = { userId: repUserId };
+      try {
+        const data = await reviewRoutes.report(normalizedRequest as any, env);
+        if ((data as any)?.error) {
+          const code: ErrorCode = (data as any).code === 'NOT_FOUND' ? 'NOT_FOUND' : (data as any).code === 'UNAUTHORIZED' ? 'AUTH_REQUIRED' : 'VALIDATION_ERROR';
+          return fail(code, String((data as any).error));
+        }
+        return respond({ success: true, data }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] review report:`, redact(String(e?.message || e))); return fail('INTERNAL', 'Could not file the report. Please try again.');
+      }
+    }
+
     if (path.startsWith('/apps/') && (request.method === 'GET' || request.method === 'POST')) {
       try {
         if (path.endsWith('/reviews')) {
-          const data = await appsRoutes.reviews(normalizedRequest as any, env);
-          if ((data as any)?.error) return respond({ success: false, error: { code: 'ERROR', message: String((data as any).error) } }, 400, origin);
+          // Phase 17: reviews list (summary + pagination) / submit (create or edit).
+          const data = request.method === 'POST'
+            ? await reviewRoutes.submit(normalizedRequest as any, env)
+            : await reviewRoutes.list(normalizedRequest as any, env);
+          if ((data as any)?.error) {
+            const code: ErrorCode = (data as any).code === 'UNAUTHORIZED' ? 'AUTH_REQUIRED' : (data as any).code === 'NOT_FOUND' ? 'NOT_FOUND' : (data as any).code === 'RATE_LIMITED' ? 'RATE_LIMITED' : (data as any).code === 'FORBIDDEN' ? 'FORBIDDEN' : 'VALIDATION_ERROR';
+            return fail(code, String((data as any).error));
+          }
           return respond({ success: true, data }, 200, origin);
         }
         if (request.method === 'GET') {
@@ -847,6 +873,8 @@ export default {
         else if (path.match(/^\/developers\/releases\/[^\/]+$/) && request.method === 'GET') data = await developerAppRoutes.getRelease(normalizedRequest as any, env);
         else if (path.match(/^\/developers\/releases\/[^\/]+$/) && request.method === 'PATCH') data = await developerAppRoutes.updateRelease(normalizedRequest as any, env);
         else if (path.match(/^\/developers\/security\/packages\/[^\/]+$/) && request.method === 'GET') data = await developerAppRoutes.getPackageSecurity(normalizedRequest as any, env);
+        // Phase 17 — developer review responses
+        else if (path.match(/^\/developers\/reviews\/[^\/]+\/respond$/) && request.method === 'POST') data = await developerReviewRoutes.respond(normalizedRequest as any, env);
         // Phase 14 — submissions + private attachments
         else if (is('/developers/submissions', 'GET')) data = await developerSubmissionRoutes.list(normalizedRequest as any, env);
         else if (path.match(/^\/developers\/submissions\/[^\/]+$/) && request.method === 'GET') data = await developerSubmissionRoutes.get(normalizedRequest as any, env);
@@ -910,6 +938,24 @@ export default {
         return respond({ success: true, data }, 200, origin);
       } catch (e: any) {
         console.error(`[${requestId}] submission op:`, redact(String(e?.message || e))); return fail('INTERNAL', 'Submission operation failed. Please try again.');
+      }
+    }
+
+    // ---- Admin: review moderation (Phase 17; admin JWT enforced for /admin/*) ----
+    if (path.startsWith('/admin/reviews')) {
+      try {
+        let data: any;
+        if (path === '/admin/reviews/reports' && request.method === 'GET') data = await adminReviewRoutes.listReports(normalizedRequest as any, env);
+        else if (path === '/admin/reviews' && request.method === 'GET') data = await adminReviewRoutes.listReviews(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/reviews\/[^\/]+\/moderate$/) && request.method === 'POST') data = await adminReviewRoutes.moderate(normalizedRequest as any, env);
+        else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown review admin route' } }, 404, origin);
+        if (data?.error) {
+          const code: ErrorCode = data.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'VALIDATION_ERROR';
+          return fail(code, String(data.error));
+        }
+        return respond({ success: true, data }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] review moderation:`, redact(String(e?.message || e))); return fail('INTERNAL', 'Moderation failed. Please try again.');
       }
     }
 

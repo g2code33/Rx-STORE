@@ -150,8 +150,38 @@ CREATE TABLE IF NOT EXISTS reviews (
   helpful_count INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
+  -- Phase 17: title/body metadata, factual evidence marker, moderation
+  -- state (rows are NEVER deleted — hidden/removed are statuses), developer
+  -- responses (attributable).
+  title TEXT,
+  app_version TEXT,
+  platform TEXT,
+  verified_install INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'visible',
+  moderation_reason TEXT,
+  moderated_at TEXT,
+  moderated_by TEXT,
+  developer_response TEXT,
+  developer_responded_at TEXT,
+  developer_responder_id TEXT,
   UNIQUE(app_id, user_id)
 );
+CREATE INDEX IF NOT EXISTS idx_reviews_app_status ON reviews(app_id, status);
+CREATE INDEX IF NOT EXISTS idx_reviews_user ON reviews(user_id);
+CREATE TABLE IF NOT EXISTS review_reports (
+  id TEXT PRIMARY KEY,
+  review_id TEXT NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+  reporter_user_id TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (reason IN ('spam','harassment','irrelevant','fraudulent','malicious_content','other')),
+  details TEXT,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved','dismissed')),
+  resolved_by TEXT,
+  resolved_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(review_id, reporter_user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_review_reports_review ON review_reports(review_id);
+CREATE INDEX IF NOT EXISTS idx_review_reports_status ON review_reports(status);
 
 CREATE TABLE IF NOT EXISTS payments (
   id TEXT PRIMARY KEY,

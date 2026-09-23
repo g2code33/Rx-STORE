@@ -519,6 +519,11 @@ export const api = {
       },
     },
 
+    // ---- Review responses (Phase 17) ----
+    async respondToReview(reviewId: string, response: string) {
+      return request<{ success: boolean }>(`/developers/reviews/${encodeURIComponent(reviewId)}/respond`, { method: 'POST', body: JSON.stringify({ response }) });
+    },
+
     // ---- Package security (Phase 13) ----
     security: {
       async packages(filter?: { state?: string; overall?: string }) {
@@ -540,6 +545,20 @@ export const api = {
     },
   },
 
+  // Ratings & reviews (Phase 17)
+  reviews: {
+    async list(slug: string, page = 1, limit = 10) {
+      return request<{ reviews: any[]; summary: any; pagination: any }>(`/apps/${encodeURIComponent(slug)}/reviews?page=${page}&limit=${limit}`, { method: 'GET', auth: false });
+    },
+    /** Create or edit the caller's single review for the app. */
+    async submit(slug: string, body: { rating: number; title?: string; comment: string; platform?: string }) {
+      return request<{ review: any; edited: boolean }>(`/apps/${encodeURIComponent(slug)}/reviews`, { method: 'POST', body: JSON.stringify(body) });
+    },
+    async report(reviewId: string, reason: string, details?: string) {
+      return request<{ report: any }>(`/reviews/${encodeURIComponent(reviewId)}/report`, { method: 'POST', body: JSON.stringify({ reason, details }) });
+    },
+  },
+
   // Developer-side package security (Phase 13 §13)
   developerSecurity: {
     async package(packageId: string) {
@@ -554,6 +573,19 @@ export const api = {
     },
     async related(slug: string) {
       return request<{ apps: any[] }>(`/apps/related/${encodeURIComponent(slug)}`, { method: 'GET', auth: false });
+    },
+  },
+
+  // Admin review moderation (Phase 17)
+  adminReviews: {
+    async reports(status = 'open') {
+      return request<{ reports: any[] }>(`/admin/reviews/reports?status=${encodeURIComponent(status)}`, { method: 'GET' });
+    },
+    async reviews(status?: string) {
+      return request<{ reviews: any[] }>(`/admin/reviews${status ? `?status=${encodeURIComponent(status)}` : ''}`, { method: 'GET' });
+    },
+    async moderate(reviewId: string, action: 'hide' | 'restore' | 'remove', reason: string) {
+      return request<any>(`/admin/reviews/${encodeURIComponent(reviewId)}/moderate`, { method: 'POST', body: JSON.stringify({ action, reason }) });
     },
   },
 

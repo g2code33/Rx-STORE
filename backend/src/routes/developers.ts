@@ -316,9 +316,9 @@ export const developerRoutes = {
        WHERE a.developer_org_id=? ORDER BY r.created_at DESC LIMIT 20`
     ).bind(ms.developer.id).all().catch(() => ({ results: [] }));
     const reviews: any = await env.DB.prepare(
-      `SELECT rv.id, rv.rating, rv.comment, rv.created_at, a.slug AS app_slug, a.name AS app_name
+      `SELECT rv.id, rv.rating, rv.title, rv.comment, rv.developer_response, rv.created_at, a.slug AS app_slug, a.name AS app_name
        FROM reviews rv JOIN applications a ON a.id = rv.app_id
-       WHERE a.developer_org_id=? ORDER BY rv.created_at DESC LIMIT 10`
+       WHERE a.developer_org_id=? AND rv.status='visible' ORDER BY rv.created_at DESC LIMIT 20`
     ).bind(ms.developer.id).all().catch(() => ({ results: [] }));
 
     const appRows = apps?.results || [];

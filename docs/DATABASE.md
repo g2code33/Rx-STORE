@@ -118,6 +118,7 @@ columns), so back up before applying it.
 0011_package_security.sql            Package security pipeline (packages state machine + results + overrides tables)
 0012_submissions_review.sql           Submission review lifecycle + events + private thread attachments
 0013_storefront.sql                  Storefront curation (featured placements) + app detail metadata columns
+0014_ratings_reviews.sql             Reviews: titles, moderation states, developer responses, reports table
 ```
 
 ### Migration numbering

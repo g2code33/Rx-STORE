@@ -139,7 +139,7 @@ export default function DeveloperCenter() {
               {section === 'releases' && <Releases org={org} />}
               {section === 'submissions' && <Submissions />}
               {section === 'analytics' && <Analytics org={org} />}
-              {section === 'reviews' && <Reviews org={org} />}
+              {section === 'reviews' && <Reviews org={org} onChanged={refresh} />}
               {section === 'team' && <Team org={org} onChanged={refresh} />}
               {section === 'messages' && <Communications />}
               {section === 'profile' && <PublicProfile org={org} onChanged={refresh} />}
@@ -306,22 +306,64 @@ function Analytics({ org }: { org: any }) {
   );
 }
 
-function Reviews({ org }: { org: any }) {
+function Reviews({ org, onChanged }: { org: any; onChanged: () => void }) {
   const reviews = org.reviews || [];
+  const canRespond = (org?.organization?.permissions || []).includes('reviews.manage');
+  const [responding, setResponding] = useState<string | null>(null);
+  const [responseText, setResponseText] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const respond = async (reviewId: string) => {
+    if (responseText.trim().length < 3) { toast.error('Write a response of at least 3 characters'); return; }
+    setBusy(true);
+    try {
+      await api.developers.respondToReview(reviewId, responseText.trim());
+      toast.success('Response published — it appears under the review, labelled as from your organization');
+      setResponding(null); setResponseText('');
+      onChanged();
+    } catch (e: any) { toast.error(e?.message || 'Could not respond'); }
+    setBusy(false);
+  };
+
   return (
-    <Section title="Reviews" desc="What users say about your applications (reviews.manage).">
+    <Section title="Reviews" desc="What users say about your applications — respond as your organization (reviews.manage).">
       {reviews.length === 0 ? (
         <Empty icon={Star} title="No reviews yet" desc="User reviews for your published apps appear here." />
       ) : (
         <div className="card divide-y divide-white/5">
           {reviews.map((r: any) => (
             <div key={r.id} className="p-4">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-rx-yellow text-sm">{'★'.repeat(r.rating || 0)}<span className="text-rx-gray-medium/40">{'★'.repeat(5 - (r.rating || 0))}</span></span>
                 <span className="text-xs text-white truncate">{r.app_name}</span>
                 <span className="text-[11px] text-rx-gray-medium ml-auto">{formatDate(r.created_at)}</span>
               </div>
+              {r.title && <p className="text-sm font-semibold text-white mt-1.5">{r.title}</p>}
               {r.comment && <p className="text-sm text-rx-gray-medium mt-1.5">{r.comment}</p>}
+              {r.developer_response && (
+                <div className="mt-2 p-2.5 rounded-lg bg-rx-yellow/5 border border-rx-yellow/20">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-rx-yellow">Your response</p>
+                  <p className="text-xs text-rx-gray-medium mt-1">{r.developer_response}</p>
+                </div>
+              )}
+              {canRespond && (
+                responding === r.id ? (
+                  <div className="mt-3 space-y-2">
+                    <textarea rows={2} value={responseText} onChange={(e) => setResponseText(e.target.value)}
+                      placeholder="Reply as the developer — this appears publicly under the review…"
+                      className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2 text-sm text-white" />
+                    <div className="flex gap-2">
+                      <button onClick={() => respond(r.id)} disabled={busy} className="btn-primary text-xs px-3 py-1.5 disabled:opacity-40">{busy ? 'Publishing…' : 'Publish response'}</button>
+                      <button onClick={() => { setResponding(null); setResponseText(''); }} className="text-xs text-rx-gray-medium hover:text-white px-2">Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button onClick={() => { setResponding(r.id); setResponseText(r.developer_response || ''); }}
+                    className="text-xs text-rx-yellow hover:underline mt-2 inline-block">
+                    {r.developer_response ? 'Edit response' : 'Respond as developer'}
+                  </button>
+                )
+              )}
             </div>
           ))}
         </div>

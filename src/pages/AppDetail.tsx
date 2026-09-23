@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Star, Download, ArrowLeft, Share2, ExternalLink, Check, ChevronRight, Shield, Clock, Monitor, Calendar, Tag, ThumbsUp, AlertTriangle, ShieldCheck, LifeBuoy} from 'lucide-react';
+import { Star, Download, ArrowLeft, Share2, ExternalLink, Check, ChevronRight, Shield, Clock, Monitor, Calendar, Tag, ThumbsUp, AlertTriangle, ShieldCheck, LifeBuoy, Flag} from 'lucide-react';
 import DownloadModal from '../components/apps/DownloadModal';
 import AppLogo from '../components/apps/AppLogo';
 import { useApps } from '../context/AppContext';
@@ -10,7 +10,7 @@ import Editable from '../components/edit/Editable';
 import PageBlocks from '../components/edit/PageBlocks';
 import { formatBytes, formatDownloadCount, formatDate, getRatingColor } from '../utils/helpers';
 import { normalizeWebsiteUrl } from '../utils/url';
-import { api as storefrontApi, isApiConfigured } from '../services/api';
+import { api as storefrontApi, isApiConfigured, api} from '../services/api';
 import toast from 'react-hot-toast';
 import { androidStopDownloadProgress, confirmDesktopInstalled, desktopInstall, getNativePackage, isAndroidShell, isDesktopShell, removeNativePackage, type NativePackageState } from '../platform/nativeInstaller';
 import { getRuntimePlatform } from '../native/deviceIdentity';
@@ -95,6 +95,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   const [activeTab, setActiveTab] = useState<'overview' | 'reviews' | 'versions' | 'docs'>('overview');
   const [isInstalling, setIsInstalling] = useState(false);
   const [newRating, setNewRating] = useState(5);
+  const [newTitle, setNewTitle] = useState('');
   const [newComment, setNewComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [showDownload, setShowDownload] = useState(false);
@@ -181,31 +182,38 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
       detectionSource: systemInstalled?.source,
     }).catch(() => {});
   }, [osInstalled, systemInstalled?.version, detectedState, app?.slug, user?.id, reportInstallation]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [liveReviews, setLiveReviews] = React.useState<any[] | null>(null);
-  React.useEffect(() => {
+  // ---- Reviews (Phase 17): paginated live reviews + TRUE server summary ----
+  const [reviewsPage, setReviewsPage] = React.useState(1);
+  const [reviewsData, setReviewsData] = React.useState<{ reviews: any[]; summary: any; pagination: any } | null>(null);
+  const [reviewsLoading, setReviewsLoading] = React.useState(false);
+  const [reporting, setReporting] = React.useState<string | null>(null); // review id with the report UI open
+  const loadReviews = React.useCallback((page: number, append: boolean) => {
     const API = (import.meta as any).env?.VITE_API_URL;
     if (!API || !app?.slug) return;
-    fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/reviews`)
+    setReviewsLoading(true);
+    fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/reviews?page=${page}&limit=10`)
       .then(r=>r.json()).then(j=>{
-        const arr = j?.data || j?.results || j;
-        if (Array.isArray(arr)) {
-          const mapped = arr.map((r:any)=>({
-            id: r.id,
-            appId: app.id,
-            userId: r.user_id || r.userId,
-            userName: r.user_name || r.userName || r.name || 'User',
-            userAvatar: r.avatar_url || r.userAvatar || '👤',
-            rating: r.rating,
-            comment: r.comment,
-            date: r.created_at || r.date || new Date().toISOString(),
-            helpful: r.helpful_count ?? r.helpful ?? 0,
-          }));
-          setLiveReviews(mapped);
+        const d = j?.data;
+        if (d && Array.isArray(d.reviews)) {
+          setReviewsData((prev: any) => append && prev
+            ? { reviews: [...prev.reviews, ...d.reviews], summary: d.summary, pagination: d.pagination }
+            : d);
+          setReviewsPage(page);
         }
-      }).catch(()=>{});
+      }).catch(()=>{})
+      .finally(()=>setReviewsLoading(false));
   }, [app?.slug]);
-  // Live reviews only — null (still loading) or empty both render "No reviews yet", never fabricated ones.
-  const appReviews = liveReviews || [];
+  React.useEffect(() => { loadReviews(1, false); }, [loadReviews]);
+  // Live reviews only — never fabricated. Summary comes from the server (all
+  // visible reviews, not just the loaded page).
+  const appReviews = reviewsData?.reviews || [];
+  const reviewsSummary = reviewsData?.summary || null;
+  const reviewsPagination = reviewsData?.pagination || null;
+  // The caller's own review (for edit-in-place) is the first page entry they own.
+  const myReview = React.useMemo(() => appReviews.find((r: any) => r.own) || null, [appReviews]);
+  React.useEffect(() => {
+    if (myReview) { setNewRating(myReview.rating || 5); setNewTitle(myReview.title || ''); setNewComment(myReview.body || ''); }
+  }, [myReview?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isLoading && !app) {
     return (
@@ -646,88 +654,179 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
             )}
             {activeTab === 'reviews' && (
               <div className="space-y-6 animate-fade-in">
+                {/* Summary — the TRUE server-computed aggregate (all visible reviews) */}
                 <div className="card p-6">
-                  <div className="flex items-center gap-8">
-                    <div className="text-center">
-                      <p className={`text-5xl font-bold ${getRatingColor(app.rating)}`}>{app.rating}</p>
-                      <div className="flex items-center gap-1 mt-2 justify-center">
-                        {[1, 2, 3, 4, 5].map((s) => (
-                          <Star key={s} className={`w-4 h-4 ${s <= Math.round(app.rating) ? 'text-yellow-400 fill-yellow-400' : 'text-gray-600'}`} />
-                        ))}
-                      </div>
-                      <p className="text-xs text-rx-gray-medium mt-1">{formatDownloadCount(app.reviewCount)} reviews</p>
-                    </div>
-                    <div className="flex-1 space-y-2">
-                      {ratingDistribution.map((d) => (
-                        <div key={d.stars} className="flex items-center gap-2">
-                          <span className="text-xs text-rx-gray-medium w-3">{d.stars}</span>
-                          <Star className="w-3 h-3 text-yellow-400 fill-yellow-400" />
-                          <div className="flex-1 h-2 bg-rx-dark-tertiary rounded-full overflow-hidden">
-                            <div className="h-full bg-yellow-400 rounded-full" style={{ width: `${d.percentage}%` }} />
-                          </div>
-                          <span className="text-xs text-rx-gray-medium w-6">{d.count}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-                {user && (
-                  <div className="card p-5">
-                    <h4 className="font-semibold text-white mb-3"><Editable id="appd.writeReview" label="'Write a review' heading">{get('appd.writeReview', 'Write a review')}</Editable></h4>
-                    <div className="flex items-center gap-2 mb-3">
-                      {[1,2,3,4,5].map(s=>(
-                        <button key={s} onClick={()=>setNewRating(s)} className={`w-8 h-8 rounded-lg flex items-center justify-center ${s<=newRating ? 'bg-rx-yellow text-rx-dark' : 'bg-white/10 text-white'}`}><Star className={`w-4 h-4 ${s<=newRating ? 'fill-current' : ''}`} /></button>
-                      ))}
-                      <span className="text-sm text-rx-gray-medium ml-2">{newRating} stars</span>
-                    </div>
-                    <textarea value={newComment} onChange={e=>setNewComment(e.target.value)} placeholder="Share your experience..." rows={3} className="w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-rx-gray-medium" />
-                    <button
-                      onClick={async()=>{
-                        if(!newComment.trim()) { toast.error('Please write a comment'); return; }
-                        setSubmitting(true);
-                        try {
-                          const API=(import.meta as any).env?.VITE_API_URL;
-                          const token=localStorage.getItem('rx-store-token')||'';
-                          if(!API) throw new Error('RX Store is not connected to its application service. Install a correctly configured build.');
-                          const r=await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/reviews`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify({rating:newRating, comment:newComment})});
-                          const j=await r.json();
-                          if(!r.ok) throw new Error(j.error?.message||'Failed');
-                          toast.success('Review submitted');
-                          setNewComment('');
-                          window.location.reload();
-                        } catch(e:any){ toast.error(e.message); }
-                        setSubmitting(false);
-                      }}
-                      disabled={submitting}
-                      className="mt-3 btn-primary text-sm px-4 py-2 disabled:opacity-50"
-                    >
-                      {submitting ? 'Submitting...' : 'Submit Review'}
-                    </button>
-                  </div>
-                )}
-                {appReviews.length > 0 ? appReviews.map((review) => (
-                  <div key={review.id} className="card p-5">
-                    <div className="flex items-start gap-4">
-                      <div className="w-10 h-10 rounded-xl bg-rx-dark-tertiary flex items-center justify-center text-lg flex-shrink-0">{review.userAvatar}</div>
-                      <div className="flex-1">
-                        <div className="flex items-center justify-between">
-                          <h4 className="font-semibold text-white">{review.userName}</h4>
-                          <span className="text-xs text-rx-gray-medium">{formatDate(review.date)}</span>
-                        </div>
-                        <div className="flex items-center gap-1 mt-1">
+                  {reviewsSummary && reviewsSummary.count > 0 ? (
+                    <div className="flex flex-col sm:flex-row items-center gap-8">
+                      <div className="text-center flex-shrink-0">
+                        <p className={`text-5xl font-bold ${getRatingColor(reviewsSummary.average)}`}>{reviewsSummary.average.toFixed(1)}</p>
+                        <div className="flex items-center gap-1 mt-2 justify-center">
                           {[1, 2, 3, 4, 5].map((s) => (
-                            <Star key={s} className={`w-3.5 h-3.5 ${s <= review.rating ? 'text-yellow-400 fill-yellow-400' : 'text-gray-600'}`} />
+                            <Star key={s} className={`w-4 h-4 ${s <= Math.round(reviewsSummary.average) ? 'text-yellow-400 fill-yellow-400' : 'text-gray-600'}`} />
                           ))}
                         </div>
-                        <p className="text-sm text-rx-gray-medium mt-2 leading-relaxed">{review.comment}</p>
-                        <button className="flex items-center gap-1 text-xs text-rx-gray-medium hover:text-rx-yellow transition-colors mt-3">
-                          <ThumbsUp className="w-3.5 h-3.5" /> Helpful ({review.helpful})
-                        </button>
+                        <p className="text-xs text-rx-gray-medium mt-1">{reviewsSummary.count} review{reviewsSummary.count === 1 ? '' : 's'}</p>
+                      </div>
+                      <div className="flex-1 w-full space-y-2">
+                        {(reviewsSummary.distribution || []).map((d: any) => (
+                          <div key={d.stars} className="flex items-center gap-2">
+                            <span className="text-xs text-rx-gray-medium w-3">{d.stars}</span>
+                            <Star className="w-3 h-3 text-yellow-400 fill-yellow-400" />
+                            <div className="flex-1 h-2 bg-rx-dark-tertiary rounded-full overflow-hidden">
+                              <div className="h-full bg-yellow-400 rounded-full transition-all" style={{ width: `${d.percentage}%` }} />
+                            </div>
+                            <span className="text-xs text-rx-gray-medium w-6">{d.count}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-center text-sm text-rx-gray-medium py-2">No ratings yet — ratings appear here once reviews are written.</p>
+                  )}
+                </div>
+
+                {/* Write / edit review (authenticated only) */}
+                {user ? (
+                  <div className="card p-5">
+                    <h4 className="font-semibold text-white mb-3">
+                      <Editable id="appd.writeReview" label="'Write a review' heading">{get('appd.writeReview', myReview ? 'Edit your review' : 'Write a review')}</Editable>
+                    </h4>
+                    <div className="flex items-center gap-2 mb-3 flex-wrap">
+                      {[1,2,3,4,5].map(s=>(
+                        <button key={s} onClick={()=>setNewRating(s)} aria-label={`${s} star${s === 1 ? '' : 's'}`} className={`w-8 h-8 rounded-lg flex items-center justify-center ${s<=newRating ? 'bg-rx-yellow text-rx-dark' : 'bg-white/10 text-white'}`}><Star className={`w-4 h-4 ${s<=newRating ? 'fill-current' : ''}`} /></button>
+                      ))}
+                      <span className="text-sm text-rx-gray-medium ml-2">{newRating} star{newRating === 1 ? '' : 's'}</span>
+                      {myReview?.verifiedInstall && <span className="text-[10px] font-bold px-2 py-1 rounded bg-green-400/10 text-green-400">Verified install</span>}
+                    </div>
+                    <input
+                      value={newTitle} onChange={e=>setNewTitle(e.target.value)}
+                      placeholder="Title (optional)"
+                      className="w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 mb-2 text-sm text-white placeholder:text-rx-gray-medium"
+                      maxLength={120}
+                    />
+                    <textarea value={newComment} onChange={e=>setNewComment(e.target.value)} placeholder="Share your experience…" rows={3} className="w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-rx-gray-medium" />
+                    <div className="flex items-center justify-between mt-3 flex-wrap gap-2">
+                      <p className="text-[11px] text-rx-gray-medium/70">One review per app — submitting again edits it.</p>
+                      <button
+                        onClick={async()=>{
+                          if(!newComment.trim()) { toast.error('Please write a comment'); return; }
+                          setSubmitting(true);
+                          try {
+                            const API=(import.meta as any).env?.VITE_API_URL;
+                            const token=localStorage.getItem('rx-store-token')||'';
+                            if(!API) throw new Error('RX Store is not connected to its application service. Install a correctly configured build.');
+                            const r=await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/reviews`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify({rating:newRating, title:newTitle, comment:newComment})});
+                            const j=await r.json();
+                            if(!r.ok) throw new Error(j.error?.message||'Failed');
+                            toast.success(j?.data?.edited ? 'Review updated' : 'Review submitted');
+                            setNewComment(''); setNewTitle('');
+                            loadReviews(1, false);
+                          } catch(e:any){ toast.error(e.message); }
+                          setSubmitting(false);
+                        }}
+                        disabled={submitting}
+                        className="btn-primary text-sm px-4 py-2 disabled:opacity-50"
+                      >
+                        {submitting ? 'Submitting…' : myReview ? 'Update review' : 'Submit review'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="card p-5 text-center">
+                    <p className="text-sm text-rx-gray-medium">Sign in to write a review.</p>
+                    <Link to="/login" className="btn-primary text-sm mt-3 inline-block">Sign in</Link>
+                  </div>
+                )}
+
+                {/* Review list */}
+                {reviewsLoading && !appReviews.length ? (
+                  <div className="card p-6 animate-pulse h-24" />
+                ) : appReviews.length > 0 ? appReviews.map((review) => (
+                  <div key={review.id} className="card p-5">
+                    <div className="flex items-start gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-rx-dark-tertiary flex items-center justify-center text-lg flex-shrink-0">👤</div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <h4 className="font-semibold text-white flex items-center gap-2 flex-wrap">
+                            {review.userName}
+                            {review.verifiedInstall && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-green-400/10 text-green-400" title="This user has a real download or installation record for this app">Verified install</span>}
+                          </h4>
+                          <span className="text-xs text-rx-gray-medium">{formatDate(review.date)}</span>
+                        </div>
+                        <div className="flex items-center gap-2 mt-1 flex-wrap">
+                          <div className="flex items-center gap-1">
+                            {[1, 2, 3, 4, 5].map((s) => (
+                              <Star key={s} className={`w-3.5 h-3.5 ${s <= review.rating ? 'text-yellow-400 fill-yellow-400' : 'text-gray-600'}`} />
+                            ))}
+                          </div>
+                          {review.appVersion && <span className="text-[10px] text-rx-gray-medium">v{review.appVersion}</span>}
+                          {review.platform && <span className="text-[10px] text-rx-gray-medium capitalize">{review.platform}</span>}
+                        </div>
+                        {review.title && <p className="text-sm font-semibold text-white mt-2">{review.title}</p>}
+                        <p className="text-sm text-rx-gray-medium mt-1.5 leading-relaxed">{review.body}</p>
+
+                        {/* Developer response — clearly identified */}
+                        {review.developerResponse && (
+                          <div className="mt-3 p-3 rounded-xl bg-rx-yellow/5 border border-rx-yellow/20">
+                            <p className="text-[10px] font-bold uppercase tracking-wide text-rx-yellow flex items-center gap-1.5">
+                              Response from {review.developerResponse.byOrgName || 'the developer'}
+                            </p>
+                            <p className="text-sm text-rx-gray-medium mt-1 leading-relaxed">{review.developerResponse.body}</p>
+                            {review.developerResponse.respondedAt && (
+                              <p className="text-[10px] text-rx-gray-medium/60 mt-1">{formatDate(String(review.developerResponse.respondedAt).slice(0, 10))}</p>
+                            )}
+                          </div>
+                        )}
+
+                        <div className="flex items-center gap-3 mt-3">
+                          <span className="flex items-center gap-1 text-xs text-rx-gray-medium"><ThumbsUp className="w-3.5 h-3.5" /> {review.helpful}</span>
+                          {user && !review.own && (
+                            reporting === review.id ? (
+                              <span className="flex items-center gap-1.5 flex-wrap">
+                                <select
+                                  className="bg-rx-dark-tertiary border border-white/10 rounded-lg px-2 py-1 text-xs text-white"
+                                  onChange={async (e) => {
+                                    const reason = e.target.value;
+                                    if (!reason) return;
+                                    try {
+                                      await api.reviews.report(review.id, reason);
+                                      toast.success('Reported — our moderators will review it');
+                                    } catch (err: any) { toast.error(err?.message || 'Could not report'); }
+                                    setReporting(null);
+                                  }}
+                                  defaultValue=""
+                                >
+                                  <option value="" disabled>Reason…</option>
+                                  <option value="spam">Spam</option>
+                                  <option value="harassment">Harassment</option>
+                                  <option value="irrelevant">Irrelevant</option>
+                                  <option value="fraudulent">Fraudulent</option>
+                                  <option value="malicious_content">Malicious content</option>
+                                  <option value="other">Other</option>
+                                </select>
+                                <button onClick={() => setReporting(null)} className="text-xs text-rx-gray-medium hover:text-white">Cancel</button>
+                              </span>
+                            ) : (
+                              <button onClick={() => setReporting(review.id)} className="flex items-center gap-1 text-xs text-rx-gray-medium hover:text-red-400 transition-colors">
+                                <Flag className="w-3.5 h-3.5" /> Report
+                              </button>
+                            )
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
                 )) : (
                   <div className="text-center py-12"><p className="text-rx-gray-medium"><Editable id="appd.noReviews" type="textarea" label="No-reviews message">{get('appd.noReviews', 'No reviews yet. Be the first to review!')}</Editable></p></div>
+                )}
+
+                {/* Pagination — Load more */}
+                {reviewsPagination?.hasNext && (
+                  <div className="text-center">
+                    <button onClick={() => loadReviews(reviewsPage + 1, true)} disabled={reviewsLoading} className="btn-secondary text-sm disabled:opacity-40">
+                      {reviewsLoading ? 'Loading…' : `Load more reviews (${reviewsPagination.total - appReviews.length} remaining)`}
+                    </button>
+                  </div>
                 )}
               </div>
             )}
