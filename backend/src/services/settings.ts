@@ -16,6 +16,7 @@ export const SETTING_DEFAULTS: Record<string, string> = {
   ios_recommend_pwa: '1',
   mobile_store_view: '1',
   storage_quota_gb: '10',
+  marketplace_fee_percent: '15',
 };
 
 /** Keys exposed to the public (no secrets, no admin-only flags). */

@@ -629,6 +629,11 @@ test('only OWNER / ADMIN / RELEASE_MANAGER can publish releases (matrix)', () =>
   assert.equal(hasPermission('ADMIN', 'release.publish'), true);
   assert.equal(hasPermission('OWNER', 'release.publish'), true);
   assert.equal(hasPermission('OWNER', 'billing.manage'), true, 'OWNER has full control');
-  assert.equal(hasPermission('ADMIN', 'billing.manage'), false, 'billing stays with the owner');
+  // Phase 19: authorized ADMIN also controls financial settings; DEVELOPER,
+  // ANALYST and SUPPORT keep NO billing access (server-enforced).
+  assert.equal(hasPermission('ADMIN', 'billing.manage'), true, 'ADMIN controls financial settings (Phase 19)');
+  assert.equal(hasPermission('DEVELOPER', 'billing.manage'), false);
+  assert.equal(hasPermission('ANALYST', 'billing.manage'), false);
+  assert.equal(hasPermission('SUPPORT', 'billing.manage'), false);
   assert.ok(permissionsForRole('OWNER').length === 14);
 });

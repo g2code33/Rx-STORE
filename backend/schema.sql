@@ -117,7 +117,11 @@ CREATE TABLE IF NOT EXISTS downloads (
   ip_address TEXT,
   user_agent TEXT,
   date TEXT DEFAULT (datetime('now')),
-  created_at TEXT DEFAULT (datetime('now'))
+  created_at TEXT DEFAULT (datetime('now')),
+  -- Phase 19: 'install' (first download by a user) | 'update' (subsequent),
+  -- derived server-side; country-level geo (privacy-safe aggregation only).
+  kind TEXT DEFAULT 'install',
+  country TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_downloads_app ON downloads(app_id);
 CREATE INDEX IF NOT EXISTS idx_downloads_user ON downloads(user_id);
@@ -579,3 +583,31 @@ CREATE TABLE IF NOT EXISTS download_grants (
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_download_grants_user ON download_grants(user_id);
+
+
+-- Phase 19: developer finance.
+CREATE TABLE IF NOT EXISTS developer_billing (
+  developer_id TEXT PRIMARY KEY REFERENCES developers(id) ON DELETE CASCADE,
+  payout_destination TEXT,
+  payout_notes TEXT,
+  min_payout_minor INTEGER NOT NULL DEFAULT 10000,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS developer_payouts (
+  id TEXT PRIMARY KEY,
+  developer_id TEXT NOT NULL REFERENCES developers(id) ON DELETE CASCADE,
+  amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+  currency TEXT NOT NULL DEFAULT 'GHS',
+  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','PROCESSING','PAID','FAILED','HELD','CANCELLED')),
+  period_start TEXT,
+  period_end TEXT,
+  requested_by TEXT NOT NULL,
+  processed_by TEXT,
+  processor_reference TEXT,
+  failure_reason TEXT,
+  paid_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_developer_payouts_dev ON developer_payouts(developer_id);
+CREATE INDEX IF NOT EXISTS idx_developer_payouts_status ON developer_payouts(status);

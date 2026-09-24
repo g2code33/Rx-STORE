@@ -35,7 +35,7 @@ export const ROLE_PERMISSIONS: Record<DeveloperRole, string[]> = {
     'organization.manage', 'team.manage', 'app.create', 'app.edit',
     'release.create', 'release.edit', 'package.upload', 'release.submit',
     'release.publish', 'analytics.view', 'reviews.manage', 'support.respond',
-    'security.view',
+    'billing.manage', 'security.view',
   ],
   DEVELOPER: ['app.create', 'app.edit', 'release.create', 'release.edit', 'package.upload', 'analytics.view'],
   RELEASE_MANAGER: ['app.edit', 'release.create', 'release.edit', 'package.upload', 'release.submit', 'release.publish', 'analytics.view'],

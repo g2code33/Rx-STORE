@@ -23,6 +23,7 @@ import { securityAdminRoutes } from './routes/securityAdmin';
 import { developerSubmissionRoutes, adminSubmissionRoutes } from './routes/submissions';
 import { reviewRoutes, developerReviewRoutes, adminReviewRoutes } from './routes/reviews';
 import { paymentRoutes, webhookRoutes, adminPaymentRoutes, appIsPaid, activeEntitlement } from './routes/payments';
+import { developerFinanceRoutes, adminFinanceRoutes } from './routes/developerFinance';
 import { storefrontRoutes, adminStorefrontRoutes, adminStorefrontAppSearch } from './routes/storefront';
 import { r2KeyIsPubliclyServed } from './services/packageSecurity';
 import { verifyAccessToken } from './services/auth';
@@ -86,6 +87,20 @@ function withCors(res: Response, origin: string, env?: any, requestId?: string):
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) headers.set(k, v);
   if (requestId) headers.set('X-Request-Id', requestId);
   return new Response(res.body, { status: res.status, headers });
+}
+
+/** Phase 19: download kind — 'update' when this user already downloaded this
+ *  app before (server-derived from the ledger; never client-claimed). */
+async function downloadKind(env: any, appId: string, userId: string | null): Promise<string> {
+  if (!userId) return 'install';
+  const prior: any = await env.DB.prepare('SELECT 1 AS ok FROM downloads WHERE app_id=? AND user_id=? LIMIT 1')
+    .bind(appId, userId).first().catch(() => null);
+  return prior ? 'update' : 'install';
+}
+
+/** Phase 19: country-level geo from Cloudflare request metadata (privacy-safe). */
+function downloadCountry(request: Request): string | null {
+  return ((request as any).cf?.country as string) || request.headers.get('cf-ipcountry') || null;
 }
 
 /** Stream a private conversation attachment after authorization (never /r2/). */
@@ -547,8 +562,8 @@ export default {
               ).bind(`grant_${Date.now().toString(36)}`, gUser, app.id, pkg.id, grantHash).run().catch(() => {});
               const dlRecordUser = gUser;
               try {
-                await env.DB.prepare('INSERT INTO downloads (id, user_id, app_id, platform, version, created_at) VALUES (?,?,?,?,?,datetime(\'now\'))')
-                  .bind(`dl_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, dlRecordUser, app.id, manifest.platform, manifest.version).run();
+                await env.DB.prepare('INSERT INTO downloads (id, user_id, app_id, platform, version, created_at, kind, country) VALUES (?,?,?,?,?,datetime(\'now\'),?,?)')
+                  .bind(`dl_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, dlRecordUser, app.id, manifest.platform, manifest.version, await downloadKind(env, app.id, dlRecordUser), downloadCountry(request)).run();
                 await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run();
               } catch {}
               return respond({ success: true, data: {
@@ -566,8 +581,8 @@ export default {
             let dlUser: string | null = null;
             try { const t = (request.headers.get('Authorization') || '').replace(/^Bearer /, ''); if (t) dlUser = (await verifyAccessToken(t, env.JWT_SECRET))?.userId || null; } catch {}
             try {
-              await env.DB.prepare('INSERT INTO downloads (id, user_id, app_id, platform, version, created_at) VALUES (?,?,?,?,?,datetime(\'now\'))')
-                .bind(`dl_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, dlUser, app.id, manifest.platform, manifest.version).run();
+              await env.DB.prepare('INSERT INTO downloads (id, user_id, app_id, platform, version, created_at, kind, country) VALUES (?,?,?,?,?,datetime(\'now\'),?,?)')
+                .bind(`dl_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, dlUser, app.id, manifest.platform, manifest.version, await downloadKind(env, app.id, dlUser), downloadCountry(request)).run();
               await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run();
             } catch {}
           }
@@ -954,6 +969,11 @@ export default {
         else if (path.match(/^\/developers\/security\/packages\/[^\/]+$/) && request.method === 'GET') data = await developerAppRoutes.getPackageSecurity(normalizedRequest as any, env);
         // Phase 17 — developer review responses
         else if (path.match(/^\/developers\/reviews\/[^\/]+\/respond$/) && request.method === 'POST') data = await developerReviewRoutes.respond(normalizedRequest as any, env);
+        // Phase 19 — analytics, revenue, payouts, billing
+        else if (is('/developers/analytics', 'GET')) data = await developerFinanceRoutes.analytics(normalizedRequest as any, env);
+        else if (is('/developers/revenue', 'GET')) data = await developerFinanceRoutes.revenue(normalizedRequest as any, env);
+        else if (is('/developers/payouts/request', 'POST')) data = await developerFinanceRoutes.requestPayout(normalizedRequest as any, env);
+        else if (is('/developers/billing', 'PATCH')) data = await developerFinanceRoutes.updateBilling(normalizedRequest as any, env);
         // Phase 14 — submissions + private attachments
         else if (is('/developers/submissions', 'GET')) data = await developerSubmissionRoutes.list(normalizedRequest as any, env);
         else if (path.match(/^\/developers\/submissions\/[^\/]+$/) && request.method === 'GET') data = await developerSubmissionRoutes.get(normalizedRequest as any, env);
@@ -1150,6 +1170,25 @@ export default {
       } catch (e: any) {
         console.error(`[${requestId}] payments:`, redact(String(e?.message || e)));
         return fail('INTERNAL', 'Payment request failed. Please try again.');
+      }
+    }
+
+    // ---- Admin: developer finance (Phase 19; admin JWT enforced for /admin/*) ----
+    if (path.startsWith('/admin/finance')) {
+      try {
+        let data: any;
+        if (path === '/admin/finance/developers' && request.method === 'GET') data = await adminFinanceRoutes.developerRevenue(normalizedRequest as any, env);
+        else if (path === '/admin/finance/payouts' && request.method === 'GET') data = await adminFinanceRoutes.payouts(normalizedRequest as any, env);
+        else if (path === '/admin/finance/reconciliation' && request.method === 'GET') data = await adminFinanceRoutes.reconciliation(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/finance\/payouts\/[^\/]+\/process$/) && request.method === 'POST') data = await adminFinanceRoutes.processPayout(normalizedRequest as any, env);
+        else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown finance admin route' } }, 404, origin);
+        if (data?.error) {
+          const code: ErrorCode = data.code === 'NOT_FOUND' ? 'NOT_FOUND' : data.code === 'FORBIDDEN' ? 'FORBIDDEN' : 'VALIDATION_ERROR';
+          return fail(code, String(data.error));
+        }
+        return respond({ success: true, data }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] admin finance:`, redact(String(e?.message || e))); return fail('INTERNAL', 'Finance operation failed.');
       }
     }
 

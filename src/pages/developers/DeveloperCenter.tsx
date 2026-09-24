@@ -10,7 +10,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Package, Upload, FileCheck, BarChart3, Star, Users, MessageSquare, Paperclip,
-  User as UserIcon, Settings as SettingsIcon, AlertTriangle, Send, Copy, X,
+  User as UserIcon, Settings as SettingsIcon, AlertTriangle, Send, Copy, X, Wallet,
 } from 'lucide-react';
 import { api, isApiConfigured } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -24,6 +24,7 @@ const NAV = [
   { to: '/developers/releases', label: 'Releases', icon: Upload },
   { to: '/developers/submissions', label: 'Submissions', icon: FileCheck },
   { to: '/developers/analytics', label: 'Analytics', icon: BarChart3 },
+  { to: '/developers/revenue', label: 'Revenue', icon: Wallet },
   { to: '/developers/reviews', label: 'Reviews', icon: Star },
   { to: '/developers/team', label: 'Team', icon: Users },
   { to: '/developers/messages', label: 'Communications', icon: MessageSquare },
@@ -139,6 +140,7 @@ export default function DeveloperCenter() {
               {section === 'releases' && <Releases org={org} />}
               {section === 'submissions' && <Submissions />}
               {section === 'analytics' && <Analytics org={org} />}
+              {section === 'revenue' && <Revenue org={org} onChanged={refresh} />}
               {section === 'reviews' && <Reviews org={org} onChanged={refresh} />}
               {section === 'team' && <Team org={org} onChanged={refresh} />}
               {section === 'messages' && <Communications />}
@@ -277,29 +279,244 @@ function Releases({ org }: { org: any }) {
 }
 
 function Analytics({ org }: { org: any }) {
-  const apps = org.apps || [];
-  const max = Math.max(1, ...apps.map((a: any) => Number(a.download_count) || 0));
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const canSeeRevenue = (org?.organization?.permissions || []).includes('billing.manage')
+    || (org?.organization?.permissions || []).includes('analytics.view');
+
+  useEffect(() => {
+    api.developers.finance.analytics().then((d: any) => setData(d)).catch((e: any) => setError(e?.message || 'Could not load analytics')).finally(() => setLoading(false));
+  }, []);
+
+  const fmtMinor = (m: number) => `GH₵${((Number(m) || 0) / 100).toFixed(2)}`;
+
   return (
-    <Section title="Analytics" desc="Real download and rating data from the marketplace (analytics.view).">
-      {apps.length === 0 ? (
-        <Empty icon={BarChart3} title="No analytics yet" desc="Analytics appear once your organization has published applications." />
-      ) : (
+    <Section title="Analytics" desc="Aggregated marketplace data — downloads, installs, updates, active devices, ratings and revenue (analytics.view). No individual customer data is ever shown.">
+      {loading ? (
+        <div className="card p-6 animate-pulse h-40" />
+      ) : error ? (
+        <div className="card p-6 text-center text-sm text-rx-gray-medium">{error}</div>
+      ) : !data ? null : (
         <>
-          <div className="card p-5 space-y-4">
-            {apps.map((a: any) => (
-              <div key={a.id}>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-white truncate">{a.name}</span>
-                  <span className="text-rx-gray-medium">{a.download_count || 0} downloads</span>
-                </div>
-                <div className="h-2 bg-white/5 rounded-full mt-1.5 overflow-hidden">
-                  <div className="h-full bg-rx-yellow rounded-full" style={{ width: `${Math.round(((Number(a.download_count) || 0) / max) * 100)}%` }} />
-                </div>
-                <p className="text-[11px] text-rx-gray-medium mt-1">⭐ {a.rating || 0} · {a.review_count || 0} reviews</p>
+          {/* Org totals */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+            {[
+              ['Downloads', data.totals?.downloads],
+              ['Installs', data.totals?.installs],
+              ['Updates', data.totals?.updates],
+              ['Active installs', data.totals?.activeInstallations],
+              ['Reviews', data.totals?.reviewCount],
+            ].map(([label, value]) => (
+              <div key={String(label)} className="card p-4">
+                <p className="text-2xl font-black text-white">{String(value ?? 0)}</p>
+                <p className="text-xs text-rx-gray-medium mt-1">{String(label)}</p>
               </div>
             ))}
           </div>
-          <p className="text-[11px] text-rx-gray-medium/70 mt-3">ANALYST role: analytics only — publishing requires RELEASE_MANAGER or higher.</p>
+
+          {/* Revenue summary (aggregated; numbers only) */}
+          {canSeeRevenue && data.revenue && (
+            <div className="card p-5 mt-4">
+              <h3 className="text-sm font-bold text-white uppercase tracking-wider mb-3">Revenue (aggregated)</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                {[
+                  ['Gross', data.revenue.grossMinor],
+                  ['Refunds', data.revenue.refundsMinor],
+                  ['Fees', data.revenue.feesMinor],
+                  ['Net', data.revenue.netMinor],
+                  ['Payable', data.revenue.pendingMinor],
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="rounded-xl bg-rx-dark-tertiary/60 border border-white/5 p-3 text-center">
+                    <p className="text-[10px] uppercase tracking-wide text-rx-gray-medium">{String(label)}</p>
+                    <p className="text-sm font-bold text-white mt-1">{fmtMinor(Number(value))}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[11px] text-rx-gray-medium/70 mt-3">Platform fee: {data.revenue.feePercent ?? 15}% · payouts & billing detail require the billing permission (Owner/Admin).</p>
+            </div>
+          )}
+
+          {/* Platform distribution */}
+          {data.totals?.platformDistribution && Object.keys(data.totals.platformDistribution).length > 0 && (
+            <div className="card p-5 mt-4">
+              <h3 className="text-sm font-bold text-white uppercase tracking-wider mb-3">Platform distribution</h3>
+              {Object.entries(data.totals.platformDistribution).map(([platform, count]) => (
+                <div key={platform} className="mb-2 last:mb-0">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-white capitalize">{platform.replace('linux_deb', 'Linux (.deb)').replace('linux_appimage', 'Linux (AppImage)')}</span>
+                    <span className="text-rx-gray-medium">{String(count)}</span>
+                  </div>
+                  <div className="h-2 bg-white/5 rounded-full mt-1 overflow-hidden">
+                    <div className="h-full bg-rx-yellow rounded-full" style={{ width: `${Math.round((Number(count) / Math.max(1, data.totals.downloads)) * 100)}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Per-app detail */}
+          {(data.apps || []).length > 0 && (
+            <div className="card mt-4 divide-y divide-white/5">
+              <div className="p-4"><h3 className="text-sm font-bold text-white uppercase tracking-wider">Per application</h3></div>
+              {(data.apps || []).map((a: any) => (
+                <div key={a.appId} className="p-4">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <p className="text-sm font-medium text-white">{a.name}</p>
+                    <p className="text-xs text-rx-gray-medium">⭐ {a.rating || 0} · {a.reviewCount || 0} reviews</p>
+                  </div>
+                  <div className="flex items-center gap-4 mt-2 flex-wrap text-xs text-rx-gray-medium">
+                    <span>{a.downloads} downloads</span>
+                    <span>{a.installs} installs</span>
+                    <span>{a.updates} updates</span>
+                    <span>{a.activeInstallations} active</span>
+                    {a.versionDistribution?.length > 0 && (
+                      <span className="hidden sm:inline">versions: {a.versionDistribution.slice(0, 3).map((v: any) => `${v.version} (${v.count})`).join(' · ')}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="text-[11px] text-rx-gray-medium/70 mt-3">ANALYST role: analytics only — payouts and billing require the billing permission.</p>
+        </>
+      )}
+    </Section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Revenue & payouts (Phase 19) — billing.manage only (OWNER/ADMIN).
+// ---------------------------------------------------------------------------
+
+function Revenue({ org, onChanged }: { org: any; onChanged: () => void }) {
+  const canBill = (org?.organization?.permissions || []).includes('billing.manage');
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [destination, setDestination] = useState('');
+  const [notes, setNotes] = useState('');
+
+  const load = () => {
+    setLoading(true);
+    api.developers.finance.revenue().then((d: any) => {
+      setData(d);
+      setDestination(d?.billing?.payoutDestination || '');
+      setNotes(d?.billing?.payoutNotes || '');
+    }).catch((e: any) => setError(e?.message || 'Could not load revenue')).finally(() => setLoading(false));
+  };
+  useEffect(() => { if (canBill) load(); else setLoading(false); }, [canBill]);
+
+  if (!canBill) {
+    return (
+      <Section title="Revenue & Payouts">
+        <div className="card p-8 text-center">
+          <Wallet className="w-8 h-8 text-rx-gray-medium/40 mx-auto" />
+          <p className="text-sm text-rx-gray-medium mt-3">Financial detail requires the billing permission (Owner or Admin).</p>
+        </div>
+      </Section>
+    );
+  }
+
+  const fmtMinor = (m: number) => `GH₵${((Number(m) || 0) / 100).toFixed(2)}`;
+  const r = data?.revenue;
+
+  const requestPayout = async () => {
+    setBusy(true);
+    try { await api.developers.finance.requestPayout(); toast.success('Payout requested — an administrator will process it'); load(); onChanged(); }
+    catch (e: any) { toast.error(e?.message || 'Could not request payout'); }
+    setBusy(false);
+  };
+  const saveBilling = async () => {
+    setBusy(true);
+    try { await api.developers.finance.updateBilling({ payoutDestination: destination, payoutNotes: notes }); toast.success('Billing settings saved'); load(); }
+    catch (e: any) { toast.error(e?.message || 'Could not save'); }
+    setBusy(false);
+  };
+
+  return (
+    <Section title="Revenue & Payouts" desc="Your organization's money movement — gross, fees, refunds, net and payouts (billing permission).">
+      {loading ? (
+        <div className="card p-6 animate-pulse h-40" />
+      ) : error ? (
+        <div className="card p-6 text-center text-sm text-rx-gray-medium">{error}</div>
+      ) : !data ? null : (
+        <>
+          {/* Revenue lines */}
+          <div className="card p-5">
+            <h3 className="text-sm font-bold text-white uppercase tracking-wider mb-4">Revenue</h3>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              {[
+                ['Gross sales', r?.grossMinor, 'text-white'],
+                ['Refunds', r?.refundsMinor, 'text-purple-300'],
+                ['Platform fees', r?.feesMinor, 'text-amber-300'],
+                ['Net revenue', r?.netMinor, 'text-green-400'],
+                ['Paid out', r?.paidMinor, 'text-rx-gray-medium'],
+                ['Payable now', r?.pendingMinor, 'text-rx-yellow'],
+              ].map(([label, value, cls]) => (
+                <div key={String(label)} className="rounded-xl bg-rx-dark-tertiary/60 border border-white/5 p-3 text-center">
+                  <p className="text-[10px] uppercase tracking-wide text-rx-gray-medium">{String(label)}</p>
+                  <p className={`text-sm font-bold mt-1 ${cls}`}>{fmtMinor(Number(value))}</p>
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center justify-between mt-4 flex-wrap gap-2">
+              <p className="text-[11px] text-rx-gray-medium/70">net = gross − refunds − {r?.feePercent ?? 15}% platform fee · payouts are processed by RX Store administrators.</p>
+              <button onClick={requestPayout} disabled={busy || !r?.pendingMinor} className="btn-primary text-sm disabled:opacity-40">
+                {busy ? 'Requesting…' : r?.pendingMinor ? `Request payout (${fmtMinor(r.pendingMinor)})` : 'No payable balance'}
+              </button>
+            </div>
+          </div>
+
+          {/* Per-app revenue */}
+          {(data.perAppRevenue || []).length > 0 && (
+            <div className="card mt-4 divide-y divide-white/5">
+              <div className="p-4"><h3 className="text-sm font-bold text-white uppercase tracking-wider">Per application</h3></div>
+              {data.perAppRevenue.map((a: any) => (
+                <div key={a.appId} className="p-4 flex items-center justify-between gap-2 flex-wrap">
+                  <span className="text-sm text-white">{a.name}</span>
+                  <span className="text-xs text-rx-gray-medium">gross {fmtMinor(a.grossMinor)} · refunds {fmtMinor(a.refundsMinor)} · net {fmtMinor(a.netMinor)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Payouts */}
+          <div className="card mt-4">
+            <div className="p-4 border-b border-white/5"><h3 className="text-sm font-bold text-white uppercase tracking-wider">Payouts</h3></div>
+            <div className="divide-y divide-white/5">
+              {(data.payouts || []).length === 0 ? (
+                <p className="p-6 text-center text-sm text-rx-gray-medium">No payouts yet.</p>
+              ) : data.payouts.map((payout: any) => (
+                <div key={payout.id} className="p-4 flex items-center gap-3 flex-wrap">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-white">{fmtMinor(payout.amount_minor)} <span className="text-rx-gray-medium text-xs">· requested {formatDate(payout.created_at)}</span></p>
+                    {payout.failure_reason && <p className="text-[11px] text-red-400/90 mt-0.5">{payout.failure_reason}</p>}
+                    {payout.paid_at && <p className="text-[11px] text-green-400/80 mt-0.5">paid {formatDate(payout.paid_at)}{payout.processor_reference ? ` · ref ${payout.processor_reference}` : ''}</p>}
+                  </div>
+                  <span className={`text-[10px] font-bold px-2 py-1 rounded ${
+                    payout.status === 'PAID' ? 'bg-green-400/10 text-green-400'
+                    : payout.status === 'FAILED' ? 'bg-red-400/10 text-red-400'
+                    : payout.status === 'HELD' ? 'bg-amber-500/10 text-amber-300'
+                    : payout.status === 'CANCELLED' ? 'bg-white/5 text-rx-gray-medium'
+                    : 'bg-blue-400/10 text-blue-300'}`}>{payout.status}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Billing settings */}
+          <div className="card p-5 mt-4 space-y-3">
+            <h3 className="text-sm font-bold text-white uppercase tracking-wider">Billing settings</h3>
+            <input value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="Payout destination label — e.g. Mobile Money ••1234 (never an account number)"
+              className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white" maxLength={120} />
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes for the payouts team (optional)" rows={2}
+              className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white" maxLength={300} />
+            <div className="flex justify-end">
+              <button onClick={saveBilling} disabled={busy} className="btn-primary text-sm disabled:opacity-40">{busy ? 'Saving…' : 'Save billing settings'}</button>
+            </div>
+          </div>
         </>
       )}
     </Section>

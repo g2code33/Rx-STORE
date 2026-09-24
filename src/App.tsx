@@ -212,6 +212,7 @@ export default function App() {
             <Route path="/developers/releases" element={<DeveloperCenter />} />
             <Route path="/developers/submissions" element={<DeveloperCenter />} />
             <Route path="/developers/analytics" element={<DeveloperCenter />} />
+            <Route path="/developers/revenue" element={<DeveloperCenter />} />
             <Route path="/developers/reviews" element={<DeveloperCenter />} />
             <Route path="/developers/team" element={<DeveloperCenter />} />
             <Route path="/developers/messages" element={<DeveloperCenter />} />

@@ -22,24 +22,56 @@ function Badge({ status }: { status: string }) {
   return <span className={`text-[10px] font-bold px-2 py-1 rounded whitespace-nowrap ${STATUS_COLORS[status] || 'bg-white/5 text-rx-gray-medium'}`}>{String(status).toLowerCase()}</span>;
 }
 
+type Tab = 'transactions' | 'payouts' | 'reconciliation';
+
+const PAYOUT_TABS: Array<{ id: Tab; label: string }> = [
+  { id: 'transactions', label: 'Transactions' },
+  { id: 'payouts', label: 'Payouts' },
+  { id: 'reconciliation', label: 'Reconciliation' },
+];
+
 export default function PaymentsAdminPanel() {
+  const [tab, setTab] = useState<Tab>('transactions');
   const [transactions, setTransactions] = useState<any[]>([]);
   const [entitlements, setEntitlements] = useState<any[]>([]);
+  const [payouts, setPayouts] = useState<any[]>([]);
+  const [reconciliation, setReconciliation] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [revokeReason, setRevokeReason] = useState<Record<string, string>>({});
+  const [processReason, setProcessReason] = useState<Record<string, string>>({});
+  const [processRef, setProcessRef] = useState<Record<string, string>>({});
 
   const load = () => {
     setLoading(true);
     Promise.all([
       api.adminPayments.transactions().catch(() => ({ transactions: [] })),
       api.adminPayments.entitlements().catch(() => ({ entitlements: [] })),
-    ]).then(([t, e]: any[]) => {
+      (api as any).adminFinance.payouts().catch(() => ({ payouts: [] })),
+      (api as any).adminFinance.reconciliation().catch(() => null),
+    ]).then(([t, e, po, rec]: any[]) => {
       setTransactions(t.transactions || []);
       setEntitlements(e.entitlements || []);
+      setPayouts(po?.payouts || []);
+      if (rec) setReconciliation(rec);
     }).finally(() => setLoading(false));
   };
   useEffect(() => { load(); }, []);
+
+  const processPayout = async (id: string, status: string) => {
+    setBusy(true);
+    try {
+      await (api as any).adminFinance.processPayout(id, status, {
+        reason: processReason[id] || undefined,
+        reference: processRef[id] || undefined,
+      });
+      toast.success(`Payout marked ${status}`);
+      setProcessReason((r) => ({ ...r, [id]: '' }));
+      setProcessRef((r) => ({ ...r, [id]: '' }));
+      load();
+    } catch (e: any) { toast.error(e?.message || 'Failed'); }
+    setBusy(false);
+  };
 
   const refund = async (purchaseId: string) => {
     if (!confirm('Refund this purchase? The user\'s paid access ends immediately.')) return;
@@ -68,8 +100,119 @@ export default function PaymentsAdminPanel() {
         <button onClick={load} className="btn-secondary text-sm flex items-center gap-2"><RefreshCw className="w-4 h-4" /> Refresh</button>
       </div>
 
+      <div className="flex gap-1 bg-rx-dark-secondary rounded-xl p-1 w-fit mt-4">
+        {PAYOUT_TABS.map((t) => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-all ${tab === t.id ? 'bg-rx-yellow text-rx-dark' : 'text-rx-gray-medium hover:text-white'}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       {loading ? (
         <div className="card p-8 animate-pulse space-y-3"><div className="h-5 bg-white/5 rounded w-1/3" /><div className="h-16 bg-white/5 rounded" /></div>
+      ) : tab === 'payouts' ? (
+        <>
+          {/* Payout requests */}
+          <div className="card">
+            <div className="p-4 border-b border-white/5"><h3 className="text-sm font-bold text-white uppercase tracking-wider">Payout requests ({payouts.length})</h3></div>
+            <div className="divide-y divide-white/5">
+              {payouts.length === 0 ? (
+                <p className="p-6 text-center text-sm text-rx-gray-medium">No payouts requested yet.</p>
+              ) : payouts.map((po) => (
+                <div key={po.id} className="p-4 space-y-2">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-white truncate">{po.publisherName || po.developerId} — GH₵{(Number(po.amountMinor) / 100).toFixed(2)}</p>
+                      <p className="text-xs text-rx-gray-medium truncate">
+                        requested {formatDate(po.createdAt)} by {po.requestedBy}
+                        {po.failureReason ? ` · ${po.failureReason}` : ''}
+                        {po.paidAt ? ` · paid ${formatDate(po.paidAt)}` : ''}
+                        {po.processorReference ? ` · ref ${po.processorReference}` : ''}
+                      </p>
+                    </div>
+                    <span className={`text-[10px] font-bold px-2 py-1 rounded ${
+                      po.status === 'PAID' ? 'bg-green-400/10 text-green-400'
+                      : po.status === 'FAILED' ? 'bg-red-400/10 text-red-400'
+                      : po.status === 'HELD' ? 'bg-amber-500/10 text-amber-300'
+                      : po.status === 'CANCELLED' ? 'bg-white/5 text-rx-gray-medium'
+                      : 'bg-blue-400/10 text-blue-300'}`}>{po.status}</span>
+                  </div>
+                  {['PENDING', 'PROCESSING', 'HELD'].includes(po.status) && (
+                    <div className="flex gap-2 flex-wrap">
+                      <input
+                        className="flex-1 min-w-[160px] bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                        placeholder={po.status === 'PROCESSING' ? 'Processor reference (required for PAID)…' : 'Reference (optional)…'}
+                        value={processRef[po.id] || ''}
+                        onChange={(e) => setProcessRef((r) => ({ ...r, [po.id]: e.target.value }))}
+                      />
+                      <input
+                        className="flex-1 min-w-[160px] bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                        placeholder="Reason (required for FAILED / HELD)…"
+                        value={processReason[po.id] || ''}
+                        onChange={(e) => setProcessReason((r) => ({ ...r, [po.id]: e.target.value }))}
+                      />
+                      {po.status === 'PENDING' && (
+                        <>
+                          <button onClick={() => processPayout(po.id, 'PROCESSING')} disabled={busy} className="btn-secondary text-xs px-3 py-2 disabled:opacity-40">Start processing</button>
+                          <button onClick={() => processPayout(po.id, 'CANCELLED')} disabled={busy} className="text-xs px-3 py-2 rounded-xl text-rx-gray-medium hover:text-white">Cancel</button>
+                        </>
+                      )}
+                      {['PENDING', 'PROCESSING'].includes(po.status) && (
+                        <>
+                          <button onClick={() => processPayout(po.id, 'PAID')} disabled={busy} className="btn-primary text-xs px-3 py-2 disabled:opacity-40">Mark paid</button>
+                          <button onClick={() => processPayout(po.id, 'FAILED')} disabled={busy} className="text-xs px-3 py-2 rounded-xl bg-red-400/10 text-red-400 border border-red-400/20 hover:bg-red-400/20 disabled:opacity-40">Mark failed</button>
+                        </>
+                      )}
+                      {po.status === 'PROCESSING' && (
+                        <button onClick={() => processPayout(po.id, 'HELD')} disabled={busy} className="text-xs px-3 py-2 rounded-xl bg-amber-500/10 text-amber-300 border border-amber-500/20 hover:bg-amber-500/20 disabled:opacity-40">Hold</button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      ) : tab === 'reconciliation' ? (
+        <>
+          {/* Reconciliation */}
+          <div className="card p-5">
+            <h3 className="text-sm font-bold text-white uppercase tracking-wider mb-4">Marketplace money movement</h3>
+            {reconciliation ? (
+              <>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                  {[
+                    ['Gross', reconciliation.totals?.grossMinor, 'text-white'],
+                    ['Refunds', reconciliation.totals?.refundsMinor, 'text-purple-300'],
+                    ['Fees', reconciliation.totals?.feesMinor, 'text-amber-300'],
+                    ['Net to devs', reconciliation.totals?.netMinor, 'text-green-400'],
+                    ['Paid out', reconciliation.totals?.paidMinor, 'text-rx-gray-medium'],
+                    ['Outstanding', reconciliation.totals?.outstandingPayoutMinor, 'text-rx-yellow'],
+                  ].map(([label, value, cls]) => (
+                    <div key={String(label)} className="rounded-xl bg-rx-dark-tertiary/60 border border-white/5 p-3 text-center">
+                      <p className="text-[10px] uppercase tracking-wide text-rx-gray-medium">{String(label)}</p>
+                      <p className={`text-sm font-bold mt-1 ${cls}`}>GH₵{((Number(value) || 0) / 100).toFixed(2)}</p>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[11px] text-rx-gray-medium/70 mt-3">Platform fee: {reconciliation.feePercent ?? 15}% of retained sales · purchase ledger: {(reconciliation.purchaseLedger || []).map((l: any) => `${l.status}: ${l.count} (GH₵${(l.totalMinor / 100).toFixed(2)})`).join(' · ')}</p>
+                {(reconciliation.developers || []).length > 0 && (
+                  <div className="mt-4 divide-y divide-white/5 border-t border-white/5 pt-2">
+                    {reconciliation.developers.map((d: any) => (
+                      <div key={d.developerId} className="flex items-center justify-between gap-2 py-2 flex-wrap">
+                        <span className="text-sm text-white">{d.developerId}</span>
+                        <span className="text-xs text-rx-gray-medium">gross GH₵{((Number(d.grossMinor) || 0) / 100).toFixed(2)} · net GH₵{((Number(d.netMinor) || 0) / 100).toFixed(2)} · paid GH₵{((Number(d.paidMinor) || 0) / 100).toFixed(2)} · payable GH₵{((Number(d.pendingMinor) || 0) / 100).toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-rx-gray-medium text-center py-4">Reconciliation unavailable.</p>
+            )}
+          </div>
+        </>
       ) : (
         <>
           {/* Transactions */}

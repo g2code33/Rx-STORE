@@ -36,6 +36,7 @@ export const RATE_LIMIT_RULES: Array<{ prefix: string; rule: RateLimitRule }> = 
   { prefix: '/developers/releases', rule: { limit: 60, windowSeconds: 60 } },
   { prefix: '/developers', rule: { limit: 120, windowSeconds: 60 } },
   { prefix: '/reviews', rule: { limit: 20, windowSeconds: 60 } },
+  { prefix: '/developers/payouts', rule: { limit: 10, windowSeconds: 300 } },
   { prefix: '/admin', rule: { limit: 500, windowSeconds: 60 } },
   { prefix: '/ai', rule: { limit: 30, windowSeconds: 60 } },
   { prefix: '/apps', rule: { limit: 300, windowSeconds: 60 } },

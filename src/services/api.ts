@@ -510,6 +510,24 @@ export const api = {
       },
     },
 
+    // ---- Analytics, revenue & payouts (Phase 19) ----
+    finance: {
+      /** Aggregated org analytics (analytics.view). Zero customer PII. */
+      async analytics() {
+        return request<{ totals: any; apps: any[]; revenue: any }>('/developers/analytics', { method: 'GET' });
+      },
+      /** Financial detail — billing.manage only (OWNER/ADMIN). */
+      async revenue() {
+        return request<{ revenue: any; perAppRevenue: any[]; payouts: any[]; billing: any }>('/developers/revenue', { method: 'GET' });
+      },
+      async requestPayout() {
+        return request<{ payout: any }>('/developers/payouts/request', { method: 'POST', body: '{}' });
+      },
+      async updateBilling(body: { payoutDestination?: string; payoutNotes?: string; minPayoutMinor?: number }) {
+        return request<{ billing: any }>('/developers/billing', { method: 'PATCH', body: JSON.stringify(body) });
+      },
+    },
+
     // ---- Review responses (Phase 17) ----
     async respondToReview(reviewId: string, response: string) {
       return request<{ success: boolean }>(`/developers/reviews/${encodeURIComponent(reviewId)}/respond`, { method: 'POST', body: JSON.stringify({ response }) });
@@ -552,6 +570,22 @@ export const api = {
     },
     async entitlements() {
       return request<{ entitlements: any[] }>('/payments/entitlements', { method: 'GET' });
+    },
+  },
+
+  // Admin developer finance (Phase 19)
+  adminFinance: {
+    async developerRevenue() {
+      return request<{ feePercent: number; developers: any[] }>('/admin/finance/developers', { method: 'GET' });
+    },
+    async payouts(status?: string) {
+      return request<{ payouts: any[] }>(`/admin/finance/payouts${status ? `?status=${encodeURIComponent(status)}` : ''}`, { method: 'GET' });
+    },
+    async processPayout(id: string, status: string, body: { reason?: string; reference?: string } = {}) {
+      return request<any>(`/admin/finance/payouts/${encodeURIComponent(id)}/process`, { method: 'POST', body: JSON.stringify({ status, ...body }) });
+    },
+    async reconciliation() {
+      return request<any>('/admin/finance/reconciliation', { method: 'GET' });
     },
   },
 
