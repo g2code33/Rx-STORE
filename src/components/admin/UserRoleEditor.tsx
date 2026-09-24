@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Users, Shield, Crown, Wrench, Loader2, Search, Save, KeyRound, Megaphone } from 'lucide-react';
+import { Users, Shield, Crown, Wrench, Loader2, Search, Save, KeyRound, Megaphone, LogOut } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { API_URL } from '../../services/api';
 
@@ -101,6 +101,24 @@ export default function UserRoleEditor() {
     finally { setSaving(''); }
   };
 
+  /** Revoke every active session for the account (administrative sign-out of
+   *  all their devices). Never uninstalls apps or deletes the account. */
+  const revokeSessions = async (u: U) => {
+    if (!API_URL) { toast('Set VITE_API_URL for live updates', { icon: '⚠️' }); return; }
+    if (!window.confirm(`Sign ${u.name} (${u.email}) out of EVERY device? Their installed apps and account are untouched — they can sign in again.`)) return;
+    setSaving(`rv-${u.id}`);
+    try {
+      const res = await fetch(`${API_URL}/admin/users/${u.id}/revoke-sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || (res.status === 404 ? 'Redeploy the worker first (npx wrangler deploy --config backend/wrangler.toml)' : 'Failed'));
+      toast.success(`Signed ${u.name} out of ${data.data?.revoked ?? 'all'} session(s)`);
+    } catch (e: any) { toast.error(e.message); }
+    finally { setSaving(''); }
+  };
+
   const filtered = users.filter(u => !q || u.name.toLowerCase().includes(q.toLowerCase()) || u.email.toLowerCase().includes(q.toLowerCase()));
 
   if (loading) return <div className="card p-8 text-center text-rx-gray-medium flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin"/> Loading users…</div>;
@@ -158,6 +176,15 @@ export default function UserRoleEditor() {
                   className="p-2 rounded-lg text-rx-gray-medium hover:text-white hover:bg-white/10 transition-all disabled:opacity-50"
                 >
                   {saving === `pw-${u.id}` ? <Loader2 className="w-4 h-4 animate-spin" /> : <KeyRound className="w-4 h-4" />}
+                </button>
+                {/* Administratively sign the account out of every device */}
+                <button
+                  onClick={() => revokeSessions(u)}
+                  disabled={!!saving}
+                  title="Revoke all sessions — sign this user out of every device (apps and account are untouched)"
+                  className="p-2 rounded-lg text-rx-gray-medium hover:text-red-400 hover:bg-red-400/10 transition-all disabled:opacity-50"
+                >
+                  {saving === `rv-${u.id}` ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogOut className="w-4 h-4" />}
                 </button>
                 <select value={u.role} onChange={e=>updateRole(u.id, e.target.value)} disabled={!!saving} className="bg-rx-dark border border-white/10 rounded-xl px-2 py-1.5 text-sm text-white disabled:opacity-50">
                   <option value="user">user</option>

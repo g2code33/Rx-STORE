@@ -190,6 +190,12 @@ export default {
       if ((data as any)?.error) return respond({ success: false, error: data }, 400, origin);
       return respond({ success: true, data }, 200, origin);
     }
+    // Administrative session revocation — signs the account out of every device
+    if (path.match(/^\/admin\/users\/[^\/]+\/revoke-sessions$/) && request.method === 'POST') {
+      const data = await (adminRoutes as any).revokeUserSessions(normalizedRequest as any, env);
+      if ((data as any)?.error) return respond({ success: false, error: data }, 400, origin);
+      return respond({ success: true, data }, 200, origin);
+    }
     if (path === '/admin/revenue' && request.method === 'GET') {
       const data = await adminRoutes.revenue(normalizedRequest as any, env);
       return respond({ success: true, data }, 200, origin);

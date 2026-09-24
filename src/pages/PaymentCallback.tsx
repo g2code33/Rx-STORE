@@ -43,7 +43,7 @@ export default function PaymentCallback() {
             <CheckCircle2 className="w-12 h-12 text-green-400 mx-auto" />
             <h1 className="text-xl font-bold text-white mt-4">Purchase complete 🎉</h1>
             <p className="text-sm text-rx-gray-medium mt-2">You now own this application — download it on any of your devices.</p>
-            <Link to="/profile" className="btn-primary text-sm mt-6 inline-block">View my purchases</Link>
+            <Link to="/profile?tab=purchases" className="btn-primary text-sm mt-6 inline-block">View my purchases</Link>
           </>
         )}
         {state === 'failed' && (

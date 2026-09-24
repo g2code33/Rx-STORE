@@ -7,32 +7,25 @@
  */
 
 import { log, recordMetric } from '../native/logger.ts';
+import {
+  getAccessToken,
+  getRefreshToken,
+  setAccessToken,
+  setRefreshToken,
+  clearCredentialStorage,
+} from '../native/credentialStore.ts';
 
 // import.meta.env exists in Vite builds; guard for non-bundler runtimes (Node tests).
 const API_URL = ((import.meta as any).env?.VITE_API_URL || '').replace(/\/$/, '');
 
 function getToken(): string | null {
-  return localStorage.getItem('rx-store-token');
+  return getAccessToken();
 }
 
-function setToken(token: string) {
-  localStorage.setItem('rx-store-token', token);
-}
-
-/** Refresh token (rotated server-side). Only its presence is persisted. */
-export function getRefreshToken(): string | null {
-  return localStorage.getItem('rx-store-refresh-token');
-}
-export function setRefreshToken(token: string | null) {
-  try {
-    if (token) localStorage.setItem('rx-store-refresh-token', token);
-    else localStorage.removeItem('rx-store-refresh-token');
-  } catch { /* storage unavailable */ }
-}
+export { getRefreshToken, setRefreshToken } from '../native/credentialStore.ts';
 
 export function clearToken() {
-  localStorage.removeItem('rx-store-token');
-  try { localStorage.removeItem('rx-store-refresh-token'); } catch { /* ignore */ }
+  clearCredentialStorage();
 }
 
 export const isApiConfigured = () => Boolean(API_URL);
@@ -46,12 +39,21 @@ function currentDeviceId(): string | undefined {
  * Single-flight refresh: rotates the refresh token and returns a new access
  * token. Concurrent callers share one in-flight request so we never replay a
  * (single-use) refresh token — replay would be rejected by the server.
+ *
+ * Failure classification (why this exists): a deployed frontend / Worker blip
+ * (5xx, maintenance mode, gateway timeout) or an OFFLINE device must NEVER
+ * sign the user out. Only an EXPLICIT server rejection (revoked / invalid /
+ * expired session → 401/403 with INVALID_TOKEN / TOKEN_EXPIRED / AUTH_REQUIRED)
+ * clears the stored credentials. Everything else keeps them, so the next
+ * launch (or reconnect) restores the session silently.
  */
-let refreshInFlight: Promise<string | null> | null = null;
-export async function refreshAccessToken(): Promise<string | null> {
-  if (!API_URL) return null;
-  const rt = getRefreshToken();
-  if (!rt) return null;
+export type RefreshAttempt = 'ok' | 'rejected' | 'network';
+
+let refreshInFlight: Promise<RefreshAttempt> | null = null;
+export async function attemptRefresh(): Promise<RefreshAttempt> {
+  if (!API_URL) return 'network'; // unconfigured API is not a session rejection
+  const rt = await getRefreshToken();
+  if (!rt) return 'rejected'; // no credential at all → nothing to keep
   if (refreshInFlight) return refreshInFlight;
   refreshInFlight = (async () => {
     try {
@@ -62,18 +64,42 @@ export async function refreshAccessToken(): Promise<string | null> {
       });
       const json = await res.json().catch(() => null);
       const payload = json?.data || json;
-      if (!res.ok || !payload?.token) { clearToken(); return null; }
-      setToken(payload.token);
-      // Rotation returns a new refresh token; persist it.
-      if (payload.refreshToken) setRefreshToken(payload.refreshToken);
-      return payload.token as string;
+      if (res.ok && payload?.token) {
+        setAccessToken(payload.token);
+        // Rotation returns a new refresh token; persist it (this replaces the
+        // old credential only after the new one is in hand — never before).
+        if (payload.refreshToken) setRefreshToken(payload.refreshToken);
+        return 'ok' as RefreshAttempt;
+      }
+      const code = payload?.error?.code || payload?.code;
+      const rejected =
+        res.status === 401 || res.status === 403 ||
+        code === 'INVALID_TOKEN' || code === 'TOKEN_EXPIRED' || code === 'AUTH_REQUIRED';
+      if (rejected) {
+        // The server explicitly ended this session (sign-out elsewhere, "sign
+        // out all devices", password reset, admin revocation). Credentials are
+        // genuinely dead — clear them.
+        clearCredentialStorage();
+        return 'rejected' as RefreshAttempt;
+      }
+      // 5xx / maintenance / deployment blip — keep credentials, retry later.
+      return 'network' as RefreshAttempt;
     } catch {
-      return null;
+      return 'network' as RefreshAttempt;
     } finally {
       refreshInFlight = null;
     }
   })();
   return refreshInFlight;
+}
+
+/**
+ * Back-compat wrapper: the new access token on success, null otherwise.
+ * Credentials are cleared ONLY when the server explicitly rejected them.
+ */
+export async function refreshAccessToken(): Promise<string | null> {
+  const outcome = await attemptRefresh();
+  return outcome === 'ok' ? getAccessToken() : null;
 }
 
 type ApiOptions = {
@@ -165,7 +191,9 @@ export const api = {
         body: JSON.stringify({ email, password, identifier: email, deviceId: currentDeviceId() }),
         auth: false,
       });
-      setToken(data.token);
+      // Persist the session (access token + PERSISTENT refresh credential —
+      // the device stays signed in until the user signs out).
+      setAccessToken(data.token);
       if (data.refreshToken) setRefreshToken(data.refreshToken);
       return data;
     },
@@ -175,7 +203,7 @@ export const api = {
         body: JSON.stringify({ name, email, password, phone, deviceId: currentDeviceId() }),
         auth: false,
       });
-      setToken(data.token);
+      setAccessToken(data.token);
       if (data.refreshToken) setRefreshToken(data.refreshToken);
       return data;
     },
@@ -187,9 +215,10 @@ export const api = {
     },
     async logout(opts?: { allDevices?: boolean }) {
       try {
+        const refreshToken = await getRefreshToken();
         await request('/auth/logout', {
           method: 'POST',
-          body: JSON.stringify({ refreshToken: getRefreshToken(), allDevices: opts?.allDevices === true }),
+          body: JSON.stringify({ refreshToken, allDevices: opts?.allDevices === true }),
         });
       } finally {
         clearToken();

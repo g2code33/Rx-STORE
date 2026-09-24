@@ -4,9 +4,18 @@
  * JWT hardening:
  *   - only HS256 is accepted (the `alg` header is verified, never trusted)
  *   - `iss` (issuer) and `aud` (audience) are validated
- *   - `tokenType` distinguishes access vs refresh tokens, so a refresh token
- *     cannot be replayed as an access token and vice-versa
+ *   - `tokenType` distinguishes access vs refresh tokens, so a legacy refresh
+ *     token cannot be replayed as an access token and vice-versa
  *   - `exp` is enforced; `iat`/`jti` are included for traceability
+ *
+ * Session model (persistent devices):
+ *   - ACCESS tokens are JWTs with a short (24 h) life — used for normal API
+ *     calls, refreshed silently when they expire.
+ *   - REFRESH credentials are opaque random tokens with NO embedded expiry.
+ *     The durable authority is the server-side `auth_sessions` row (hashed
+ *     token, expires_at NULL = persistent until revoked). Legacy refresh
+ *     tokens were JWTs with a 30-day life; they still verify and migrate to
+ *     the persistent model on their next rotation.
  *
  * Password hashing lives in ./password (Argon2id/bcrypt are unavailable in the
  * Workers runtime; see that module for the rationale).
@@ -50,11 +59,38 @@ async function signToken(payload: any, secret: string, lifetimeSeconds: number, 
   return `${input}.${b64url(signature)}`;
 }
 
-export const ACCESS_TOKEN_TTL_SECONDS = 24 * 60 * 60;      // 1 day
-export const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
+export const ACCESS_TOKEN_TTL_SECONDS = 24 * 60 * 60; // 1 day
+
+/**
+ * LEGACY value: refresh tokens issued before persistent sessions were a JWT
+ * with this 30-day lifetime. Those tokens are still VERIFIED (backward
+ * compatibility — see verifyRefreshToken) but never minted again. New refresh
+ * credentials are opaque and carry no embedded expiry: the durable authority
+ * is the server-side `auth_sessions` row, which is persistent (expires_at
+ * NULL) until explicitly revoked.
+ */
+export const LEGACY_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
 
 export const generateToken = (payload: any, secret: string) => signToken(payload, secret, ACCESS_TOKEN_TTL_SECONDS, 'access');
-export const generateRefreshToken = (payload: any, secret: string) => signToken(payload, secret, REFRESH_TOKEN_TTL_SECONDS, 'refresh');
+
+/**
+ * Mint a NEW refresh credential: an opaque, high-entropy random token
+ * (`rxr_<64 hex>` = 256 bits). It is NOT a JWT and has no expiry of its own —
+ * by design. The server-side `auth_sessions` record (looked up by the token's
+ * SHA-256 hash) is the single durable authority for whether the credential is
+ * still live. This is what makes a device session indefinite WITHOUT forging
+ * a giant-expiry JWT: possession of the raw token + a live session row is the
+ * proof, and revocation is a one-row UPDATE.
+ *
+ * Legacy 30-day JWT refresh tokens are unaffected: they are still accepted by
+ * POST /auth/refresh and transparently migrated to this model on rotation.
+ */
+export async function generateRefreshToken(): Promise<string> {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+  return `rxr_${hex}`;
+}
 
 /** Verify a token and (optionally) assert its type. Throws a coded error on failure. */
 async function verifyJwt(token: string, secret: string, expectedType?: TokenType): Promise<any> {
@@ -85,7 +121,13 @@ async function verifyJwt(token: string, secret: string, expectedType?: TokenType
 
 /** Verify only an access token (used by the auth middleware). */
 export const verifyAccessToken = (token: string, secret: string) => verifyJwt(token, secret, 'access');
-/** Verify only a refresh token. */
+/**
+ * Verify a LEGACY JWT-shaped refresh token (30-day model). Only used for
+ * backward-compatible diagnostics on POST /auth/refresh — never as the sole
+ * authority: the live `auth_sessions` row decides whether a refresh succeeds.
+ * New opaque tokens (`rxr_…`) are rejected here by the JWT parser, which is
+ * fine because they are only ever matched against a session row.
+ */
 export const verifyRefreshToken = (token: string, secret: string) => verifyJwt(token, secret, 'refresh');
 
 /**

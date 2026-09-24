@@ -390,10 +390,23 @@ test('security controls still hold after hardening', async () => {
   assert.equal(await pw.verifyPassword('GoodPass1!', h), true);
   assert.equal(await pw.verifyPassword('wrong', h), false);
 
-  // JWT: type confusion + alg confusion rejected
+  // JWT: type confusion + alg confusion rejected. Refresh credentials are
+  // OPAQUE now (not JWTs — rejected as MALFORMED); a LEGACY JWT refresh token
+  // is still rejected as an access token (WRONG_TYPE).
   const secret = 'test-secret';
-  const refresh = await jwt.generateRefreshToken({ userId: 'u' }, secret);
-  await assert.rejects(() => jwt.verifyAccessToken(refresh, secret), /WRONG_TYPE/);
+  const opaque = await jwt.generateRefreshToken();
+  assert.ok(opaque.startsWith('rxr_'));
+  await assert.rejects(() => jwt.verifyAccessToken(opaque, secret), /MALFORMED/);
+  const legacyRefresh = await (async () => {
+    const b64 = (o: any) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    const now = Math.floor(Date.now() / 1000);
+    const header = b64({ alg: 'HS256', typ: 'JWT' });
+    const body = b64({ userId: 'u', iss: 'rx-store-api', aud: 'rx-store', tokenType: 'refresh', iat: now, jti: 'j', exp: now + 60 });
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${header}.${body}`)));
+    return `${header}.${body}.${Buffer.from(sig).toString('base64url')}`;
+  })();
+  await assert.rejects(() => jwt.verifyAccessToken(legacyRefresh, secret), /WRONG_TYPE/);
 
   // CORS allowlist: look-alikes rejected
   assert.equal(isOriginAllowed('https://evilrxstore.com', { environment: 'production' }), false);

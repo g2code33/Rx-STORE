@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { Search, X, Bell, User, ChevronDown, LogOut, Settings, Shield, Download } from 'lucide-react';
+import { Search, X, Bell, User, ChevronDown, LogOut, Settings, Shield, Download, Monitor, CreditCard } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { getPublicSettings } from '../../services/api';
 import { useContent } from '../../context/ContentContext';
@@ -206,7 +206,7 @@ export default function Header() {
                       ))}
                     </div>
                     <div className="p-3">
-                      <Link to="/profile" onClick={()=>setIsNotifOpen(false)} className="text-xs text-rx-yellow hover:underline text-center block">
+                      <Link to="/profile?tab=notifications" onClick={()=>setIsNotifOpen(false)} className="text-xs text-rx-yellow hover:underline text-center block">
                         View all notifications
                       </Link>
                     </div>
@@ -236,13 +236,23 @@ export default function Header() {
                       <p className="text-xs text-rx-gray-medium">{user.email}</p>
                     </div>
                     <div className="p-2">
-                      <Link to="/profile" onClick={()=>setIsProfileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all">
+                      {/* Every account section opens ITS section directly via ?tab=. */}
+                      <Link to="/profile?tab=profile" onClick={()=>setIsProfileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all">
                         <User className="w-4 h-4" /> My Profile
                       </Link>
-                      <Link to="/profile" onClick={()=>setIsProfileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all">
+                      <Link to="/profile?tab=apps" onClick={()=>setIsProfileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all">
                         <Download className="w-4 h-4" /> My Apps
                       </Link>
-                      <Link to="/profile" onClick={()=>setIsProfileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all">
+                      <Link to="/profile?tab=devices" onClick={()=>setIsProfileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all">
+                        <Monitor className="w-4 h-4" /> My Devices
+                      </Link>
+                      <Link to="/profile?tab=purchases" onClick={()=>setIsProfileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all">
+                        <CreditCard className="w-4 h-4" /> Purchases
+                      </Link>
+                      <Link to="/profile?tab=notifications" onClick={()=>setIsProfileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all">
+                        <Bell className="w-4 h-4" /> Notifications
+                      </Link>
+                      <Link to="/profile?tab=settings" onClick={()=>setIsProfileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all">
                         <Settings className="w-4 h-4" /> Settings
                       </Link>
                       {user.role === 'admin' && (

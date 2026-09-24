@@ -23,6 +23,21 @@ import { devicesRoutes } from './routes/devices.ts';
 
 const SECRET = 'test-secret-please-rotate';
 
+/**
+ * Mint a LEGACY JWT-shaped refresh token (the pre-persistent-session model).
+ * Refresh credentials are opaque now; this helper exists so tests can still
+ * exercise the backward-compatible legacy path (30-day JWT refresh tokens).
+ */
+async function legacyRefreshJwt(payload: any, secret: string, lifetimeSeconds: number): Promise<string> {
+  const b64 = (o: any) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const now = Math.floor(Date.now() / 1000);
+  const header = b64({ alg: 'HS256', typ: 'JWT' });
+  const body = b64({ ...payload, iss: 'rx-store-api', aud: 'rx-store', tokenType: 'refresh', iat: now, jti: crypto.randomUUID(), exp: now + lifetimeSeconds });
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${header}.${body}`)));
+  return `${header}.${body}.${Buffer.from(sig).toString('base64url')}`;
+}
+
 // ---------------------------------------------------------------------------
 // Password hashing
 // ---------------------------------------------------------------------------
@@ -79,10 +94,15 @@ test('access token verifies and carries iss/aud/type', async () => {
 });
 
 test('a refresh token cannot be used as an access token (type confusion)', async () => {
-  const r = await generateRefreshToken({ userId: 'u1' }, SECRET);
-  await assert.rejects(() => verifyAccessToken(r, SECRET), /WRONG_TYPE/);
-  // ...but it verifies as a refresh token.
-  const p = await verifyRefreshToken(r, SECRET);
+  // Current refresh credentials are opaque (not JWTs at all)…
+  const opaque = await generateRefreshToken();
+  assert.ok(opaque.startsWith('rxr_'), 'new refresh credentials are opaque rxr_ tokens');
+  assert.ok(!opaque.includes('.'), 'opaque tokens are not JWTs');
+  await assert.rejects(() => verifyAccessToken(opaque, SECRET), /MALFORMED/);
+  // …and a LEGACY JWT refresh token still cannot be replayed as an access token.
+  const legacy = await legacyRefreshJwt({ userId: 'u1' }, SECRET, 60);
+  await assert.rejects(() => verifyAccessToken(legacy, SECRET), /WRONG_TYPE/);
+  const p = await verifyRefreshToken(legacy, SECRET);
   assert.equal(p.tokenType, 'refresh');
 });
 

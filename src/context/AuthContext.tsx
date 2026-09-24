@@ -1,8 +1,10 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { User, Notification } from '../types';
-import { api, isApiConfigured, clearToken, API_URL } from '../services/api';
+import { api, isApiConfigured, clearToken, attemptRefresh, API_URL } from '../services/api';
 import { syncDeviceOnAuth, heartbeatDevice } from '../native/accountSync';
 import { clearAccountData } from '../native/cache';
+import { hydrateCredentialStorage, getRefreshTokenSync } from '../native/credentialStore';
+import { restoreSession } from '../native/sessionRestore';
 
 interface AuthContextType {
   user: User | null;
@@ -44,6 +46,9 @@ const loadNotifications = (u: any): Notification[] => {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  // Mirrors `user` for the offline-retry path (no re-render needed) so a
+  // restored session stops retrying on every foreground/online event.
+  const userRef = useRef<User | null>(null);
   const dispatchAuth = (u: any) => { try { window.dispatchEvent(new CustomEvent('rx-auth-change')); } catch {} };
   const [isLoading, setIsLoading] = useState(true);
   const [notifications, setNotifications] = useState<Notification[]>(() => {
@@ -51,44 +56,91 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
 
   useEffect(() => {
-    (async () => {
-      const token = localStorage.getItem('rx-store-token');
-      // A cached profile is display data, not proof of authentication. Only
-      // restore it after the server validates the token; this prevents stale
-      // demo/guest identities (such as the old Alex account) from signing in.
-      if (isApiConfigured() && token) {
-        try {
-          const res: any = await api.auth.me();
-          const me = res.user || res;
-          if (!me?.id) throw new Error('Invalid session');
-          const merged: User = {
-            id: me.id,
-            name: me.name,
-            email: me.email,
-            phone: me.phone,
-            avatar: me.avatar || me.avatar_url || '👤',
-            role: me.role || 'user',
-            joinDate: me.joinDate || (me.created_at || '').slice(0,10) || new Date().toISOString().slice(0,10),
-            downloadedApps: me.downloadedApps || [],
-            subscriptions: me.subscriptions || [],
-            notifications: me.notifications || [],
-            preferences: me.preferences,
-          };
+    let cancelled = false;
+    let restoring = false;
+    // A cached profile is display data, not proof of authentication. Only the
+    // server (via /users/me or a refresh) can restore a signed-in user; this
+    // prevents stale demo/guest identities from signing in.
+
+    const toUser = (me: any): User => ({
+      id: me.id,
+      name: me.name,
+      email: me.email,
+      phone: me.phone,
+      avatar: me.avatar || me.avatar_url || '👤',
+      role: me.role || 'user',
+      joinDate: me.joinDate || (me.created_at || '').slice(0, 10) || new Date().toISOString().slice(0, 10),
+      downloadedApps: me.downloadedApps || [],
+      subscriptions: me.subscriptions || [],
+      notifications: me.notifications || [],
+      preferences: me.preferences,
+    });
+
+    const run = async () => {
+      if (restoring) return;
+      restoring = true;
+      try {
+        if (!isApiConfigured()) {
+          localStorage.removeItem('rx-store-user');
+          if (!cancelled) { setUser(null); dispatchAuth(null); }
+          return;
+        }
+        // Reconcile the durable credential copies FIRST (Android native
+        // Keystore storage ↔ localStorage, incl. the v1→v2 auth-storage
+        // migration). No-op on web/desktop.
+        await hydrateCredentialStorage();
+
+        const result = await restoreSession({
+          hasAccessToken: () => !!localStorage.getItem('rx-store-token'),
+          hasRefreshToken: () => !!getRefreshTokenSync(),
+          fetchMe: () => api.auth.me(),
+          attemptRefresh,
+          clearCredentials: () => clearToken(),
+          // request() attaches .status to HTTP errors; raw fetch failures
+          // (offline/DNS) do not have one.
+          isNetworkError: (e: any) => !e?.status,
+        });
+        if (cancelled) return;
+        if (result.status === 'authenticated') {
+          const merged = toUser(result.user);
+          userRef.current = merged;
           setUser(merged);
           localStorage.setItem('rx-store-user', JSON.stringify(merged));
-        } catch {
+          dispatchAuth(merged);
+        } else if (result.status === 'signed-out') {
+          userRef.current = null;
           clearToken();
           localStorage.removeItem('rx-store-user');
           setUser(null);
           dispatchAuth(null);
         }
-      } else {
-        localStorage.removeItem('rx-store-user');
-        setUser(null);
-        dispatchAuth(null);
+        // 'offline': keep every stored credential — the session is still valid
+        // server-side; the retry below restores the user once we reconnect.
+        // (The cached profile is never shown as proof of authentication.)
+      } finally {
+        restoring = false;
+        if (!cancelled) setIsLoading(false);
       }
-      setIsLoading(false);
-    })();
+    };
+
+    void run();
+
+    // Offline launch / transient server failure must not permanently strand a
+    // signed-in user on the Sign In page: retry restoration when connectivity
+    // returns or the app becomes visible again, while a credential remains.
+    const retryIfPending = () => {
+      if (cancelled || restoring || userRef.current) return;
+      if (!localStorage.getItem('rx-store-token') && !getRefreshTokenSync()) return;
+      void run();
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') retryIfPending(); };
+    window.addEventListener('online', retryIfPending);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('online', retryIfPending);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   const login = async (email: string, password: string): Promise<boolean> => {
@@ -101,9 +153,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       dispatchAuth(apiUser);
       return true;
     } catch (e: any) {
-      clearToken();
-      localStorage.removeItem('rx-store-user');
-      setUser(null);
+      // A failed sign-in attempt establishes nothing: do NOT clear stored
+      // credentials or the current user — a network hiccup while signing into
+      // a second account must not sign this device out of the first one.
       const msg = String(e?.message || 'Sign in failed');
       if (/invalid|credential|not found|401|403/i.test(msg)) {
         throw new Error('Incorrect email/phone or password. If you do not have an account, choose Sign Up first.');
@@ -127,9 +179,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       dispatchAuth(apiUser);
       return true;
     } catch (e: any) {
-      clearToken();
-      localStorage.removeItem('rx-store-user');
-      setUser(null);
       const msg = String(e?.message || 'Registration failed');
       if (/fetch|network|account service|api not configured/i.test(msg)) {
         throw new Error('RX Store cannot reach the account service. Check your connection and try again.');
@@ -153,6 +202,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // NEVER uninstalls applications — sessions and installations are separate.
     if (isApiConfigured()) api.auth.logout({ allDevices: opts?.allDevices }).catch(() => {});
     clearToken();
+    userRef.current = null;
     setUser(null);
     localStorage.removeItem('rx-store-user');
     dispatchAuth(null);

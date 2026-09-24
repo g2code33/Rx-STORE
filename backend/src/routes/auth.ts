@@ -1,11 +1,11 @@
 /**
  * Authentication Routes — D1 compatible, phone + email, refresh/rotation, reset.
  */
-import { hashPassword, verifyPassword, needsRehash, generateToken, generateRefreshToken, verifyRefreshToken } from '../services/auth';
-import { validateEmail, validatePassword, PASSWORD_REQUIREMENT, validateId } from '../utils/validation';
-import { getSetting } from '../services/settings';
-import { createSession, findLiveSession, revokeByToken, revokeAllSessions, ensureSessionTable } from '../services/sessions';
-import { apiErrorBody } from '../services/errors';
+import { hashPassword, verifyPassword, needsRehash, generateToken, generateRefreshToken, verifyRefreshToken } from '../services/auth.ts';
+import { validateEmail, validatePassword, PASSWORD_REQUIREMENT, validateId } from '../utils/validation.ts';
+import { getSetting } from '../services/settings.ts';
+import { createSession, findLiveSession, revokeByToken, revokeAllSessions, ensureSessionTable, touchSession } from '../services/sessions.ts';
+import { apiErrorBody } from '../services/errors.ts';
 
 function normalizePhone(p: any): string | null {
   if (!p) return null;
@@ -63,7 +63,8 @@ export const authRoutes = {
     }
 
     const token = await generateToken({ userId: id, role: 'user' }, env.JWT_SECRET);
-    const refreshToken = await generateRefreshToken({ userId: id, role: 'user' }, env.JWT_SECRET);
+    const refreshToken = await generateRefreshToken();
+    // Persistent session: no expiry — ends only on sign-out / revocation.
     await createSession(env, { userId: id, refreshToken, deviceId, userAgent: request.headers.get('User-Agent') || '' }).catch(() => {});
     return { user: { id, name: name.trim(), email: email.trim().toLowerCase(), phone: phoneNorm, role: 'user', avatar: '👤', joinDate: new Date().toISOString().slice(0,10), downloadedApps: [], subscriptions: [], notifications: [] }, token, refreshToken };
   },
@@ -99,7 +100,8 @@ export const authRoutes = {
     }
 
     const token = await generateToken({ userId: user.id, role: user.role }, env.JWT_SECRET);
-    const refreshToken = await generateRefreshToken({ userId: user.id, role: user.role }, env.JWT_SECRET);
+    const refreshToken = await generateRefreshToken();
+    // Persistent session: no expiry — ends only on sign-out / revocation.
     await createSession(env, { userId: user.id, refreshToken, deviceId, userAgent: request.headers.get('User-Agent') || '' }).catch(() => {});
     await env.DB.prepare(`UPDATE users SET last_login_at = datetime('now') WHERE id = ?`).bind(user.id).run().catch(()=>{});
     return {
@@ -117,6 +119,14 @@ export const authRoutes = {
    * POST /auth/refresh { refreshToken } → rotate: the presented refresh token is
    * revoked and a brand-new access + refresh pair is issued. Replaying an old
    * refresh token fails (it is already revoked), which is the point of rotation.
+   *
+   * The server-side session row is THE authority — this accepts both current
+   * opaque tokens and legacy 30-day JWT refresh tokens (both are matched by
+   * hash), and migrates any live legacy session to the persistent model:
+   * the replacement session has no expiry and keeps the original device +
+   * user-agent association. A legacy JWT whose signature/expiry no longer
+   * verifies but whose session row is still live still refreshes (the DB
+   * record decides); a revoked or genuinely expired session does not.
    */
   async refresh(request: Request, env: any) {
     let body: any;
@@ -124,26 +134,38 @@ export const authRoutes = {
     const refreshToken = String(body?.refreshToken || '');
     if (!refreshToken) return { code: 'VALIDATION_ERROR', message: 'refreshToken is required' };
 
-    let payload: any;
-    try {
-      payload = await verifyRefreshToken(refreshToken, env.JWT_SECRET);
-    } catch (e: any) {
-      const code = String(e?.message || '');
-      return { code: code === 'EXPIRED' ? 'TOKEN_EXPIRED' : 'INVALID_TOKEN', message: code === 'EXPIRED' ? 'Session expired. Please sign in again.' : 'Invalid refresh token.' };
+    // 1. The live session row decides. Works for opaque AND legacy JWT tokens.
+    const session = await findLiveSession(env, refreshToken);
+    if (!session) {
+      // 2. Diagnostics only: for a legacy JWT we can say precisely WHY it is
+      //    dead (expired vs signed-out vs malformed). The outcome was already
+      //    decided above — no session, no refresh.
+      try {
+        await verifyRefreshToken(refreshToken, env.JWT_SECRET);
+        return { code: 'INVALID_TOKEN', message: 'This session was signed out or has expired.' };
+      } catch (e: any) {
+        const code = String(e?.message || '');
+        return { code: code === 'EXPIRED' ? 'TOKEN_EXPIRED' : 'INVALID_TOKEN', message: code === 'EXPIRED' ? 'Session expired. Please sign in again.' : 'Invalid refresh token.' };
+      }
     }
 
-    // The token must correspond to a live (unrevoked, unexpired) session.
-    const session = await findLiveSession(env, refreshToken);
-    if (!session) return { code: 'INVALID_TOKEN', message: 'This session was signed out or has expired.' };
-
-    const user: any = await env.DB.prepare('SELECT id, role, name, email, phone, avatar_url, created_at FROM users WHERE id=?').bind(payload.userId).first().catch(()=>null);
+    // The session row (not any client-supplied claim) identifies the account.
+    const user: any = await env.DB.prepare('SELECT id, role, name, email, phone, avatar_url, created_at FROM users WHERE id=?').bind(session.user_id).first().catch(()=>null);
     if (!user) return { code: 'INVALID_TOKEN', message: 'Invalid refresh token.' };
 
-    // Rotate: revoke the old session, issue a new token pair + session.
+    // Rotate: revoke the old session, issue a new token pair + session. The
+    // replacement preserves the original device + user-agent and is persistent
+    // (no expiry) — so a legacy 30-day session is migrated on its first refresh.
     await revokeByToken(env, refreshToken).catch(() => {});
     const token = await generateToken({ userId: user.id, role: user.role }, env.JWT_SECRET);
-    const newRefresh = await generateRefreshToken({ userId: user.id, role: user.role }, env.JWT_SECRET);
-    await createSession(env, { userId: user.id, refreshToken: newRefresh, deviceId: session.device_id || undefined, userAgent: request.headers.get('User-Agent') || '' }).catch(() => {});
+    const newRefresh = await generateRefreshToken();
+    await createSession(env, {
+      userId: user.id,
+      refreshToken: newRefresh,
+      deviceId: session.device_id || undefined,
+      userAgent: session.user_agent || request.headers.get('User-Agent') || '',
+    }).catch(() => {});
+    await touchSession(env, session.id).catch(() => {});
 
     return {
       token,
@@ -169,8 +191,16 @@ export const authRoutes = {
     const refreshToken = String(body?.refreshToken || '');
     const allDevices = body?.allDevices === true;
 
-    // Prefer the authenticated identity (set by the auth middleware) when available.
-    const authedUserId = (request as any)?.user?.userId as string | undefined;
+    // Prefer the authenticated identity (set by the auth middleware) when
+    // available. The access token may legitimately have EXPIRED by the time the
+    // user presses "Sign out all devices" — in that case resolve the account
+    // from the presented refresh credential's live session instead, so
+    // "all devices" still revokes every session and not just the current one.
+    let authedUserId = (request as any)?.user?.userId as string | undefined;
+    if (!authedUserId && refreshToken) {
+      const session = await findLiveSession(env, refreshToken).catch(() => null);
+      if (session) authedUserId = session.user_id;
+    }
 
     if (allDevices && authedUserId) {
       const n = await revokeAllSessions(env, authedUserId);

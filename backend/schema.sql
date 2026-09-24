@@ -415,6 +415,8 @@ CREATE INDEX IF NOT EXISTS idx_app_installations_app ON app_installations(applic
 
 -- ==================== AUTH SESSIONS (refresh token rotation) ====================
 -- Only the SHA-256 HASH of a refresh token is stored (never the raw token).
+-- expires_at NULL = PERSISTENT session: it never expires and ends only via
+-- revoked_at (sign-out, "sign out all devices", password reset, admin revoke).
 CREATE TABLE IF NOT EXISTS auth_sessions (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -423,7 +425,7 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
   user_agent TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   last_used_at TEXT,
-  expires_at TEXT NOT NULL,
+  expires_at TEXT,
   revoked_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);

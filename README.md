@@ -82,6 +82,7 @@ The platform combines the best of Microsoft Store, Samsung Galaxy Store, and Jet
 - 📝 Complete audit logging
 - 🔑 JWT authentication
 - 🛑 Rate limiting and DDoS protection
+- ♾️ Persistent device sessions: short-lived access JWTs + opaque, rotating refresh credentials backed by server-side `auth_sessions` (hashed, revocable, no fixed expiry) — a signed-in device stays signed in across app updates, restarts and reboots until the user signs out, "signs out all devices", or an admin revokes the session. Android stores the refresh credential in Keystore-encrypted native storage (`SecureStorePlugin`).
 
 ### AI Integration
 - 🤖 AI-powered app recommendations

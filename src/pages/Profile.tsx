@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Link, Navigate } from 'react-router-dom';
-import { Download, CreditCard, Bell, Settings, LogOut, X, Trash2, RefreshCw, Rocket, Monitor, Smartphone, Globe, Laptop } from 'lucide-react';
+import { Link, Navigate, useSearchParams, useLocation } from 'react-router-dom';
+import { Download, CreditCard, Bell, Settings, LogOut, X, Trash2, RefreshCw, Rocket, Monitor, Smartphone, Globe, Laptop, UserCircle, Save } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import { useApps } from '../context/AppContext';
@@ -12,6 +12,7 @@ import { installStateStatus } from '../native/installUi';
 import { formatDate } from '../utils/helpers';
 import AppLogo from '../components/apps/AppLogo';
 import { useUpdateStatus, describeStatus, checkNow, installNow, isDesktopApp, applyUpdatePolicy, watchConnectionForUpdatePolicy } from '../desktop/updater';
+import { normalizeProfileTab, type ProfileTab } from '../utils/profileTabs';
 import toast from 'react-hot-toast';
 
 const DEFAULT_PREFERENCES = {
@@ -109,13 +110,22 @@ function DesktopUpdatesCard() {
 }
 
 export default function Profile() {
-  const { user, logout, updateProfile, notifications, markNotificationRead } = useAuth();
+  const { user, isLoading: authLoading, logout, updateProfile, notifications, markNotificationRead } = useAuth();
   const { getAppById, installedApps, installApp, uninstallApp } = useApps();
   const { devices, syncNow, revoke, installations, offline, pendingSync, flushSync } = useDevices();
-  const [activeTab, setActiveTab] = useState<'apps' | 'devices' | 'purchases' | 'subscriptions' | 'notifications' | 'trash' | 'settings'>('apps');
+  // The URL is the source of truth for the active section (?tab=…), so account
+  // links from the header/dropdown open their section directly and browser
+  // back/forward moves between sections.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
+  const activeTab: ProfileTab = normalizeProfileTab(searchParams.get('tab'));
   const [profileForm, setProfileForm] = useState({ name: user?.name || '', email: user?.email || '' });
   const [preferences, setPreferences] = useState(() => ({ ...DEFAULT_PREFERENCES, ...(user?.preferences || {}) }));
   const [savingProfile, setSavingProfile] = useState(false);
+
+  const setActiveTab = (tab: ProfileTab) => {
+    setSearchParams(tab === 'apps' ? {} : { tab }, { replace: false });
+  };
 
   React.useEffect(() => {
     if (!user) return;
@@ -132,7 +142,21 @@ export default function Profile() {
   // metered connection pauses updates (Wi-Fi-only), switching back resumes.
   React.useEffect(() => { watchConnectionForUpdatePolicy(); }, []);
 
-  if (!user) return <Navigate to="/login" replace />;
+  // Session restoration in flight — show the shell instead of bouncing to the
+  // sign-in page (a signed-in user reloading /profile must stay here).
+  if (authLoading) {
+    return (
+      <div className="section-container py-8 lg:py-12">
+        <div className="card p-8 text-center text-rx-gray-medium animate-pulse">Restoring your session…</div>
+      </div>
+    );
+  }
+
+  // Signed out — remember where the user was heading so sign-in returns here.
+  if (!user) {
+    const here = encodeURIComponent(location.pathname + location.search);
+    return <Navigate to={`/login?redirect=${here}`} replace />;
+  }
 
   const saveProfile = async () => {
     const name = profileForm.name.trim();
@@ -167,14 +191,26 @@ export default function Profile() {
     }
   };
 
-  const tabs = [
-    { id: 'apps' as const, label: 'My Applications', icon: Download, count: (installedApps || []).length },
-    { id: 'devices' as const, label: 'My Devices', icon: Monitor, count: devices.filter((d) => d.status !== 'revoked').length },
-    { id: 'purchases' as const, label: 'Purchases', icon: CreditCard },
-    { id: 'subscriptions' as const, label: 'Subscriptions', icon: CreditCard, count: (user.subscriptions || []).length },
-    { id: 'notifications' as const, label: 'Notifications', icon: Bell, count: (notifications || []).filter((n) => !n.read).length },
-    { id: 'trash' as const, label: 'Recycle Bin', icon: Trash2, count: (()=>{ try{ const u=JSON.parse(localStorage.getItem('rx-store-user')||'{}'); const k=u?.id?`rx-trash-${u.id}`:'rx-trash'; const a=JSON.parse(localStorage.getItem(k)||'[]'); return Array.isArray(a)?a.length:0; } catch{ return 0; }})() },
-    { id: 'settings' as const, label: 'Settings', icon: Settings },
+  const tabs: { id: ProfileTab; label: string; icon: any; count?: number }[] = [
+    { id: 'profile', label: 'Personal Details', icon: UserCircle },
+    { id: 'apps', label: 'My Applications', icon: Download, count: (installedApps || []).length },
+    { id: 'devices', label: 'My Devices', icon: Monitor, count: devices.filter((d) => d.status !== 'revoked').length },
+    { id: 'purchases', label: 'Purchases', icon: CreditCard },
+    { id: 'subscriptions', label: 'Subscriptions', icon: CreditCard, count: (user.subscriptions || []).length },
+    { id: 'notifications', label: 'Notifications', icon: Bell, count: (notifications || []).filter((n) => !n.read).length },
+    { id: 'trash', label: 'Recycle Bin', icon: Trash2, count: (()=>{ try{ const u=JSON.parse(localStorage.getItem('rx-store-user')||'{}'); const k=u?.id?`rx-trash-${u.id}`:'rx-trash'; const a=JSON.parse(localStorage.getItem(k)||'[]'); return Array.isArray(a)?a.length:0; } catch{ return 0; }})() },
+    { id: 'settings', label: 'Settings', icon: Settings },
+  ];
+
+  // Mobile quick access — every account section one tap away on a phone,
+  // without horizontal-scrolling the tab strip.
+  const quickLinks: { tab: ProfileTab; label: string }[] = [
+    { tab: 'profile', label: 'Personal Details' },
+    { tab: 'apps', label: 'My Apps' },
+    { tab: 'devices', label: 'My Devices' },
+    { tab: 'purchases', label: 'Purchases' },
+    { tab: 'notifications', label: 'Notifications' },
+    { tab: 'settings', label: 'Settings' },
   ];
 
   return (
@@ -205,6 +241,23 @@ export default function Profile() {
         </div>
       </div>
 
+      {/* Mobile quick access — direct entry into every account section. */}
+      <div className="grid grid-cols-3 gap-2 mb-6 sm:hidden" role="navigation" aria-label="Account sections">
+        {quickLinks.map((q) => (
+          <button
+            key={q.tab}
+            onClick={() => setActiveTab(q.tab)}
+            className={`px-2 py-3 text-xs font-medium rounded-xl border transition-all ${
+              activeTab === q.tab
+                ? 'text-rx-yellow bg-rx-yellow/10 border-rx-yellow/40'
+                : 'text-rx-gray-medium bg-white/5 border-white/10 hover:text-white'
+            }`}
+          >
+            {q.label}
+          </button>
+        ))}
+      </div>
+
       <div className="flex gap-1 border-b border-white/10 mb-8 overflow-x-auto">
         {tabs.map((tab) => (
           <button key={tab.id} onClick={() => setActiveTab(tab.id)}
@@ -218,6 +271,28 @@ export default function Profile() {
           </button>
         ))}
       </div>
+
+      {activeTab === 'profile' && (
+        <div className="animate-fade-in max-w-xl">
+          <h2 className="text-xl font-bold text-white mb-6">Personal Details</h2>
+          <div className="card p-6 space-y-4">
+            <div>
+              <label className="block text-sm text-rx-gray-medium mb-1.5">Full Name</label>
+              <input type="text" value={profileForm.name} onChange={(e)=>setProfileForm({...profileForm, name:e.target.value})} className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-rx-yellow/50 transition-all" />
+            </div>
+            <div>
+              <label className="block text-sm text-rx-gray-medium mb-1.5">Email</label>
+              <input type="email" value={profileForm.email} onChange={(e)=>setProfileForm({...profileForm, email:e.target.value})} className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-rx-yellow/50 transition-all" />
+            </div>
+            <button onClick={saveProfile} disabled={savingProfile} className="btn-primary disabled:opacity-50 flex items-center gap-2">
+              <Save className="w-4 h-4" /> {savingProfile ? 'Saving…' : 'Save Changes'}
+            </button>
+            <p className="text-[11px] text-rx-gray-medium">
+              Changes save to your RX Store account — every device shows the updated details on next sync.
+            </p>
+          </div>
+        </div>
+      )}
 
       {activeTab === 'apps' && (
         <div className="animate-fade-in">
@@ -422,18 +497,8 @@ export default function Profile() {
         <div className="animate-fade-in max-w-xl">
           <h2 className="text-xl font-bold text-white mb-6">Account Settings</h2>
           <div className="space-y-6">
-            <div className="card p-6 space-y-4">
-              <h3 className="font-semibold text-white">Profile Information</h3>
-              <div>
-                <label className="block text-sm text-rx-gray-medium mb-1.5">Full Name</label>
-                <input type="text" value={profileForm.name} onChange={(e)=>setProfileForm({...profileForm, name:e.target.value})} className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-rx-yellow/50 transition-all" />
-              </div>
-              <div>
-                <label className="block text-sm text-rx-gray-medium mb-1.5">Email</label>
-                <input type="email" value={profileForm.email} onChange={(e)=>setProfileForm({...profileForm, email:e.target.value})} className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-rx-yellow/50 transition-all" />
-              </div>
-              <button onClick={saveProfile} disabled={savingProfile} className="btn-primary disabled:opacity-50">{savingProfile ? 'Saving…' : 'Save Changes'}</button>
-            </div>
+            {/* Personal details (name/email) live in the "Personal Details"
+                tab (/profile?tab=profile) — one section, one source of truth. */}
             <div className="card p-6 space-y-4">
               <h3 className="font-semibold text-white">Preferences</h3>
               {[

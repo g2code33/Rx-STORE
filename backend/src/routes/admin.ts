@@ -8,6 +8,7 @@ import { hashPassword, verifyPassword, verifyToken } from '../services/auth.ts';
 import { normalizeArchitecture, normalizeChannel, validatePackageIntegrity, CHANNELS } from '../services/releases.ts';
 import { notifyStableReleaseEmails } from '../services/email.ts';
 import { runSecurityPipeline, publicationSecurityGate } from '../services/packageSecurity.ts';
+import { revokeAllSessions } from '../services/sessions.ts';
 
 async function validAdminPassword(request: Request, env: any, password: unknown): Promise<boolean> {
   const auth = request.headers.get('Authorization') || '';
@@ -365,12 +366,29 @@ export const adminRoutes = {
     const hash = await hashPassword(password);
     // Also invalidate any outstanding forgot-password token so only this login works
     await env.DB.prepare(`UPDATE users SET password_hash=?, reset_token=NULL, reset_token_expiry=NULL, updated_at=datetime('now') WHERE id=?`).bind(hash, userId).run();
+    // A password change ends every active session for the account (same policy
+    // as the self-service reset) — installed applications are untouched.
+    const revoked = await revokeAllSessions(env, userId).catch(() => 0);
     return {
       success: true,
       id: user.id,
       email: user.email,
+      revokedSessions: revoked,
       ...(generated ? { tempPassword: password } : {}),
     };
+  },
+
+  // POST /admin/users/:id/revoke-sessions — administrative session revocation.
+  // Ends EVERY active session for the account (all devices sign out on their
+  // next refresh). Never uninstalls applications or deletes the account.
+  async revokeUserSessions(request: Request, env: any) {
+    const url = new URL(request.url);
+    const parts = url.pathname.split('/');
+    const userId = parts[parts.length - 2];
+    const user: any = await env.DB.prepare(`SELECT id, email, name FROM users WHERE id=?`).bind(userId).first().catch(() => null);
+    if (!user) return { error: 'User not found' };
+    const revoked = await revokeAllSessions(env, userId);
+    return { success: true, id: user.id, email: user.email, revoked };
   },
 
   async updateUserRole(request: Request, env: any) {

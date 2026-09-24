@@ -122,7 +122,29 @@ columns), so back up before applying it.
 0015_payments_entitlements.sql       Marketplace payments: purchases, entitlements, webhook_events, download_grants
 0016_developer_finance.sql          Developer finance: download kind/geo columns, billing, payouts
 0017_developer_community.sql         Developer community (categories/discussions/replies/reports) + scoped API tokens
+0018_persistent_sessions.sql         PERSISTENT auth sessions: auth_sessions.expires_at becomes NULLABLE (NULL = until revoked)
 ```
+
+### 0018 — persistent sessions (auth hardening)
+
+`auth_sessions` is rebuilt (rename-dance; the table has no child FKs, so the
+DROP is safe) so `expires_at` is nullable. **NULL = persistent session**: it
+never expires and ends only via `revoked_at` (explicit sign-out, "sign out all
+devices", password reset, or the new admin `POST /admin/users/:id/revoke-sessions`).
+Live legacy 30-day sessions are migrated to persistent (`expires_at` set to
+NULL); already-expired/revoked rows keep their original timestamps — no session
+is resurrected, and no signed-in user is forced to sign in again.
+
+```
+npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0018_persistent_sessions.sql
+```
+
+Safe to re-run. The Worker ALSO self-heals the table shape lazily on first
+request (same rebuild), so this migration is an out-of-band fast path rather
+than a hard prerequisite. Refresh credentials minted after this change are
+opaque `rxr_…` tokens with no embedded expiry — the server-side session row is
+the durable authority; legacy 30-day JWT refresh tokens keep working and are
+migrated to the persistent model on their next rotation.
 
 ### Migration numbering
 
