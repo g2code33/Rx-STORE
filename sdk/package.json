@@ -1,0 +1,38 @@
+{
+  "name": "@rx-store/sdk",
+  "version": "0.1.0",
+  "description": "RX Store Developer SDK — in-app update checks and 'Update via RX Store' deep linking for applications distributed on the RX Store marketplace. Never downloads or installs; RX Store stays responsible for the secure update pipeline.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./react": "./src/react/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --experimental-strip-types --test src/core/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "react": ">=17"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "rx-store",
+    "update",
+    "updater",
+    "deep-link",
+    "marketplace",
+    "calcitonin"
+  ]
+}

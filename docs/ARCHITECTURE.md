@@ -142,7 +142,7 @@ Releases addressed by signed URLs with expiry + checksum verification.
 
 ## 5. API Design (see API.md)
 
-Base: `https://api.rxstore.com/v1` (Worker route)
+Base: `https://rx-store-api.calcitoninpay.workers.dev/v1` (Worker route; /v1 optional)
 
 | Group | Endpoint | Auth |
 |-------|----------|------|

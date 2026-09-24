@@ -13,6 +13,10 @@ API_VERSION = "v1"
 # rx-store-web.pages.dev is the production web frontend (from the applications.website
 # record). PR-preview subdomains are intentionally NOT allowed.
 CORS_ALLOWED_ORIGINS = "https://rx-store-web.pages.dev"
+# Canonical web origin used to build storeUrl in the update-check API (SDK
+# HTTPS fallback: {RX_STORE_WEB_URL}/app/{slug}). Must stay INSIDE [vars] —
+# TOML tables end at the next [table] header (see the MALWARE_SCANNER lesson).
+RX_STORE_WEB_URL = "https://rx-store-web.pages.dev"
 # Password reset: email delivery is NOT configured. In non-production the reset
 # token is returned directly for testing; in production it is never returned.
 RESET_TOKEN_DEBUG = "0"

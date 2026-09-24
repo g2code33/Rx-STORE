@@ -6,7 +6,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
-  ArrowLeft, Plus, Upload, Send, X, AlertCircle, CheckCircle2, PauseCircle, ExternalLink, FileCheck, MessageSquare, ShieldAlert, ShieldCheck,
+  ArrowLeft, Plus, Upload, Send, X, AlertCircle, CheckCircle2, PauseCircle, ExternalLink, FileCheck, MessageSquare, ShieldAlert, ShieldCheck, Code2, Copy,
 } from 'lucide-react';
 import { api, isApiConfigured } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -138,6 +138,9 @@ export default function DeveloperAppDetail() {
 
           {/* Metadata (editable in draft / changes requested) */}
           <MetadataEditor app={app} editable={editableApp} onSaved={load} />
+
+          {/* SDK & Update Integration (Phase 17) */}
+          <SdkIntegrationCard app={app} releases={releases} />
 
           {/* Releases */}
           <div className="flex items-center justify-between mt-10">
@@ -510,6 +513,116 @@ function PackagesSection({ rel, canEdit, onChanged }: { rel: any; canEdit: boole
           </p>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SDK & Update Integration card (Phase 17): every identifier, link and copy-
+// paste snippet a developer needs to wire the RX Store SDK into this app.
+// ---------------------------------------------------------------------------
+function CopyRow({ label, value }: { label: string; value: string }) {
+  const copy = (text: string) => {
+    try { navigator.clipboard.writeText(text); toast.success('Copied'); } catch { toast.error('Copy failed'); }
+  };
+  return (
+    <div className="flex items-center justify-between gap-3 py-1.5">
+      <span className="text-xs text-rx-gray-medium w-28 flex-shrink-0">{label}</span>
+      <code className="flex-1 min-w-0 truncate text-xs text-white/90 bg-black/30 rounded px-2 py-1.5">{value}</code>
+      <button onClick={() => copy(value)} className="p-1.5 rounded text-rx-gray-medium hover:text-rx-yellow hover:bg-rx-yellow/10" title={`Copy ${label}`}>
+        <Copy className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function SdkIntegrationCard({ app, releases }: { app: any; releases: any[] }) {
+  const published = (releases || []).filter((r) => r.status === 'published');
+  const currentVersion = published[0]?.version || app.currentVersion || null;
+  const deepLink = `rxstore://app/${app.slug}`;
+  const webUrl = `https://rx-store-web.pages.dev/app/${app.slug}`;
+  const apiUrl = 'https://rx-store-api.calcitoninpay.workers.dev/v1/updates/check';
+  const jsSnippet = [
+    "import { createRxStoreSDK } from '@rx-store/sdk';",
+    '',
+    'const rxStore = createRxStoreSDK({',
+    `  appId: '${app.slug}',`,
+    '  currentVersion: APP_VERSION, // your app\'s SemVer',
+    '});',
+    'await rxStore.initialize();',
+    '',
+    'const update = await rxStore.checkForUpdate();',
+    'if (update.updateAvailable || update.status === \'MANDATORY_UPDATE\') {',
+    '  rxStore.openUpdateInRxStore(); // deep link; HTTPS fallback',
+    '}',
+  ].join('\n');
+  const reactSnippet = [
+    "import { RxStoreUpdateBanner } from '@rx-store/sdk/react';",
+    '',
+    '<RxStoreUpdateBanner sdk={rxStore} />',
+  ].join('\n');
+  const curlSnippet = `curl "${apiUrl}?app=${app.slug}&currentVersion=1.0.0&platform=android"`;
+
+  return (
+    <div className="card p-5 md:p-6 mt-6">
+      <div className="flex items-center gap-2">
+        <Code2 className="w-5 h-5 text-rx-yellow" />
+        <h2 className="text-lg font-bold text-white">SDK &amp; Update Integration</h2>
+      </div>
+      <p className="text-xs text-rx-gray-medium mt-1 mb-4">
+        Let users update THIS app from inside YOUR app — the RX Store SDK checks for updates and hands the user to RX Store,
+        which performs the verified download, security pipeline and installation. The SDK never installs anything itself.
+      </p>
+
+      <div className="grid md:grid-cols-2 gap-x-8">
+        <div>
+          <h3 className="text-xs font-bold text-white/80 uppercase tracking-wider mb-2">Identifiers</h3>
+          <CopyRow label="RX Store App ID" value={app.id} />
+          <CopyRow label="SDK appId (slug)" value={app.slug} />
+          <CopyRow label="Platforms" value={(app.platforms || []).join(', ') || '—'} />
+          <CopyRow label="Published version" value={currentVersion || 'none yet'} />
+          <CopyRow label="Deep link" value={deepLink} />
+          <CopyRow label="Web fallback" value={webUrl} />
+        </div>
+        <div className="mt-6 md:mt-0">
+          <h3 className="text-xs font-bold text-white/80 uppercase tracking-wider mb-2">Update API</h3>
+          <CopyRow label="Check endpoint" value={apiUrl} />
+          <CopyRow label="Example" value={curlSnippet} />
+          <p className="text-[11px] text-rx-gray-medium mt-2">
+            Unauthenticated + public (no secrets in your app). Paid apps never expose binary URLs through this endpoint.
+          </p>
+        </div>
+      </div>
+
+      <h3 className="text-xs font-bold text-white/80 uppercase tracking-wider mt-6 mb-2">Quick start (JavaScript / TypeScript)</h3>
+      <pre className="bg-black/40 border border-white/10 rounded-xl p-4 text-[11px] leading-relaxed text-white/90 overflow-x-auto">{jsSnippet}</pre>
+
+      <h3 className="text-xs font-bold text-white/80 uppercase tracking-wider mt-4 mb-2">React banner (optional)</h3>
+      <pre className="bg-black/40 border border-white/10 rounded-xl p-4 text-[11px] leading-relaxed text-white/90 overflow-x-auto">{reactSnippet}</pre>
+
+      <div className="grid sm:grid-cols-2 gap-3 mt-4">
+        <div className="bg-white/5 rounded-xl p-3">
+          <p className="text-xs font-semibold text-white">Android guidance</p>
+          <p className="text-[11px] text-rx-gray-medium mt-1">
+            Pass <code className="text-rx-yellow">platform: 'android'</code> (never rely on a browser UA). The SDK opens
+            <code className="text-rx-yellow"> rxstore://</code> and falls back to the web page when RX Store is not installed.
+          </p>
+        </div>
+        <div className="bg-white/5 rounded-xl p-3">
+          <p className="text-xs font-semibold text-white">Desktop guidance</p>
+          <p className="text-[11px] text-rx-gray-medium mt-1">
+            Pass <code className="text-rx-yellow">platform: 'windows' | 'linux'</code>. RX Store (Electron) registers the
+            <code className="text-rx-yellow"> rxstore://</code> protocol handler and reuses its running window.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 flex items-center justify-between gap-3 flex-wrap">
+        <p className="text-[11px] text-rx-gray-medium">
+          SDK integration status: <span className={published.length ? 'text-green-400' : 'text-amber-300'}>{published.length ? 'ready — update checks live' : 'awaiting a published release'}</span>
+        </p>
+        <Link to="/developers/sdk" className="text-xs text-rx-yellow hover:underline">Full SDK documentation →</Link>
+      </div>
     </div>
   );
 }

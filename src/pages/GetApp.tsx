@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Download, MonitorSmartphone, Share, PlusSquare, Smartphone, CheckCircle2, Globe, ArrowRight, Store, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { detectDevice, downloadsFor, deviceLabel, DOWNLOAD_OPTIONS, SELF_APP_SLUG, type DownloadOption } from '../platform/downloads';
 import { capturePwaInstallPrompt, subscribePwaInstall, pwaInstallAvailable, promptPwaInstall } from '../platform/pwaInstall';
+import { restorePendingDestination, peekPendingDestination } from '../platform/deepLink';
+import { ArrowLeft } from 'lucide-react';
 import { startStoreDownload, fetchSelfListing, type SelfListing } from '../platform/storeDownload';
 import { useContent } from '../context/ContentContext';
 import Editable from '../components/edit/Editable';
@@ -75,6 +77,22 @@ export default function GetApp() {
   const pwaAvailable = useSyncExternalStore(subscribePwaInstall, pwaInstallAvailable);
   const [busyId, setBusyId] = useState<string>('');
   const [listing, setListing] = useState<SelfListing | null>(null);
+  const navigate = useNavigate();
+  // Install-then-continue (SDK Phase 11): when the user arrived here from an
+  // app's "Update via RX Store" action while RX Store was not installed, the
+  // intended destination was parked (validated /app/{slug}, sessionStorage,
+  // 15-min TTL). After installing (PWA event or returning), offer the
+  // continuation instead of pretending it happened automatically.
+  const [pendingDest, setPendingDest] = useState<string | null>(null);
+  useEffect(() => { setPendingDest(peekPendingDestination()); }, []);
+  useEffect(() => {
+    const onInstalled = () => {
+      // PWA installed — try to continue where the user was heading.
+      setTimeout(() => { restorePendingDestination((path) => navigate(path)); }, 600);
+    };
+    window.addEventListener('appinstalled', onInstalled);
+    return () => { window.removeEventListener('appinstalled', onInstalled); };
+  }, [navigate]);
 
   useEffect(() => {
     let stop = false;
@@ -99,6 +117,19 @@ export default function GetApp() {
 
   return (
     <div className="section-container py-10 lg:py-16">
+      {pendingDest && (
+        <div className="card p-4 mb-6 border-rx-yellow/30 flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-white/90">
+            You were heading to an application page — install RX Store, then continue.
+          </p>
+          <button
+            onClick={() => navigate(pendingDest)}
+            className="btn-primary text-sm flex items-center gap-2"
+          >
+            <ArrowLeft className="w-4 h-4 rotate-180" /> Continue to the app
+          </button>
+        </div>
+      )}
       {/* Hero + detected device */}
       <div className="text-center max-w-2xl mx-auto mb-12">
         <img src="/v1.png" alt="RX Store" className="w-20 h-20 rounded-2xl object-cover mx-auto mb-5 shadow-glow" />
@@ -237,3 +268,4 @@ export default function GetApp() {
     </div>
   );
 }
+

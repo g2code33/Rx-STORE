@@ -27,4 +27,12 @@ contextBridge.exposeInMainWorld('rxDesktop', {
     ipcRenderer.on('native-download:progress', listener);
     return () => ipcRenderer.removeListener('native-download:progress', listener);
   },
+  // Deep links (rxstore://app/{slug}) — validated in the MAIN process before
+  // anything reaches the renderer. pending: the cold-start link (once).
+  getPendingDeepLink: (): Promise<string | null> => ipcRenderer.invoke('deep-link:pending'),
+  onDeepLink: (cb: (payload: { url: string }) => void) => {
+    const listener = (_e: any, p: any) => cb(p);
+    ipcRenderer.on('deep-link', listener);
+    return () => ipcRenderer.removeListener('deep-link', listener);
+  },
 });

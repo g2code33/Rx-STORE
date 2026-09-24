@@ -7,6 +7,11 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+// Shared, framework-free deep-link protocol (also used by the renderer + tests):
+// strict allowlist parsing of rxstore://app/{slug}. Nothing from a URL is ever
+// executed; a link is only ever turned into an in-app navigation.
+import { extractDeepLinkFromArgv, parseDeepLink } from '../src/platform/deepLinkProtocol';
+
 const execFileAsync = promisify(execFile);
 import { autoUpdater, CancellationToken } from 'electron-updater';
 
@@ -109,6 +114,51 @@ function initAppScheme() {
     if (!path.extname(p)) p = '/index.html'; // SPA fallback for client routes
     const file = path.join(distDir, p);
     return net.fetch(pathToFileURL(file).toString());
+  });
+}
+
+// ---------------------------------------------------------------------------
+// RX Store deep links (rxstore://app/{slug}) — SDK contract Phase 7/8.
+// The main process REGISTERS the protocol, VALIDATES every incoming link
+// against the strict shared allowlist BEFORE anything reaches the renderer,
+// and forwards valid links to the EXISTING window. Cold starts carry the link
+// in argv; warm starts arrive via 'second-instance' (Windows/Linux) or
+// 'open-url' (macOS). No new window is ever created for a deep link.
+// ---------------------------------------------------------------------------
+let pendingDeepLink: string | null = null;
+
+function acceptDeepLink(rawUrl: unknown): void {
+  // Validate FIRST: only rxstore://app/{kebab-slug} is ever accepted, and only
+  // while a window exists (or it is stored as the cold-start pending link).
+  if (!parseDeepLink(rawUrl)) return;
+  const url = String(rawUrl);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+    sendToRenderer('deep-link', { url });
+  } else {
+    pendingDeepLink = url; // delivered after createWindow via 'deep-link:pending'
+  }
+}
+
+function initDeepLinkScheme() {
+  if (process.platform === 'win32' || process.platform === 'linux') {
+    app.setAsDefaultProtocolClient('rxstore');
+  }
+  // macOS: links arrive through the open-url event (the packaged app declares
+  // the scheme in its Info.plist).
+  app.on('open-url', (event, url) => {
+    event.preventDefault();
+    acceptDeepLink(url);
+  });
+  // Cold start (Windows/Linux): the link sits in argv. Parsed and stored;
+  // the renderer asks for it once it is ready.
+  const fromArgv = extractDeepLinkFromArgv(process.argv);
+  if (fromArgv) pendingDeepLink = fromArgv;
+  ipcMain.handle('deep-link:pending', () => {
+    const link = pendingDeepLink;
+    pendingDeepLink = null; // delivered exactly once
+    return link;
   });
 }
 
@@ -726,11 +776,17 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    // A second launch (including a rxstore:// deep link on Windows/Linux)
+    // reuses THIS window — never a duplicate.
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
     }
+    // Deep link in the new instance's argv → validate + forward to the
+    // existing renderer. Invalid/malicious links are dropped here.
+    const link = extractDeepLinkFromArgv(argv);
+    if (link) acceptDeepLink(link);
   });
 
   app.whenReady().then(() => {
@@ -738,6 +794,7 @@ if (!gotLock) {
     // and toasts/notifications carry the app's identity instead of Electron's.
     app.setAppUserModelId('com.calcitonin.rxstore');
     initAppScheme();
+    initDeepLinkScheme();
     initIpc();
     initUpdater();
     mainWindow = createWindow();

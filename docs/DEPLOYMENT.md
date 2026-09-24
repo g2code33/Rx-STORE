@@ -29,7 +29,7 @@
 # Application
 NODE_ENV=production
 PORT=8080
-API_BASE_URL=https://api.rxstore.com
+API_BASE_URL=https://rx-store-api.calcitoninpay.workers.dev/v1
 WEB_APP_URL=https://rxstore.com
 
 # Database
@@ -159,7 +159,7 @@ pm2 start dist/server.js --name rx-store-api -i max
 ```nginx
 server {
     listen 443 ssl http2;
-    server_name api.rxstore.com;
+    server_name rx-store-api.calcitoninpay.workers.dev;  # actual Worker deployment (no nginx needed)
 
     ssl_certificate /etc/ssl/rxstore.crt;
     ssl_certificate_key /etc/ssl/rxstore.key;

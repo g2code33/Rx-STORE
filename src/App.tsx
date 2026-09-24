@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useSyncExternalStore } from 'react';
-import { Routes, Route, useLocation } from 'react-router-dom';
+import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import Header from './components/layout/Header';
 import Footer from './components/layout/Footer';
@@ -15,6 +15,7 @@ import { API_URL, getPublicSettings } from './services/api';
 import { useAuth } from './context/AuthContext';
 import { applyUpdatePolicy } from './desktop/updater';
 import { androidDownloadAndInstall, androidHostVersion, androidNetworkStatus, isAndroidShell } from './platform/nativeInstaller';
+import { useDeepLinkNavigation } from './platform/deepLink';
 import { EditModeContext, getBuilderCtx, subscribeBuilder } from './components/edit/EditMode';
 import { RouteErrorBoundary } from './components/common/ErrorBoundary';
 
@@ -133,6 +134,20 @@ function UpdatePolicySync() {
   return null;
 }
 
+/**
+ * Deep-link bridge: wires rxstore://app/{slug} links (Electron events +
+ * cold-start pending, Android launch/warm links, web ?pending= continuation)
+ * to the router. Every link is validated against the strict shared allowlist
+ * (src/platform/deepLinkProtocol) before navigating — the only possible
+ * destination is /app/{slug}.
+ */
+function DeepLinkBridge() {
+  const navigate = useNavigate();
+  const nav = React.useCallback((path: string) => { navigate(path); }, [navigate]);
+  useDeepLinkNavigation(nav);
+  return null;
+}
+
 function AndroidAutoUpdateSync() {
   const { user } = useAuth();
   React.useEffect(() => {
@@ -163,6 +178,7 @@ export default function App() {
     <div className="min-h-screen bg-rx-dark text-white flex flex-col">
       <ScrollToTop />
       <UpdatePolicySync />
+      <DeepLinkBridge />
       <AndroidAutoUpdateSync />
       <MaintenanceGate>
       <BuilderScope>

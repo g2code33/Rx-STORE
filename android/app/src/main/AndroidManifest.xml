@@ -38,6 +38,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- RX Store deep links: rxstore://app/{slug}. The URI is handed to
+                 the WebView as a STRING only; the React layer validates it
+                 against a strict allowlist (src/platform/deepLinkProtocol.ts)
+                 before navigating. Nothing from the URI is ever executed. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="rxstore" />
+            </intent-filter>
+
         </activity>
 
         <provider

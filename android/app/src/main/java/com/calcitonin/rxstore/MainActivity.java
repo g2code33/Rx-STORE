@@ -8,6 +8,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(AppInstallerPlugin.class);
         registerPlugin(SecureStorePlugin.class);
+        registerPlugin(RxDeepLinkPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

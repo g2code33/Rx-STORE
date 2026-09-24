@@ -2,10 +2,14 @@
 
 ## Base URL
 ```
-Production: https://api.rxstore.com/v1
-Staging:    https://api-staging.rxstore.com/v1
-Local:      http://localhost:8080/v1
+Production: https://rx-store-api.calcitoninpay.workers.dev/v1
+Local dev:  http://localhost:8787/v1
 ```
+
+The `/v1` prefix is optional (the Worker strips it). This is the ONLY real
+deployment; references to `api.rxstore.com` in older documents are obsolete.
+Configure one canonical base per client (web: `VITE_API_URL`; SDK: `apiUrl`,
+defaulting to the production URL above).
 
 ## Authentication
 All authenticated endpoints require a Bearer token in the Authorization header:
@@ -193,7 +197,7 @@ Get download URL for a specific platform.
 {
   "success": true,
   "data": {
-    "url": "https://cdn.rxstore.com/apps/clinical-rx/windows/installer-3.2.1.exe",
+    "url": "https://rx-store-api.calcitoninpay.workers.dev/downloads/<short-lived-grant-token>",
     "expiresAt": "2024-12-20T11:00:00Z",
     "checksum": "sha256:abc123..."
   }
@@ -204,34 +208,103 @@ Get download URL for a specific platform.
 
 ### Updates
 
-#### GET /apps/check-update
-Check for application updates.
+#### GET /updates/check
+Check whether a newer RX Store release exists. This is the ONE canonical
+update endpoint, consumed by the RX Store Developer SDK (`sdk/`) and any host
+application. Aliases (all identical): `/update/check`, `/api/updates/check`,
+`/api/update/check`.
+
+Unauthenticated + public — no secrets belong in shipped applications. Paid
+applications NEVER expose a binary download URL here; the SDK only needs the
+store/deep-link destination, and entitlement + short-lived download grants
+stay inside RX Store.
 
 **Query Parameters:**
-- `app` (string) - Application ID
-- `currentVersion` (string) - Currently installed version
-- `platform` (string) - Platform identifier
+- `app` (string, required) - Application slug (e.g. `pharmatrack`)
+- `currentVersion` (string, required) - SemVer of the installed build (`1.0.0-beta.1` ok)
+- `platform` (string, required) - `android` | `windows` | `linux` | `web` | `pwa` (aliases: `deb` → `linux_deb`, `appimage` → `linux_appimage`)
+- `arch` (string, optional) - `x64` | `arm64` | `x86` | `arm` | `universal`
+- `channel` (string, optional) - `stable` (default) | `beta` | `alpha`
 
 **Response:**
 ```json
 {
   "success": true,
   "data": {
-    "app": "Clinical Rx",
-    "currentVersion": "3.2.0",
-    "latestVersion": "3.2.1",
+    "appId": "app_xxx",
+    "app": "PharmaTRACK",
+    "slug": "pharmatrack",
+    "currentVersion": "1.1.4",
+    "latestVersion": "1.1.5",
+    "platform": "android",
+    "architecture": "arm64",
+    "channel": "stable",
     "updateAvailable": true,
-    "downloadURL": "https://cdn.rxstore.com/apps/clinical-rx/windows/installer-3.2.1.exe",
     "mandatory": false,
-    "releaseNotes": [
-      "Added AI-powered drug interaction predictions",
-      "Enhanced EHR integration"
-    ],
-    "fileSize": "148 MB",
-    "checksum": "sha256:abc123..."
+    "minimumSupportedVersion": "1.1.0",
+    "updateRequired": false,
+    "releaseNotes": ["Bug fixes", "Performance improvements"],
+    "fileSize": 12345678,
+    "checksum": "sha256:…64 hex…",
+    "storeUrl": "https://rx-store-web.pages.dev/app/pharmatrack",
+    "deepLink": "rxstore://app/pharmatrack",
+    "checkedAt": "2026-09-24T12:00:00.000Z",
+    "downloadURL": "https://…/package.ext"
   }
 }
 ```
+
+Field notes:
+- `mandatory` — the release was flagged mandatory, OR the caller's
+  `currentVersion` is below the release's `minimumSupportedVersion`.
+- `updateRequired` — true only for the below-minimum case.
+- `downloadURL` — present for FREE apps (public package), always `null` for
+  paid apps. The SDK ignores this field entirely; RX Store performs the
+  authorized download.
+- `storeUrl` / `deepLink` — the destinations the SDK opens
+  (`RX_STORE_WEB_URL` var, default `https://rx-store-web.pages.dev`).
+- All values are SERVER-AUTHORITATIVE; clients must not trust locally
+  supplied versions/flags.
+
+**Errors:** `404` unknown app · `400` (`NOT_FOUND` code) missing parameters ·
+`429` rate limited.
+
+**Rate limit:** 300 requests/minute/IP (the general API bucket).
+
+### Deep links (SDK destinations)
+
+| Format | Opens |
+|---|---|
+| `rxstore://app/{slug}` | RX Store (Android app / Windows / Linux desktop) directly on `/app/{slug}` |
+| `https://rx-store-web.pages.dev/app/{slug}` | The web RX Store app page — always works, offers "Get RX Store" when the native app is missing |
+
+Slugs are strict kebab-case (`^[a-z0-9][a-z0-9-]{0,63}$`); RX Store validates
+every incoming link against this allowlist and never executes URL content.
+When RX Store is not installed, the HTTPS page can carry
+`?pending=/app/{slug}` (same allowlist, 15-minute sessionStorage TTL) to
+continue to the application after install — no credentials ever travel in links.
+
+### Developer SDK
+
+The SDK (`sdk/`, package `@rx-store/sdk`) consumes this API:
+
+```ts
+import { createRxStoreSDK } from '@rx-store/sdk';
+
+const rxStore = createRxStoreSDK({
+  appId: 'pharmatrack',       // your RX Store slug
+  currentVersion: '1.1.4',    // your app's SemVer
+  platform: 'android',        // explicit override on native hosts
+});
+
+const result = await rxStore.checkForUpdate();  // never throws
+if (result.status === 'UPDATE_AVAILABLE' || result.status === 'MANDATORY_UPDATE') {
+  rxStore.openUpdateInRxStore();  // deep link + HTTPS fallback; never installs
+}
+```
+
+Full integration guide (banner, platforms, mandatory updates, security):
+[`sdk/README.md`](../sdk/README.md) and `/developers/sdk` in the app.
 
 ---
 
@@ -423,7 +496,8 @@ All errors follow this format:
 ---
 
 ## Rate Limits
-- Public endpoints: 100 requests/minute
-- Authenticated endpoints: 300 requests/minute
-- Admin endpoints: 500 requests/minute
-- AI endpoints: 30 requests/minute
+Actual configured buckets (sliding window, per user id or IP — `backend/src/middleware/rateLimiter.ts`):
+- `/auth/*`: 20/min · `/payments/*`: 20/min · `/reviews/*`: 20/min
+- `/apps/*` and general traffic (incl. `GET /updates/check`): 300/min
+- `/developers/*`: 120/min (submits 10/5min, payouts 10/5min)
+- `/admin/*`: 500/min · `/ai/*`: 30/min · `/community` discussions 20/min

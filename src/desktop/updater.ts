@@ -60,6 +60,9 @@ declare global {
       uninstallApp: (input?: { appSlug?: string; target?: string; quietTarget?: string; appImagePath?: string; platform?: 'windows' | 'linux' | 'android' | 'web' }) => Promise<boolean>;
       showNotification: (input: { title: string; body?: string }) => Promise<boolean>;
       onDownloadProgress: (cb: (s: any) => void) => () => void;
+      /** Deep links (rxstore://app/{slug}) — validated in the main process. */
+      getPendingDeepLink?: () => Promise<string | null>;
+      onDeepLink?: (cb: (payload: { url: string }) => void) => () => void;
     };
   }
 }
