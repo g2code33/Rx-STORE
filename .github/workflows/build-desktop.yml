@@ -17,6 +17,13 @@ name: Build & Release Desktop App
 # 3. To ship an update to installed desktops: bump "version" in package.json
 #    (or run `npm run release:patch`) and push — the new latest.yml makes the
 #    desktop app self-update.
+# 4. The Android SDK step is deliberately SELF-CONTAINED (plain shell, no
+#    third-party action): android-actions/setup-android@v3 broke when GitHub
+#    retired Node-20 actions (every push 2026-09-21 → 2026-09-24 failed at
+#    that step; the v4 line shipped three patches in a single day). Ubuntu
+#    runners ship the SDK preinstalled, so all we need is sdkmanager on PATH,
+#    licenses accepted and the compileSdk platform present — and a fresh
+#    cmdline-tools install from dl.google.com if the image ever drops it.
 #
 # OPTIONAL (recommended): signed Android release APK
 # Add these repository secrets (Settings → Secrets and variables → Actions):
@@ -55,10 +62,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -127,13 +134,53 @@ jobs:
 
       # ----- Android APK -----
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 21
 
+      # Self-contained Android SDK setup — no third-party action (see the
+      # workflow header, point 4). Ubuntu runners ship the SDK preinstalled;
+      # we make sure sdkmanager is on PATH, licences are accepted and the
+      # compileSdk platform exists, and fall back to a fresh cmdline-tools
+      # install from dl.google.com if the image ever drops the SDK.
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          [ -d "$SDK" ] || SDK="/usr/local/lib/android/sdk"
+          find_sdkmanager() {
+            for p in "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+                     "$SDK/cmdline-tools/bin/sdkmanager" \
+                     "$SDK/tools/bin/sdkmanager"; do
+              if [ -x "$p" ]; then printf '%s\n' "$p"; return 0; fi
+            done
+            return 1
+          }
+          if SDKMANAGER="$(find_sdkmanager)"; then
+            echo "Using runner-provided Android SDK at $SDK"
+          else
+            echo "No cmdline-tools found on the runner — installing fresh SDK"
+            SDK="$RUNNER_TEMP/android-sdk"
+            mkdir -p "$SDK/cmdline-tools"
+            curl -fsSL --retry 3 --connect-timeout 15 -o /tmp/cmdtools.zip \
+              "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+            unzip -q /tmp/cmdtools.zip -d "$SDK/cmdline-tools"
+            mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
+            SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          echo "ANDROID_HOME=$SDK"        >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK"    >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools"      >> "$GITHUB_PATH"
+          # Accept every SDK licence — AGP only auto-installs missing
+          # build-tools/platforms when licences are accepted.
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          # Pre-install what we know the build needs (compileSdk 36); AGP
+          # fetches anything else itself. Failures here are non-fatal.
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-36" >/dev/null || true
+          "$SDKMANAGER" --install "build-tools;36.0.0" >/dev/null || true
+          "$SDKMANAGER" --version
 
       - name: Build Android APK
         env:
