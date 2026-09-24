@@ -9,7 +9,7 @@ import { corsMiddleware, corsHeaders } from './middleware/cors';
 import { authRoutes } from './routes/auth';
 import { appsRoutes } from './routes/apps';
 import { usersRoutes } from './routes/users';
-import { paymentsRoutes } from './routes/payments';
+
 import { adminRoutes } from './routes/admin';
 import { aiRoutes } from './routes/ai';
 import { getSetting, getAllSettings, putSettings, SETTING_DEFAULTS, PUBLIC_SETTING_KEYS } from './services/settings';
@@ -22,6 +22,7 @@ import { developerAppRoutes, adminDeveloperAppRoutes } from './routes/developerA
 import { securityAdminRoutes } from './routes/securityAdmin';
 import { developerSubmissionRoutes, adminSubmissionRoutes } from './routes/submissions';
 import { reviewRoutes, developerReviewRoutes, adminReviewRoutes } from './routes/reviews';
+import { paymentRoutes, webhookRoutes, adminPaymentRoutes, appIsPaid, activeEntitlement } from './routes/payments';
 import { storefrontRoutes, adminStorefrontRoutes, adminStorefrontAppSearch } from './routes/storefront';
 import { r2KeyIsPubliclyServed } from './services/packageSecurity';
 import { verifyAccessToken } from './services/auth';
@@ -39,7 +40,7 @@ router.use('/categories', appsRoutes);
 router.use('/updates', updatesRoutes);
 router.use('/update', updatesRoutes);
 router.use('/users', authMiddleware, usersRoutes);
-router.use('/payments', authMiddleware, paymentsRoutes);
+router.use('/payments', authMiddleware, ({} as any) /* payments moved to inline dispatch (Phase 18) */);
 router.use('/admin', authMiddleware, adminRoutes);
 
 // NOTE: /health is handled inline in fetch() below. The generic router never
@@ -383,6 +384,43 @@ export default {
         return respond({ success:true, data:{ url, key }},200,origin);
       } catch (e:any) { console.error(`[${requestId}] error:`, redact(String(e?.message||e))); return fail('INTERNAL', 'Something went wrong. Please try again.'); }
     }
+    // ---- Short-lived download proxy (Phase 18) ----
+    // Paid package access: unguessable single-purpose token, expires in 10
+    // minutes, entitlement re-checked at serve time. Never a permanent URL.
+    if (path.match(/^\/downloads\/[a-f0-9]{64}$/) && request.method === 'GET') {
+      try {
+        const token = path.split('/')[2];
+        const digest: ArrayBuffer = await (crypto as any).subtle.digest('SHA-256', new TextEncoder().encode(token));
+        const tokenHash = Array.from(new Uint8Array(digest)).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+        const grant: any = await env.DB.prepare('SELECT * FROM download_grants WHERE token_hash=?').bind(tokenHash).first().catch(() => null);
+        if (!grant) return new Response('Not found', { status: 404, headers: corsHeaders(origin) });
+        if (new Date(String(grant.expires_at).replace(' ', 'T') + 'Z').getTime() < Date.now()) {
+          return respond({ success: false, error: { code: 'DOWNLOAD_EXPIRED', message: 'This download link has expired — request the download again.' } }, 410, origin);
+        }
+        // Entitlement still active at serve time (a refund/revoke between
+        // authorization and download must not retain paid access).
+        const ent = await activeEntitlement(env, grant.user_id, grant.app_id);
+        if (!ent) return respond({ success: false, error: { code: 'PURCHASE_REQUIRED', message: 'Your access to this application is no longer active.' } }, 403, origin);
+        let storageKey: string | null = null;
+        let pkgName = 'package';
+        if (grant.package_id) {
+          const pkg: any = await env.DB.prepare('SELECT storage_key, filename, status FROM packages WHERE id=?').bind(grant.package_id).first().catch(() => null);
+          if (pkg?.status === 'published') { storageKey = pkg.storage_key; pkgName = pkg.filename || pkgName; }
+        }
+        if (!storageKey) return new Response('Not found', { status: 404, headers: corsHeaders(origin) });
+        const obj: any = await env.STORAGE.get(storageKey);
+        if (!obj) return new Response('Not found', { status: 404, headers: corsHeaders(origin) });
+        const headers = new Headers(corsHeaders(origin));
+        headers.set('Content-Type', obj.httpMetadata?.contentType || 'application/octet-stream');
+        headers.set('Content-Disposition', `attachment; filename="${pkgName.replace(/["\\]/g, '_')}"`);
+        headers.set('Cache-Control', 'private, no-store');
+        return new Response(obj.body, { headers });
+      } catch (e: any) {
+        console.error(`[${requestId}] download proxy:`, redact(String(e?.message || e)));
+        return fail('INTERNAL', 'The file could not be served.');
+      }
+    }
+
     // Serve R2 files via Worker (for private bucket)
     if (path.startsWith('/r2/') && request.method === 'GET') {
       try {
@@ -435,8 +473,18 @@ export default {
         let platform = (new URL(request.url).searchParams.get('platform') || 'web').toLowerCase();
         if (platform === 'deb') platform = 'linux_deb';
         if (platform === 'appimage') platform = 'linux_appimage';
-        const app: any = await env.DB.prepare('SELECT id, name, current_version, website FROM applications WHERE slug=?').bind(slug).first();
+        const app: any = await env.DB.prepare('SELECT id, name, current_version, website, price_type, price_amount FROM applications WHERE slug=?').bind(slug).first();
         if (!app) return fail('NOT_FOUND', 'Application not found');
+        // PHASE 18 — paid apps require an ACTIVE entitlement before ANY
+        // package metadata or URL is revealed. Free apps never enter this path.
+        if (appIsPaid(app)) {
+          const auth = request.headers.get('Authorization') || '';
+          let dlAuthUser: string | null = null;
+          try { if (auth.startsWith('Bearer ')) dlAuthUser = (await verifyAccessToken(auth.slice(7), env.JWT_SECRET))?.userId || null; } catch {}
+          if (!dlAuthUser) return respond({ success: false, error: { code: 'PURCHASE_REQUIRED', message: 'This is a paid application — sign in and purchase it to download.' } }, 401, origin);
+          const ent = await activeEntitlement(env, dlAuthUser, app.id);
+          if (!ent) return respond({ success: false, error: { code: 'PURCHASE_REQUIRED', message: 'You do not own this application. Purchase it to download.' } }, 402, origin);
+        }
         // Live admin toggles: downloads + maintenance
         if (await getSetting(env, 'downloads_open', '1') === '0') return respond({ success:false, error:{ code:'DOWNLOADS_CLOSED', message:'Downloads are temporarily disabled by the administrator.' }},503,origin);
         if (!await isAdminRequest(request, env) && await getSetting(env, 'maintenance_mode', '0') === '1') return respond({ success:false, error:{ code:'MAINTENANCE', message:'RX Store is under maintenance. Please check back soon.' }},503,origin);
@@ -481,6 +529,37 @@ export default {
             channel, releaseNotes: notes, publishedAt: pkg.release_published_at, origin: originUrl,
           });
           if (!isPwa) {
+            // PHASE 18 — paid packages are NEVER served from the public /r2/
+            // URL: issue a short-lived (10 min) single-purpose grant token and
+            // return the authenticated proxy URL instead.
+            if (appIsPaid(app)) {
+              const auth = request.headers.get('Authorization') || '';
+              let gUser: string | null = null;
+              try { if (auth.startsWith('Bearer ')) gUser = (await verifyAccessToken(auth.slice(7), env.JWT_SECRET))?.userId || null; } catch {}
+              if (!gUser) return respond({ success: false, error: { code: 'PURCHASE_REQUIRED', message: 'Purchase required.' } }, 402, origin);
+              const grantToken = Array.from(crypto.getRandomValues(new Uint8Array(32))).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+              const grantHash: string = await (async () => {
+                const digest: ArrayBuffer = await (crypto as any).subtle.digest('SHA-256', new TextEncoder().encode(grantToken));
+                return Array.from(new Uint8Array(digest)).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+              })();
+              await env.DB.prepare(
+                'INSERT INTO download_grants (id, user_id, app_id, package_id, token_hash, expires_at) VALUES (?,?,?,?,?, datetime(\'now\', \'\+10 minutes\'))'
+              ).bind(`grant_${Date.now().toString(36)}`, gUser, app.id, pkg.id, grantHash).run().catch(() => {});
+              const dlRecordUser = gUser;
+              try {
+                await env.DB.prepare('INSERT INTO downloads (id, user_id, app_id, platform, version, created_at) VALUES (?,?,?,?,?,datetime(\'now\'))')
+                  .bind(`dl_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, dlRecordUser, app.id, manifest.platform, manifest.version).run();
+                await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(app.id).run();
+              } catch {}
+              return respond({ success: true, data: {
+                url: `${originUrl}/downloads/${grantToken}`,
+                checksum: manifest.sha256, size: manifest.size, fileName: manifest.filename,
+                version: manifest.version, platform: manifest.platform, architecture: manifest.architecture,
+                channel: manifest.channel, releaseNotes: manifest.releaseNotes,
+                minOsVersion: manifest.minOsVersion, minAndroidSdk: manifest.minAndroidSdk,
+                expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+              }}, 200, origin);
+            }
             // Record the download for the authenticated user (never as an
             // installation). user_id is derived from the token, never from the
             // client body — a download record is NOT an installation record.
@@ -1033,6 +1112,20 @@ export default {
     // The generic router does not dispatch path-mounted sub-routers, so payments
     // are handled explicitly here. No provider is integrated: production returns
     // PAYMENTS_NOT_ENABLED and never grants paid access.
+    // ---- Paystack webhook (Phase 18): signature-verified, unauthenticated by
+    // design (the HMAC-SHA512 signature IS the authentication). Must be parsed
+    // from the RAW body — no JSON re-serialization before verification.
+    if (path === '/payments/webhook/paystack' && request.method === 'POST') {
+      try {
+        const d: any = await webhookRoutes.paystack(request, env);
+        if (d?.error) return respond({ success: false, error: { code: 'FORBIDDEN', message: String(d.error) } }, 403, origin);
+        return respond({ success: true, data: d }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] paystack webhook:`, redact(String(e?.message || e)));
+        return respond({ success: false, error: { code: 'INTERNAL', message: 'Webhook processing failed' } }, 500, origin);
+      }
+    }
+
     if (path.startsWith('/payments')) {
       const auth = request.headers.get('Authorization') || '';
       let payUserId = '';
@@ -1040,22 +1133,42 @@ export default {
       if (!payUserId) return fail('AUTH_REQUIRED', 'Sign in required');
       (normalizedRequest as any).user = { userId: payUserId };
       try {
-        if (path === '/payments/subscribe' && request.method === 'POST') {
-          const d: any = await paymentsRoutes.subscribe(normalizedRequest as any, env);
-          if (d?.code) {
-            const code: ErrorCode = d.code === 'PAYMENTS_NOT_ENABLED' ? 'PAYMENTS_NOT_ENABLED' : d.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'VALIDATION_ERROR';
-            return fail(code, String(d.message || 'Payment could not be started'));
-          }
-          return respond({ success: true, data: d }, 200, origin);
+        let d: any;
+        if (path === '/payments/initialize' && request.method === 'POST') d = await paymentRoutes.initialize(normalizedRequest as any, env);
+        else if (path.match(/^\/payments\/verify\/[^\/]+$/) && request.method === 'GET') d = await paymentRoutes.verify(normalizedRequest as any, env);
+        else if (path === '/payments/history' && request.method === 'GET') d = await paymentRoutes.history(normalizedRequest as any, env);
+        else if (path === '/payments/entitlements' && request.method === 'GET') d = await paymentRoutes.entitlements(normalizedRequest as any, env);
+        else return fail('NOT_FOUND', 'Unknown payments route');
+        if (d?.error) {
+          const code: ErrorCode = d.code === 'PAYMENTS_NOT_ENABLED' ? 'PAYMENTS_NOT_ENABLED'
+            : d.code === 'UNAUTHORIZED' ? 'AUTH_REQUIRED'
+            : d.code === 'NOT_FOUND' ? 'NOT_FOUND'
+            : d.code === 'FORBIDDEN' ? 'FORBIDDEN' : 'VALIDATION_ERROR';
+          return fail(code, String(d.error));
         }
-        if (path === '/payments/history' && request.method === 'GET') {
-          const d = await paymentsRoutes.history(normalizedRequest as any, env);
-          return respond({ success: true, data: d }, 200, origin);
-        }
-        return fail('NOT_FOUND', 'Unknown payments route');
+        return respond({ success: true, data: d }, 200, origin);
       } catch (e: any) {
         console.error(`[${requestId}] payments:`, redact(String(e?.message || e)));
         return fail('INTERNAL', 'Payment request failed. Please try again.');
+      }
+    }
+
+    // ---- Admin: payments (Phase 18; admin JWT enforced for /admin/*) ----
+    if (path.startsWith('/admin/payments')) {
+      try {
+        let d: any;
+        if (path === '/admin/payments/transactions' && request.method === 'GET') d = await adminPaymentRoutes.transactions(normalizedRequest as any, env);
+        else if (path === '/admin/payments/entitlements' && request.method === 'GET') d = await adminPaymentRoutes.entitlements(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/payments\/[^\/]+\/refund$/) && request.method === 'POST') d = await adminPaymentRoutes.refund(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/payments\/entitlements\/[^\/]+\/revoke$/) && request.method === 'POST') d = await adminPaymentRoutes.revoke(normalizedRequest as any, env);
+        else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown payments admin route' } }, 404, origin);
+        if (d?.error) {
+          const code: ErrorCode = d.code === 'NOT_FOUND' ? 'NOT_FOUND' : d.code === 'FORBIDDEN' ? 'FORBIDDEN' : 'VALIDATION_ERROR';
+          return fail(code, String(d.error));
+        }
+        return respond({ success: true, data: d }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] admin payments:`, redact(String(e?.message || e))); return fail('INTERNAL', 'Payment admin operation failed.');
       }
     }
 

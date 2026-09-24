@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { Download, CreditCard, Bell, Settings, LogOut, X, Trash2, RefreshCw, Rocket, Monitor, Smartphone, Globe, Laptop } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { api } from '../services/api';
 import { useApps } from '../context/AppContext';
 import { useDevices } from '../context/DeviceContext';
 import { useInstalledState } from '../platform/nativeDetection';
@@ -111,7 +112,7 @@ export default function Profile() {
   const { user, logout, updateProfile, notifications, markNotificationRead } = useAuth();
   const { getAppById, installedApps, installApp, uninstallApp } = useApps();
   const { devices, syncNow, revoke, installations, offline, pendingSync, flushSync } = useDevices();
-  const [activeTab, setActiveTab] = useState<'apps' | 'devices' | 'subscriptions' | 'notifications' | 'trash' | 'settings'>('apps');
+  const [activeTab, setActiveTab] = useState<'apps' | 'devices' | 'purchases' | 'subscriptions' | 'notifications' | 'trash' | 'settings'>('apps');
   const [profileForm, setProfileForm] = useState({ name: user?.name || '', email: user?.email || '' });
   const [preferences, setPreferences] = useState(() => ({ ...DEFAULT_PREFERENCES, ...(user?.preferences || {}) }));
   const [savingProfile, setSavingProfile] = useState(false);
@@ -169,6 +170,7 @@ export default function Profile() {
   const tabs = [
     { id: 'apps' as const, label: 'My Applications', icon: Download, count: (installedApps || []).length },
     { id: 'devices' as const, label: 'My Devices', icon: Monitor, count: devices.filter((d) => d.status !== 'revoked').length },
+    { id: 'purchases' as const, label: 'Purchases', icon: CreditCard },
     { id: 'subscriptions' as const, label: 'Subscriptions', icon: CreditCard, count: (user.subscriptions || []).length },
     { id: 'notifications' as const, label: 'Notifications', icon: Bell, count: (notifications || []).filter((n) => !n.read).length },
     { id: 'trash' as const, label: 'Recycle Bin', icon: Trash2, count: (()=>{ try{ const u=JSON.parse(localStorage.getItem('rx-store-user')||'{}'); const k=u?.id?`rx-trash-${u.id}`:'rx-trash'; const a=JSON.parse(localStorage.getItem(k)||'[]'); return Array.isArray(a)?a.length:0; } catch{ return 0; }})() },
@@ -352,6 +354,7 @@ export default function Profile() {
           })()}
         </div>
       )}
+      {activeTab === 'purchases' && <PurchaseHistory />}
       {activeTab === 'subscriptions' && (
         <div className="animate-fade-in">
           <h2 className="text-xl font-bold text-white mb-6">Active Subscriptions</h2>
@@ -454,6 +457,64 @@ export default function Profile() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Purchase history (Phase 18): real transactions, amounts, states, refunds.
+// ---------------------------------------------------------------------------
+function PurchaseHistory() {
+  const [data, setData] = React.useState<any[] | null>(null);
+  const [error, setError] = React.useState('');
+
+  React.useEffect(() => {
+    api.payments.history().then((d: any) => setData(d?.purchases || [])).catch((e: any) => setError(e?.message || 'Could not load your purchases')).finally(() => {});
+  }, []);
+
+  const statusBadge = (p: any) => {
+    const map: Record<string, string> = {
+      complete: 'bg-green-400/10 text-green-400', pending: 'bg-amber-500/10 text-amber-300',
+      failed: 'bg-red-400/10 text-red-400', refunded: 'bg-purple-400/10 text-purple-300',
+    };
+    return <span className={`text-[10px] font-bold px-2 py-1 rounded ${map[p.status] || 'bg-white/5 text-rx-gray-medium'}`}>{p.status}</span>;
+  };
+
+  return (
+    <div className="space-y-4">
+      <h3 className="text-xl font-bold text-white">Purchases</h3>
+      {error ? (
+        <div className="card p-6 text-center text-sm text-rx-gray-medium">{error}</div>
+      ) : data === null ? (
+        <div className="card p-6 h-24 animate-pulse" />
+      ) : data.length === 0 ? (
+        <div className="card p-8 text-center">
+          <p className="text-sm text-rx-gray-medium">No purchases yet — paid apps you buy appear here with receipts.</p>
+        </div>
+      ) : (
+        <div className="card divide-y divide-white/5">
+          {data.map((p: any) => (
+            <div key={p.id} className="p-4 flex flex-wrap items-center gap-3">
+              {p.app?.icon ? <img src={p.app.icon} alt="" className="w-11 h-11 rounded-xl object-cover" /> : <div className="w-11 h-11 rounded-xl bg-rx-dark-tertiary" />}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-white truncate">{p.app?.name || 'Application'}</p>
+                <p className="text-xs text-rx-gray-medium">
+                  {formatDate(p.date)} · GH₵{(p.amountMinor / 100).toFixed(2)} · {p.provider === 'dev-sim' ? 'test' : p.provider}
+                  {p.reference ? ` · ref ${p.reference}` : ''}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {p.refundStatus && <span className="text-[10px] font-bold px-2 py-1 rounded bg-purple-400/10 text-purple-300">Refunded</span>}
+                {statusBadge(p)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="text-[11px] text-rx-gray-medium/70">
+        Payment card and mobile-money details are handled entirely by the payment provider — RX Store never sees or stores them.
+      </p>
     </div>
   );
 }

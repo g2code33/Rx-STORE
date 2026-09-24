@@ -73,6 +73,7 @@ const Sponsor = lazy(() => import('./pages/Sponsor'));
 const GetApp = lazy(() => import('./pages/GetApp'));
 // Storefront (Phase 15)
 const Library = lazy(() => import('./pages/Library'));
+const PaymentCallback = lazy(() => import('./pages/PaymentCallback'));
 // Developer Platform (Phase 11)
 const DeveloperPortal = lazy(() => import('./pages/developers/DeveloperPortal'));
 const DeveloperApply = lazy(() => import('./pages/developers/DeveloperApply'));
@@ -185,6 +186,7 @@ export default function App() {
             <Route path="/games" element={<Browse presetCategory="gaming" title="Games" />} />
             <Route path="/apps" element={<Browse excludeCategory="gaming" title="Apps" />} />
             <Route path="/library" element={<Library />} />
+            <Route path="/payments/callback" element={<PaymentCallback />} />
             <Route path="/app/:slug" element={<AppDetail />} />
             <Route path="/categories" element={<Categories />} />
             <Route path="/categories/:category" element={<CategoryPage />} />

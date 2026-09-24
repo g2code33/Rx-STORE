@@ -52,8 +52,19 @@ preview_id = "e056396b15db4fd490a2f3024ffda05e"
 #                                    -> {status: CLEAN|DETECTED|FAILED|UNAVAILABLE, provider, version, details})
 #                                    + optional secret MALWARE_SCANNER_KEY (Bearer)
 # Optional dependency/metadata checker: DEP_SECURITY_URL (same response shape).
-MALWARE_SCANNER = ""
+# Real scanner activation: set the VIRUSTOTAL_API_KEY secret (this stays "virustotal").
+#   npx wrangler secret put VIRUSTOTAL_API_KEY
+# Without the secret, results are honestly UNAVAILABLE and publication needs an override.
+MALWARE_SCANNER = "virustotal"
 # DEP_SECURITY_URL = ""
+
+# --- Marketplace payments (Phase 18) ---
+# Paystack is the production provider. The provider hosts ALL card/mobile-money
+# authorization; RX Store never sees payment credentials. Production purchases
+# require the PAYSTACK_SECRET_KEY secret — without it, production purchase
+# attempts fail closed (no simulation exists in production).
+# Webhook URL to set in the Paystack dashboard:
+#   https://rx-store-api.calcitoninpay.workers.dev/payments/webhook/paystack
 
 # Secrets (set with: wrangler secret put <NAME>)
 # JWT_SECRET (required)

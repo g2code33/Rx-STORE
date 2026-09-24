@@ -518,3 +518,64 @@ CREATE TABLE IF NOT EXISTS storefront_featured (
 );
 CREATE INDEX IF NOT EXISTS idx_storefront_featured_placement ON storefront_featured(placement, enabled, sort_order);
 -- applications gains privacy_url / support_url / video_url (nullable adds).
+
+
+-- Phase 18: production marketplace payments, entitlements & ownership.
+CREATE TABLE IF NOT EXISTS purchases (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  app_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  amount INTEGER NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'GHS',
+  provider TEXT NOT NULL,
+  provider_reference TEXT UNIQUE,
+  provider_transaction_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','complete','failed','refunded')),
+  failure_reason TEXT,
+  refunded_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  completed_at TEXT,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_purchases_user ON purchases(user_id);
+CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases(status);
+CREATE TABLE IF NOT EXISTS entitlements (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  app_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  purchase_id TEXT REFERENCES purchases(id) ON DELETE SET NULL,
+  provider TEXT NOT NULL,
+  provider_transaction_id TEXT,
+  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','ACTIVE','REFUNDED','REVOKED','EXPIRED')),
+  activated_at TEXT,
+  revoked_at TEXT,
+  revoked_reason TEXT,
+  refunded_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(user_id, app_id)
+);
+CREATE INDEX IF NOT EXISTS idx_entitlements_user ON entitlements(user_id);
+CREATE INDEX IF NOT EXISTS idx_entitlements_status ON entitlements(status);
+CREATE TABLE IF NOT EXISTS webhook_events (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  event_key TEXT NOT NULL,
+  event_type TEXT,
+  payload TEXT,
+  status TEXT NOT NULL DEFAULT 'processed' CHECK (status IN ('received','processed','ignored','failed')),
+  error TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(provider, event_key)
+);
+CREATE TABLE IF NOT EXISTS download_grants (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  app_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  package_id TEXT,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_download_grants_user ON download_grants(user_id);

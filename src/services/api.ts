@@ -292,15 +292,6 @@ export const api = {
     },
   },
 
-  payments: {
-    async initialize(payload: any) {
-      return request<any>('/payments/initialize', { method: 'POST', body: JSON.stringify(payload) });
-    },
-    async verify(reference: string) {
-      return request<any>(`/payments/verify/${reference}`, { method: 'GET' });
-    },
-  },
-
   devices: {
     /** Register/upsert the current device for the signed-in user (idempotent). */
     async register(device: {
@@ -542,6 +533,41 @@ export const api = {
       async rescan(id: string) {
         return request<any>(`/admin/security/packages/${encodeURIComponent(id)}/rescan`, { method: 'POST', body: '{}' });
       },
+    },
+  },
+
+  // Marketplace payments (Phase 18)
+  payments: {
+    /** Start a purchase: returns the provider's hosted authorization URL
+     *  (card/mobile-money details are entered ONLY on the provider's page). */
+    async initialize(appId: string) {
+      return request<{ purchase: any; authorizationUrl?: string; simulated?: boolean; alreadyOwned?: boolean; entitlement?: any }>('/payments/initialize', { method: 'POST', body: JSON.stringify({ appId }) });
+    },
+    /** Server-side verification after returning from the provider checkout. */
+    async verify(reference: string) {
+      return request<{ purchase: any; entitlement?: any }>(`/payments/verify/${encodeURIComponent(reference)}`, { method: 'GET' });
+    },
+    async history() {
+      return request<{ purchases: any[] }>('/payments/history', { method: 'GET' });
+    },
+    async entitlements() {
+      return request<{ entitlements: any[] }>('/payments/entitlements', { method: 'GET' });
+    },
+  },
+
+  // Admin payments (Phase 18)
+  adminPayments: {
+    async transactions(status?: string) {
+      return request<{ transactions: any[] }>(`/admin/payments/transactions${status ? `?status=${encodeURIComponent(status)}` : ''}`, { method: 'GET' });
+    },
+    async entitlements(status?: string) {
+      return request<{ entitlements: any[] }>(`/admin/payments/entitlements${status ? `?status=${encodeURIComponent(status)}` : ''}`, { method: 'GET' });
+    },
+    async refund(purchaseId: string) {
+      return request<any>(`/admin/payments/${encodeURIComponent(purchaseId)}/refund`, { method: 'POST', body: '{}' });
+    },
+    async revoke(entitlementId: string, reason: string) {
+      return request<any>(`/admin/payments/entitlements/${encodeURIComponent(entitlementId)}/revoke`, { method: 'POST', body: JSON.stringify({ reason }) });
     },
   },
 

@@ -533,42 +533,52 @@ test('installation reporting rejects a malformed deviceId/appSlug', async () => 
 });
 
 // ---------------------------------------------------------------------------
-// Payments must fail closed in production (no free paid access)
+// Payments must fail closed in production (no free paid access).
+// Phase 18 replaced the subscribe stub with the real Paystack-backed flow —
+// the full matrix (production fail-closed, dev simulation labelling, provider
+// verify/webhooks/refunds/entitlements) lives in payments.test.ts. These
+// checks keep the fail-closed + honest-labelling invariants in this suite.
 // ---------------------------------------------------------------------------
-test('payments are refused in production (PAYMENTS_NOT_ENABLED, never grants access)', async () => {
-  const { paymentsRoutes } = await import('./routes/payments.ts');
+test('payments are refused in production without a provider secret (PAYMENTS_NOT_ENABLED)', async () => {
+  const { paymentRoutes } = await import('./routes/payments.ts');
   const env = {
-    ENVIRONMENT: 'production',
+    ENVIRONMENT: 'production', // no PAYSTACK_SECRET_KEY
     DB: { prepare() { throw new Error('DB must not be touched when payments are disabled'); } },
   };
-  const req = new Request('https://api.rxstore.com/payments/subscribe', { method: 'POST', body: JSON.stringify({ appId: 'app1', plan: 'pro', paymentMethod: 'paystack' }) });
+  const req = new Request('https://api.rxstore.com/payments/initialize', { method: 'POST', body: JSON.stringify({ appId: 'app1' }) });
   (req as any).user = { userId: 'u1' };
-  const out: any = await paymentsRoutes.subscribe(req, env);
+  const out: any = await paymentRoutes.initialize(req, env);
   assert.equal(out.code, 'PAYMENTS_NOT_ENABLED');
-  assert.equal(out.subscription, undefined, 'no subscription is created');
+  assert.equal(out.entitlement, undefined, 'no entitlement is created');
 });
 
 test('simulated (non-production) payments are explicitly marked as test only', async () => {
-  const { paymentsRoutes } = await import('./routes/payments.ts');
+  const { paymentRoutes } = await import('./routes/payments.ts');
   const writes: any[] = [];
   const env = {
-    ENVIRONMENT: 'development',
+    ENVIRONMENT: 'development', // no secret -> simulation allowed
     DB: {
       prepare(sql: string) {
         return {
           _b: [] as any[],
           bind(...a: any[]) { this._b = a; return this; },
-          async first() { return { id: 'app1', name: 'CGPA Pilot', price_amount: 500 }; },
+          async first() {
+            const s = sql.replace(/\s+/g, ' ');
+            if (s.includes('SELECT id, slug, name, price_type, price_amount')) return { id: 'app1', slug: 'app1', name: 'CGPA Pilot', price_type: 'paid', price_amount: 500 };
+            if (s.includes('SELECT email, name FROM users')) return { email: 'u1@x.com', name: 'U1' };
+            if (s.includes('FROM entitlements WHERE user_id=? AND app_id=?')) return null;
+            return null;
+          },
           async run() { writes.push({ sql: sql.slice(0, 40), binds: this._b }); return { meta: { changes: 1 } }; },
           async all() { return { results: [] }; },
         };
       },
     },
   };
-  const req = new Request('https://api.rxstore.com/payments/subscribe', { method: 'POST', body: JSON.stringify({ appId: 'app1', plan: 'pro', paymentMethod: 'paystack' }) });
+  const req = new Request('https://api.rxstore.com/payments/initialize', { method: 'POST', body: JSON.stringify({ appId: 'app1' }) });
   (req as any).user = { userId: 'u1' };
-  const out: any = await paymentsRoutes.subscribe(req, env);
+  const out: any = await paymentRoutes.initialize(req, env);
   assert.equal(out.simulated, true);
   assert.equal(out.warning.includes('DEV/TEST ONLY'), true);
-  assert.ok(writes.some((w) => w.binds.includes('test')), 'subscription status is marked test, never active');
+  assert.equal(out.provider, 'dev-sim', 'the provider is labelled dev-sim, never paystack');
 });

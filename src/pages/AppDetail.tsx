@@ -215,6 +215,37 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
     if (myReview) { setNewRating(myReview.rating || 5); setNewTitle(myReview.title || ''); setNewComment(myReview.body || ''); }
   }, [myReview?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ---- Phase 18: paid apps require purchase before Get ----
+  const appIsPaidApp = !!app && ['paid', 'subscription'].includes(String(app.price)) && Number(app.priceAmount) > 0;
+  const [purchasing, setPurchasing] = React.useState(false);
+  const handlePurchase = async () => {
+    if (!user) { window.location.href = '/login'; return; }
+    if (!app) return;
+    setPurchasing(true);
+    try {
+      const res = await api.payments.initialize(app.id);
+      if (res.alreadyOwned || res.entitlement) {
+        toast.success('You already own this app');
+        setPurchasing(false);
+        return;
+      }
+      if (res.authorizationUrl) {
+        // Real provider checkout (card/mobile-money details are entered on the
+        // provider's hosted page — never in RX Store).
+        window.location.assign(res.authorizationUrl);
+        return;
+      }
+      if (res.simulated) {
+        toast.success('Test purchase complete (DEV ONLY — no real payment)', { duration: 6000 });
+        await refreshDetection?.();
+        window.location.reload();
+      }
+    } catch (e: any) {
+      toast.error(e?.message || 'Could not start the purchase');
+    }
+    setPurchasing(false);
+  };
+
   if (isLoading && !app) {
     return (
       <div className="section-container py-20 text-center">
@@ -236,6 +267,9 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   }
 
   const handleInstall = async () => {
+    // Paid apps: the server enforces the entitlement; if the caller somehow
+    // reaches here unowned, start the purchase instead.
+    if (appIsPaidApp) { void handlePurchase(); return; }
     if (!user) { toast.error('Please sign in to install applications'); return; }
     if (isInstalled && !nativeUpdateAvailable) return;
     setShowDownload(true);
@@ -516,9 +550,15 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
                   <button onClick={handleUninstall} className="px-4 py-2.5 bg-white/10 backdrop-blur-sm text-white rounded-xl text-sm hover:bg-white/20 transition-colors">Uninstall</button>
                 </div>
               ) : (
+                appIsPaidApp ? (
+                  <button onClick={handlePurchase} disabled={purchasing} className="px-8 py-3.5 bg-rx-yellow text-rx-dark font-bold rounded-xl hover:bg-rx-yellow-light transition-all active:scale-95 disabled:opacity-70 flex items-center gap-2 shadow-lg">
+                    <Download className="w-5 h-5" />{purchasing ? 'Starting…' : `Buy — GH₵${app.priceAmount}${app.price === 'subscription' ? '/mo' : ''}`}
+                  </button>
+                ) : (
                 <button onClick={handleInstall} disabled={isInstalling} className="px-8 py-3.5 bg-white text-rx-dark font-bold rounded-xl hover:bg-white/90 transition-all active:scale-95 disabled:opacity-70 flex items-center gap-2 shadow-lg">
-                  <Download className="w-5 h-5" />{app.price === 'free' ? 'Get' : `Get — $${app.priceAmount}${app.price === 'subscription' ? '/mo' : ''}`}
+                  <Download className="w-5 h-5" />Get
                 </button>
+                )
               )}
               {!osInstalled && otherDevices.length > 0 && (
                 <div className="text-[11px] text-rx-gray-medium flex items-center gap-1.5 text-right">
