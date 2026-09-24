@@ -1,7 +1,6 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Github, Twitter, Linkedin, Mail, Heart } from 'lucide-react';
-import toast from 'react-hot-toast';
 import { getPublicSettings } from '../../services/api';
 import { useContent } from '../../context/ContentContext';
 import Editable from '../edit/Editable';
@@ -22,8 +21,6 @@ const DEFAULT_COMPANY_LINKS = [
   { label: 'Advertise', to: '/advertise' },
   { label: 'Privacy Policy', to: '/privacy' },
   { label: 'Terms of Service', to: '/terms' },
-  { label: 'Careers', to: '', soon: true },
-  { label: 'Press Kit', to: '', soon: true },
 ];
 
 /** Internal paths render as router Links; external URLs as anchors. */
@@ -143,22 +140,11 @@ export default function Footer() {
             <h3 className="text-sm font-semibold text-white mb-4 uppercase tracking-wider">Company</h3>
             <Editable id="footer.companyLinks" type="linkList" label="Company links" group>
               <ul className="space-y-3">
-                {companyLinks.map((item: { label: string; to: string; soon?: boolean }) => (
+                {companyLinks.filter((item: { label: string; to: string }) => item.to).map((item: { label: string; to: string }) => (
                   <li key={item.label}>
-                    {item.soon || !item.to ? (
-                      <button
-                        onClick={() => toast(`${item.label} — coming soon 🚧`, { icon: '🛠️' })}
-                        className="text-sm text-rx-gray-medium/70 hover:text-rx-yellow transition-colors flex items-center gap-2"
-                        title="Not available yet"
-                      >
-                        {item.label}
-                        <span className="text-[9px] font-bold uppercase tracking-wider bg-rx-yellow/15 text-rx-yellow px-1.5 py-0.5 rounded">Soon</span>
-                      </button>
-                    ) : (
-                      <FooterLink to={item.to} className="text-sm text-rx-gray-medium hover:text-rx-yellow transition-colors">
-                        {item.label}
-                      </FooterLink>
-                    )}
+                    <FooterLink to={item.to} className="text-sm text-rx-gray-medium hover:text-rx-yellow transition-colors">
+                      {item.label}
+                    </FooterLink>
                   </li>
                 ))}
               </ul>

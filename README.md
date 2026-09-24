@@ -28,22 +28,26 @@ The platform combines the best of Microsoft Store, Samsung Galaxy Store, and Jet
 ## 🏗️ Ecosystem Structure
 
 ```
-                     RX STORE
-                        |
-                 Rx Cloud Backend
-                        |
-    ┌───────────┬───────────┬──────────────┐
-    |           |           |              |
-Web App    Windows     Linux         Mobile
-(React)    (Tauri)    (Tauri)      (Flutter)
-    |           |           |              |
-    └───────────┴───────────┴──────────────┘
-                        |
-               Available Applications
-    ┌───────────┬───────────┬──────────────┐
-Clinical Rx  PharmaGAME   Code Rx Society
-TAWOMO       CureLink     + Future Apps
+                      RX STORE
+                         |
+            Cloudflare Workers (D1 + R2 + KV)
+                         |
+   ┌──────────┬──────────┬──────────┬──────────┐
+   |          |          |          |          |
+  Web       Windows    Linux    Android     iOS
+ (React      (Electron) (Electron) (Capacitor) (PWA)
+  + PWA)
+   └──────────┴──────────┴──────────┴──────────┘
+                         |
+               Marketplace Applications
+   Clinical Rx · PharmaGAME · Code Rx Society
+   TAWOMO · CureLink · CGPA Pilot · + more
 ```
+
+> **Desktop is Electron** (with `electron-builder`), **Android is Capacitor**
+> (native installer plugin), and **iOS is served as a PWA** — no native IPA
+> pipeline. The old `desktop/tauri` and `mobile/flutter` trees remain in the
+> repository as LEGACY, non-shipping code.
 
 ## ✨ Features
 
@@ -96,8 +100,9 @@ TAWOMO       CureLink     + Future Apps
 | Layer | Technology |
 |-------|-----------|
 | **Web Frontend** | React 18, TypeScript, Tailwind CSS, Framer Motion |
-| **Desktop** | Tauri (Rust + WebView) |
-| **Mobile** | Flutter (Dart) |
+| **Desktop** | Electron (electron-builder) |
+| **Android** | Capacitor (native installer plugin) |
+| **iOS** | PWA (web install flow) |
 | **Backend** | Node.js / Cloudflare Workers |
 | **Database** | PostgreSQL / Cloudflare D1 |
 | **Cache** | Redis / Cloudflare KV |
@@ -168,8 +173,8 @@ Rx-STORE/
 │   ├── DEPLOYMENT.md             # Deployment guide
 │   ├── SECURITY.md               # Security checklist
 │   └── TESTING.md                # Testing strategy
-├── desktop/                      # Desktop apps (Tauri)
-├── mobile/                       # Mobile app (Flutter)
+├── electron/                      # Desktop shell (Electron — shipping)
+├── android/                       # Android shell (Capacitor — shipping)
 ├── backend/                      # Backend API source
 ├── package.json
 ├── vite.config.ts
@@ -242,3 +247,35 @@ npm run test:coverage # With coverage
 <p align="center">
   Built with ❤️ by <strong>Calcitonin Technologies</strong>
 </p>
+
+
+---
+
+## 📋 Production Status (Phase 21 certification)
+
+Implemented and verified in this repository (see `docs/ACCEPTANCE_CHECKLIST.md`,
+`docs/RELEASE_READINESS.md` and the test suite — 414 tests):
+
+- Account/device/installation model with native detection (Windows registry,
+  Linux dpkg/PATH/.desktop, Android PackageManager) and multi-device sync
+- Storefront (home sections, search, categories, discovery), Library,
+  first-launch restore, install queue with retry/recovery
+- Developer platform: application → verification → organization → roles →
+  apps → releases → packages → automated security checks → submission →
+  admin review → publication; analytics, revenue, payouts; public portal,
+  API docs, SDK page, community forum, scoped API tokens
+- Reviews with moderation + developer responses; public community with
+  moderation; admin consoles for all of it
+- Payments (Paystack), entitlements, refunds, short-lived paid-download
+  authorization — **activation requires `PAYSTACK_SECRET_KEY`; until then
+  production purchases fail closed (by design)**
+- Package security pipeline: quarantine storage, structure/integrity/
+  duplicate/signature/certificate/native-identity checks — **malware
+  scanning requires `VIRUSTOTAL_API_KEY`; without it results are honestly
+  UNAVAILABLE and publication requires an audited admin override**
+
+Not claimable until tested on real environments (see
+`docs/RELEASE_READINESS.md` for the full BLOCKED list): native OS install
+flows on real Windows/Linux/Android devices, live Paystack transactions,
+live VirusTotal scanning, and Electron/Android installer packaging from
+this CI sandbox.
