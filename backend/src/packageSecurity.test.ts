@@ -425,7 +425,13 @@ function makeEnv() {
           if (s.includes('SELECT id FROM packages WHERE release_id=? AND platform=? AND architecture=?')) return db.packages.find((p: any) => p.release_id === a[0] && p.platform === a[1] && p.architecture === a[2]) || null;
           if (s.includes('SELECT * FROM packages WHERE release_id=?')) return null; // (first() form unused)
           if (s.includes('SELECT id FROM package_security_overrides WHERE package_id=?')) return db.package_security_overrides.find((o: any) => o.package_id === a[0]) || null;
-          if (s.includes('SELECT status FROM packages WHERE storage_key=?')) { const p = db.packages.find((x: any) => x.storage_key === a[0]); return p ? { status: p.status } : null; }
+          if (s.includes('FROM packages p JOIN applications a ON a.id = p.application_id WHERE p.storage_key = ?')) {
+            const p = db.packages.find((x: any) => x.storage_key === a[0]);
+            if (!p) return null;
+            const app = db.applications.find((x: any) => x.id === p.application_id);
+            // The demo app is FREE; Phase 22 paid-gating is covered in packageAccess.test.ts.
+            return { status: p.status, deleted_at: p.deleted_at ?? null, price_type: app?.price_type ?? 'free', price_amount: app?.price_amount ?? null };
+          }
           if (s.includes('FROM releases r JOIN applications a ON a.id=r.application_id WHERE r.id=?')) {
             const rel = db.releases.find((x: any) => x.id === a[0]);
             return rel ? { ...rel, app_slug: db.applications.find((x: any) => x.id === rel.application_id)?.slug } : null;

@@ -49,6 +49,14 @@ export const updatesRoutes = {
     let downloadURL = file?.url || file?.fileUrl || null;
     if (downloadURL && (downloadURL.startsWith('apps/') || downloadURL.startsWith('assets/'))) downloadURL = `${origin}/r2/${downloadURL}`;
 
+    // PHASE 22 — paid applications must NEVER expose a public download URL
+    // here (this endpoint is unauthenticated). Update metadata (version,
+    // notes, checksum) is fine; the binary comes only through the authorized
+    // download flow (entitlement -> short-lived grant). Old legacy rows may
+    // still contain raw URLs, so enforce this regardless of what was stored.
+    const appIsPaidRow = ['paid', 'subscription'].includes(String(app.price_type || 'free')) && Number(app.price_amount) > 0;
+    if (appIsPaidRow) downloadURL = null;
+
     return {
       app: app.name,
       currentVersion,

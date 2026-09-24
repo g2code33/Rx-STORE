@@ -900,13 +900,103 @@ export async function publicationSecurityGate(env: any, releaseId: string): Prom
  * package row is published. Everything else (assets/*, icons, screenshots)
  * stays public as before.
  */
+/**
+ * PUBLISHED DOES NOT MEAN PUBLIC (Phase 22).
+ * A package object may be served through the public /r2/ route ONLY when ALL
+ * of the following hold:
+ *   - it is not a conversation attachment (never public)
+ *   - a package row owns this exact storage key
+ *   - the package status is 'published' (quarantined / in-review / stored /
+ *     archived / removed / revoked -> denied)
+ *   - the package row is not soft-deleted (deleted_at)
+ *   - the OWNING APPLICATION is not paid (paid binaries are served exclusively
+ *     through the short-lived, entitlement-checked /downloads/:token proxy)
+ *
+ * Unpublished, quarantined, deleted, revoked and paid objects all return the
+ * same generic false -> the caller answers 404, leaking no existence info.
+ */
 export async function r2KeyIsPubliclyServed(env: any, key: string): Promise<boolean> {
   // Conversation attachments (Phase 14) are NEVER public — they are served
   // only through the authorized attachment endpoints.
   if (key.startsWith('attachments/')) return false;
   if (!key.startsWith('apps/') && !key.startsWith('quarantine/')) return true;
-  const row: any = await env.DB.prepare('SELECT status FROM packages WHERE storage_key=? LIMIT 1').bind(key).first().catch(() => null);
-  return !!row && row.status === 'published';
+  const row: any = await env.DB.prepare(
+    `SELECT p.status, p.deleted_at, a.price_type, a.price_amount
+     FROM packages p JOIN applications a ON a.id = p.application_id
+     WHERE p.storage_key = ? LIMIT 1`
+  ).bind(key).first().catch(() => null);
+  if (!row) return false;
+  if (String(row.status || '') !== 'published') return false;
+  if (row.deleted_at) return false;
+  if (packageOwnerIsPaid(row)) return false;
+  return true;
+}
+
+/** Paid = paid/subscription price_type with a positive amount (Phase 18 rule). */
+export function packageOwnerIsPaid(appRow: { price_type?: string | null; price_amount?: number | null }): boolean {
+  return ['paid', 'subscription'].includes(String(appRow?.price_type || 'free')) && Number(appRow?.price_amount) > 0;
+}
+
+/**
+ * LEGACY app_versions.files POLICY (Phase 22).
+ * The legacy compatibility record cannot be safely mapped to a controlled
+ * package row (its URLs are free-form strings). For a PAID application the
+ * legacy path must FAIL CLOSED — never emit a raw /r2/... URL; entitled users
+ * are served by the controlled grant flow instead. Free apps keep the
+ * compatibility path (their objects are public by design).
+ */
+export function legacyDownloadAllowed(appRow: { price_type?: string | null; price_amount?: number | null }): boolean {
+  return !packageOwnerIsPaid(appRow);
+}
+
+/**
+ * Resolve a short-lived download grant (the /downloads/:token proxy core).
+ * FAIL-CLOSED resolution — the client supplies ONLY the opaque token; the
+ * grant row itself determines the user, app and package (no client-supplied
+ * app/release/package ids are ever consulted), so a grant can never be
+ * replayed against a different application or release than the one it was
+ * issued for.
+ *
+ * Checks, in order: token -> grant row (unrevoked-by-expiry lookup) ->
+ * expiry -> live entitlement (refunds/revocations end access immediately) ->
+ * package row (published, not deleted) -> storage object key.
+ */
+export async function resolveDownloadGrant(env: any, token: string): Promise<
+  | { ok: true; storageKey: string; filename: string; userId: string; appId: string; packageId: string }
+  | { ok: false; code: 'NOT_FOUND' | 'EXPIRED' | 'FORBIDDEN' }
+> {
+  const digest: ArrayBuffer = await (crypto as any).subtle.digest('SHA-256', new TextEncoder().encode(token));
+  const tokenHash = Array.from(new Uint8Array(digest)).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+  const grant: any = await env.DB.prepare('SELECT * FROM download_grants WHERE token_hash=? LIMIT 1')
+    .bind(tokenHash).first().catch(() => null);
+  if (!grant) return { ok: false, code: 'NOT_FOUND' };
+
+  // Expiry (stored as UTC 'YYYY-MM-DD HH:MM:SS').
+  const expiresMs = new Date(String(grant.expires_at).replace(' ', 'T') + (String(grant.expires_at).includes('Z') ? '' : 'Z')).getTime();
+  if (!Number.isFinite(expiresMs) || expiresMs < Date.now()) return { ok: false, code: 'EXPIRED' };
+
+  // Live entitlement at serve time: refunds/revocations must invalidate
+  // outstanding grants immediately.
+  const ent: any = await env.DB.prepare(
+    `SELECT status FROM entitlements WHERE user_id=? AND app_id=? LIMIT 1`
+  ).bind(grant.user_id, grant.app_id).first().catch(() => null);
+  if (!ent || String(ent.status) !== 'ACTIVE') return { ok: false, code: 'FORBIDDEN' };
+
+  // The package comes from the GRANT row only — never from the request.
+  if (!grant.package_id) return { ok: false, code: 'NOT_FOUND' };
+  const pkg: any = await env.DB.prepare('SELECT storage_key, filename, status, deleted_at FROM packages WHERE id=? LIMIT 1')
+    .bind(grant.package_id).first().catch(() => null);
+  if (!pkg || String(pkg.status) !== 'published' || pkg.deleted_at) return { ok: false, code: 'NOT_FOUND' };
+  if (!pkg.storage_key) return { ok: false, code: 'NOT_FOUND' };
+
+  return {
+    ok: true,
+    storageKey: String(pkg.storage_key),
+    filename: String(pkg.filename || 'package'),
+    userId: String(grant.user_id),
+    appId: String(grant.app_id),
+    packageId: String(grant.package_id),
+  };
 }
 
 /** Latest check results per package (for admin + developer security views). */

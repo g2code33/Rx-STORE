@@ -206,6 +206,13 @@ async function updateAppSizeFromPackages(env: any, appId: string): Promise<void>
 // and old clients working with {url, size, checksum, fileName} per platform
 async function syncLegacyAppVersion(env: any, appId: string, rel: any, origin: string) {
   try {
+    // PHASE 22: never write public /r2/... URLs into the legacy record for a
+    // PAID application — the legacy compatibility path is free-apps-only and
+    // the paid /r2/ gate denies those objects anyway. Fail closed: skip.
+    const appRow: any = await env.DB.prepare('SELECT price_type, price_amount FROM applications WHERE id=?').bind(appId).first().catch(() => null);
+    if (appRow && ['paid', 'subscription'].includes(String(appRow.price_type || 'free')) && Number(appRow.price_amount) > 0) {
+      return;
+    }
     const pkgs: any = await env.DB.prepare(`SELECT * FROM packages WHERE release_id=? AND status='published'`).bind(rel.id).all();
     const files: Record<string, any> = {};
     for (const p of pkgs.results || []) {

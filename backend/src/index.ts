@@ -26,7 +26,7 @@ import { paymentRoutes, webhookRoutes, adminPaymentRoutes, appIsPaid, activeEnti
 import { developerFinanceRoutes, adminFinanceRoutes } from './routes/developerFinance';
 import { communityRoutes, adminCommunityRoutes, developerTokenRoutes, authenticateApiToken } from './routes/community';
 import { storefrontRoutes, adminStorefrontRoutes, adminStorefrontAppSearch } from './routes/storefront';
-import { r2KeyIsPubliclyServed } from './services/packageSecurity';
+import { r2KeyIsPubliclyServed, resolveDownloadGrant, legacyDownloadAllowed } from './services/packageSecurity';
 import { verifyAccessToken } from './services/auth';
 import { apiErrorBody, statusForCode, requestIdFor, redact, type ErrorCode } from './services/errors';
 import { selectPackage, buildManifest, normalizeChannel, defaultChannel } from './services/releases';
@@ -405,30 +405,27 @@ export default {
     // minutes, entitlement re-checked at serve time. Never a permanent URL.
     if (path.match(/^\/downloads\/[a-f0-9]{64}$/) && request.method === 'GET') {
       try {
+        // PHASE 22: fail-closed resolver — the token is the ONLY client input;
+        // user/app/package identity comes exclusively from the grant row, so a
+        // grant can never be replayed against another application or release.
         const token = path.split('/')[2];
-        const digest: ArrayBuffer = await (crypto as any).subtle.digest('SHA-256', new TextEncoder().encode(token));
-        const tokenHash = Array.from(new Uint8Array(digest)).map((b: number) => b.toString(16).padStart(2, '0')).join('');
-        const grant: any = await env.DB.prepare('SELECT * FROM download_grants WHERE token_hash=?').bind(tokenHash).first().catch(() => null);
-        if (!grant) return new Response('Not found', { status: 404, headers: corsHeaders(origin) });
-        if (new Date(String(grant.expires_at).replace(' ', 'T') + 'Z').getTime() < Date.now()) {
-          return respond({ success: false, error: { code: 'DOWNLOAD_EXPIRED', message: 'This download link has expired — request the download again.' } }, 410, origin);
+        const resolved = await resolveDownloadGrant(env, token);
+        if (!resolved.ok) {
+          if (resolved.code === 'EXPIRED') {
+            return respond({ success: false, error: { code: 'DOWNLOAD_EXPIRED', message: 'This download link has expired — request the download again.' } }, 410, origin);
+          }
+          // NOT_FOUND / FORBIDDEN (revoked/refunded entitlement): generic 404/
+          // 403 without leaking which part failed.
+          if (resolved.code === 'FORBIDDEN') {
+            return respond({ success: false, error: { code: 'PURCHASE_REQUIRED', message: 'Your access to this application is no longer active.' } }, 403, origin);
+          }
+          return new Response('Not found', { status: 404, headers: corsHeaders(origin) });
         }
-        // Entitlement still active at serve time (a refund/revoke between
-        // authorization and download must not retain paid access).
-        const ent = await activeEntitlement(env, grant.user_id, grant.app_id);
-        if (!ent) return respond({ success: false, error: { code: 'PURCHASE_REQUIRED', message: 'Your access to this application is no longer active.' } }, 403, origin);
-        let storageKey: string | null = null;
-        let pkgName = 'package';
-        if (grant.package_id) {
-          const pkg: any = await env.DB.prepare('SELECT storage_key, filename, status FROM packages WHERE id=?').bind(grant.package_id).first().catch(() => null);
-          if (pkg?.status === 'published') { storageKey = pkg.storage_key; pkgName = pkg.filename || pkgName; }
-        }
-        if (!storageKey) return new Response('Not found', { status: 404, headers: corsHeaders(origin) });
-        const obj: any = await env.STORAGE.get(storageKey);
+        const obj: any = await env.STORAGE.get(resolved.storageKey);
         if (!obj) return new Response('Not found', { status: 404, headers: corsHeaders(origin) });
         const headers = new Headers(corsHeaders(origin));
         headers.set('Content-Type', obj.httpMetadata?.contentType || 'application/octet-stream');
-        headers.set('Content-Disposition', `attachment; filename="${pkgName.replace(/["\\]/g, '_')}"`);
+        headers.set('Content-Disposition', `attachment; filename="${resolved.filename.replace(/["\\]/g, '_')}"`);
         headers.set('Cache-Control', 'private, no-store');
         return new Response(obj.body, { headers });
       } catch (e: any) {
@@ -603,7 +600,17 @@ export default {
           return respond({ success: false, error: { code: 'NO_COMPATIBLE_PACKAGE', message: reason } }, 404, origin);
         }
 
-        // 3. Legacy app_versions.files (kept in sync on publish; supports old rows too)
+        // PHASE 22 — the legacy app_versions.files compatibility record cannot
+        // be safely mapped to a controlled package row. For a PAID application
+        // this path FAILS CLOSED: never emit a raw public /r2/... URL.
+        // Entitled users are served by the controlled grant flow above (or the
+        // new-package path); if no new-package row exists, that is a release
+        // data problem to fix in the pipeline — not something to guess around.
+        if (!legacyDownloadAllowed(app)) {
+          return respond({ success: false, error: { code: 'NO_COMPATIBLE_PACKAGE', message: 'This application\u2019s downloads are managed by the secured release pipeline. Please use the latest RX Store app to download it.' } }, 404, origin);
+        }
+
+        // 3. Legacy app_versions.files (kept in sync on publish; supports old rows too — FREE apps only)
         const ver: any = await env.DB.prepare('SELECT files FROM app_versions WHERE app_id=? ORDER BY created_at DESC LIMIT 1').bind(app.id).first().catch(()=>null);
         let url = `${originUrl}/r2/apps/${slug}/${app.current_version}/${platform}/download`;
         let checksum: any = null;
