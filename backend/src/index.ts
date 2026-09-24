@@ -24,6 +24,7 @@ import { developerSubmissionRoutes, adminSubmissionRoutes } from './routes/submi
 import { reviewRoutes, developerReviewRoutes, adminReviewRoutes } from './routes/reviews';
 import { paymentRoutes, webhookRoutes, adminPaymentRoutes, appIsPaid, activeEntitlement } from './routes/payments';
 import { developerFinanceRoutes, adminFinanceRoutes } from './routes/developerFinance';
+import { communityRoutes, adminCommunityRoutes, developerTokenRoutes, authenticateApiToken } from './routes/community';
 import { storefrontRoutes, adminStorefrontRoutes, adminStorefrontAppSearch } from './routes/storefront';
 import { r2KeyIsPubliclyServed } from './services/packageSecurity';
 import { verifyAccessToken } from './services/auth';
@@ -969,6 +970,10 @@ export default {
         else if (path.match(/^\/developers\/security\/packages\/[^\/]+$/) && request.method === 'GET') data = await developerAppRoutes.getPackageSecurity(normalizedRequest as any, env);
         // Phase 17 — developer review responses
         else if (path.match(/^\/developers\/reviews\/[^\/]+\/respond$/) && request.method === 'POST') data = await developerReviewRoutes.respond(normalizedRequest as any, env);
+        // Phase 20 — API tokens
+        else if (is('/developers/tokens', 'GET')) data = await developerTokenRoutes.list(normalizedRequest as any, env);
+        else if (is('/developers/tokens', 'POST')) data = await developerTokenRoutes.create(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/tokens\/[^\/]+\/revoke$/) && request.method === 'POST') data = await developerTokenRoutes.revoke(normalizedRequest as any, env);
         // Phase 19 — analytics, revenue, payouts, billing
         else if (is('/developers/analytics', 'GET')) data = await developerFinanceRoutes.analytics(normalizedRequest as any, env);
         else if (is('/developers/revenue', 'GET')) data = await developerFinanceRoutes.revenue(normalizedRequest as any, env);
@@ -1132,6 +1137,57 @@ export default {
     // The generic router does not dispatch path-mounted sub-routers, so payments
     // are handled explicitly here. No provider is integrated: production returns
     // PAYMENTS_NOT_ENABLED and never grants paid access.
+    // ---- Developer community (Phase 20): public reads, signed-in writes ----
+    if (path.startsWith('/community')) {
+      try {
+        // Writes need the caller attached.
+        if (request.method === 'POST') {
+          const auth = request.headers.get('Authorization') || '';
+          let comUserId = '';
+          try { if (auth.startsWith('Bearer ')) comUserId = (await verifyAccessToken(auth.slice(7), env.JWT_SECRET))?.userId || ''; } catch {}
+          if (!comUserId) return respond({ success: false, error: { code: 'UNAUTHORIZED', message: 'Sign in to participate' } }, 401, origin);
+          (normalizedRequest as any).user = { userId: comUserId };
+        }
+        let data: any;
+        if (path === '/community/categories' && request.method === 'GET') data = await communityRoutes.categories(normalizedRequest as any, env);
+        else if (path === '/community/discussions' && request.method === 'GET') data = await communityRoutes.listDiscussions(normalizedRequest as any, env);
+        else if (path === '/community/discussions' && request.method === 'POST') data = await communityRoutes.createDiscussion(normalizedRequest as any, env);
+        else if (path.match(/^\/community\/discussions\/[^\/]+$/) && request.method === 'GET') data = await communityRoutes.getDiscussion(normalizedRequest as any, env);
+        else if (path.match(/^\/community\/discussions\/[^\/]+\/replies$/) && request.method === 'POST') data = await communityRoutes.createReply(normalizedRequest as any, env);
+        else if (path === '/community/reports' && request.method === 'POST') data = await communityRoutes.report(normalizedRequest as any, env);
+        else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown community route' } }, 404, origin);
+        if (data?.error) {
+          const code: ErrorCode = data.code === 'NOT_FOUND' ? 'NOT_FOUND' : data.code === 'UNAUTHORIZED' ? 'AUTH_REQUIRED' : data.code === 'RATE_LIMITED' ? 'RATE_LIMITED' : 'VALIDATION_ERROR';
+          return fail(code, String(data.error));
+        }
+        return respond({ success: true, data }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] community:`, redact(String(e?.message || e))); return fail('INTERNAL', 'Community request failed.');
+      }
+    }
+
+    // ---- Developer API v1 (Phase 20): token-authenticated analytics ----
+    // Authorization: Bearer rxs_... (scoped developer API tokens).
+    if (path.startsWith('/api/v1/') && request.method === 'GET') {
+      try {
+        const tok = await authenticateApiToken(request, env);
+        if (!tok) return respond({ success: false, error: { code: 'UNAUTHORIZED', message: 'A valid developer API token is required (Authorization: Bearer rxs_…).' } }, 401, origin);
+        if (!tok.scopes.includes('analytics.read')) {
+          return respond({ success: false, error: { code: 'FORBIDDEN', message: 'This token lacks the analytics.read scope.' } }, 403, origin);
+        }
+        const orgApps: any = await env.DB.prepare('SELECT id, slug, name, current_version, download_count, rating, review_count FROM applications WHERE developer_org_id=?').bind(tok.developerId).all().catch(() => ({ results: [] }));
+        return respond({ success: true, data: {
+          developerId: tok.developerId,
+          apps: (orgApps?.results || []).map((a: any) => ({
+            id: a.id, slug: a.slug, name: a.name, version: a.current_version,
+            downloads: Number(a.download_count) || 0, rating: Number(a.rating) || 0, reviews: Number(a.review_count) || 0,
+          })),
+        }}, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] api v1:`, redact(String(e?.message || e))); return fail('INTERNAL', 'API request failed.');
+      }
+    }
+
     // ---- Paystack webhook (Phase 18): signature-verified, unauthenticated by
     // design (the HMAC-SHA512 signature IS the authentication). Must be parsed
     // from the RAW body — no JSON re-serialization before verification.
@@ -1170,6 +1226,23 @@ export default {
       } catch (e: any) {
         console.error(`[${requestId}] payments:`, redact(String(e?.message || e)));
         return fail('INTERNAL', 'Payment request failed. Please try again.');
+      }
+    }
+
+    // ---- Admin: community moderation (Phase 20; admin JWT enforced for /admin/*) ----
+    if (path.startsWith('/admin/community')) {
+      try {
+        let data: any;
+        if (path === '/admin/community/reports' && request.method === 'GET') data = await adminCommunityRoutes.reports(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/community\/[^\/]+\/[^\/]+\/moderate$/) && request.method === 'POST') data = await adminCommunityRoutes.moderate(normalizedRequest as any, env);
+        else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown community admin route' } }, 404, origin);
+        if (data?.error) {
+          const code: ErrorCode = data.code === 'NOT_FOUND' ? 'NOT_FOUND' : data.code === 'FORBIDDEN' ? 'FORBIDDEN' : 'VALIDATION_ERROR';
+          return fail(code, String(data.error));
+        }
+        return respond({ success: true, data }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] admin community:`, redact(String(e?.message || e))); return fail('INTERNAL', 'Community moderation failed.');
       }
     }
 

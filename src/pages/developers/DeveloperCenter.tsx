@@ -1012,6 +1012,106 @@ function Settings({ org }: { org: any }) {
         Organization deletion, ownership transfer and billing attach to this model in a later phase.
         Suspension/reinstatement is controlled by the RX Store admin team.
       </p>
+      <div className="mt-6">
+        <ApiTokens />
+      </div>
     </Section>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// API tokens (Phase 20) — scoped, revocable; the secret is shown ONCE.
+// ---------------------------------------------------------------------------
+
+function ApiTokens() {
+  const [tokens, setTokens] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [name, setName] = useState('');
+  const [scopes, setScopes] = useState<string[]>(['analytics.read']);
+  const [fresh, setFresh] = useState<{ token: any; secret: string } | null>(null);
+  const ALL_SCOPES = ['analytics.read', 'apps.read', 'releases.read'];
+
+  const load = () => {
+    setLoading(true);
+    api.developerTokens.list().then((d: any) => setTokens(d.tokens || [])).catch(() => setTokens([])).finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, []);
+
+  const create = async () => {
+    setBusy(true);
+    try {
+      const d = await api.developerTokens.create(name.trim() || 'API token', scopes);
+      setFresh({ token: d.token, secret: d.secret });
+      setName('');
+      load();
+    } catch (e: any) { toast.error(e?.message || 'Could not create token'); }
+    setBusy(false);
+  };
+
+  const revoke = async (id: string) => {
+    if (!confirm('Revoke this token? Applications using it stop working immediately.')) return;
+    setBusy(true);
+    try { await api.developerTokens.revoke(id); toast.success('Token revoked'); load(); }
+    catch (e: any) { toast.error(e?.message || 'Could not revoke'); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="card p-5 space-y-3">
+        <h3 className="text-sm font-bold text-white uppercase tracking-wider">Create an API token</h3>
+        <p className="text-xs text-rx-gray-medium">Scoped read-only access for scripts and CI. The token is shown once — only its hash is stored.</p>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Token name (e.g. CI analytics)"
+            className="flex-1 bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white" maxLength={60} />
+          <button onClick={create} disabled={busy || !scopes.length} className="btn-primary text-sm px-4 disabled:opacity-40">{busy ? 'Creating…' : 'Create token'}</button>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          {ALL_SCOPES.map((sc) => (
+            <button key={sc} onClick={() => setScopes((prev) => prev.includes(sc) ? prev.filter((x) => x !== sc) : [...prev, sc]) }
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${scopes.includes(sc) ? 'bg-rx-yellow/10 text-rx-yellow border-rx-yellow/30' : 'text-rx-gray-medium border-white/10 hover:text-white'}`}>
+              {sc}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {fresh && (
+        <div className="card p-5 border-rx-yellow/30 bg-rx-yellow/5">
+          <h3 className="text-sm font-bold text-rx-yellow uppercase tracking-wider">Copy your token now</h3>
+          <p className="text-xs text-rx-gray-medium mt-1">This is the only time the full token is shown. It cannot be recovered.</p>
+          <div className="flex items-center gap-2 mt-3">
+            <code className="flex-1 min-w-0 bg-rx-dark-tertiary rounded-lg px-3 py-2 text-xs text-rx-yellow overflow-x-auto whitespace-nowrap">{fresh.secret}</code>
+            <button onClick={() => { navigator.clipboard?.writeText(fresh.secret); toast.success('Copied'); }} className="btn-secondary text-xs px-3 py-2">Copy</button>
+            <button onClick={() => setFresh(null)} className="text-xs text-rx-gray-medium hover:text-white px-2">Done</button>
+          </div>
+        </div>
+      )}
+
+      <div className="card">
+        <div className="p-4 border-b border-white/5"><h3 className="text-sm font-bold text-white uppercase tracking-wider">Your tokens ({tokens.length})</h3></div>
+        <div className="divide-y divide-white/5">
+          {loading ? (
+            <div className="p-4 animate-pulse h-12" />
+          ) : tokens.length === 0 ? (
+            <p className="p-6 text-center text-sm text-rx-gray-medium">No API tokens yet.</p>
+          ) : tokens.map((t: any) => (
+            <div key={t.id} className="p-4 flex flex-wrap items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-white truncate">{t.name} <span className="text-rx-gray-medium text-xs font-mono">({t.prefix}…)</span></p>
+                <p className="text-xs text-rx-gray-medium">{(t.scopes || []).join(', ')} · created {formatDate(t.createdAt)}{t.lastUsedAt ? ` · last used ${formatDate(t.lastUsedAt)}` : ''}</p>
+              </div>
+              {t.revokedAt ? (
+                <span className="text-[10px] font-bold px-2 py-1 rounded bg-red-400/10 text-red-400">Revoked</span>
+              ) : (
+                <button onClick={() => revoke(t.id)} disabled={busy} className="text-xs text-rx-gray-medium hover:text-red-400">Revoke</button>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }

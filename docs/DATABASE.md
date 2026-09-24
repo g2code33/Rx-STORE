@@ -121,6 +121,7 @@ columns), so back up before applying it.
 0014_ratings_reviews.sql             Reviews: titles, moderation states, developer responses, reports table
 0015_payments_entitlements.sql       Marketplace payments: purchases, entitlements, webhook_events, download_grants
 0016_developer_finance.sql          Developer finance: download kind/geo columns, billing, payouts
+0017_developer_community.sql         Developer community (categories/discussions/replies/reports) + scoped API tokens
 ```
 
 ### Migration numbering

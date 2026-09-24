@@ -76,6 +76,10 @@ const Library = lazy(() => import('./pages/Library'));
 const PaymentCallback = lazy(() => import('./pages/PaymentCallback'));
 // Developer Platform (Phase 11)
 const DeveloperPortal = lazy(() => import('./pages/developers/DeveloperPortal'));
+const DeveloperDocs = lazy(() => import('./pages/developers/DeveloperDocs'));
+const DeveloperSdk = lazy(() => import('./pages/developers/DeveloperSdk'));
+const DeveloperSubmit = lazy(() => import('./pages/developers/DeveloperSubmit'));
+const DeveloperCommunity = lazy(() => import('./pages/developers/DeveloperCommunity'));
 const DeveloperApply = lazy(() => import('./pages/developers/DeveloperApply'));
 const DeveloperStatusPage = lazy(() => import('./pages/developers/DeveloperStatus'));
 const DeveloperCenter = lazy(() => import('./pages/developers/DeveloperCenter'));
@@ -201,6 +205,10 @@ export default function App() {
             <Route path="/admin" element={<Admin />} />
             {/* Developer Platform (Phase 11) */}
             <Route path="/developers" element={<DeveloperPortal />} />
+            <Route path="/developers/docs" element={<DeveloperDocs />} />
+            <Route path="/developers/sdk" element={<DeveloperSdk />} />
+            <Route path="/developers/submit" element={<DeveloperSubmit />} />
+            <Route path="/developers/community" element={<DeveloperCommunity />} />
             <Route path="/developers/apply" element={<DeveloperApply />} />
             <Route path="/developers/status" element={<DeveloperStatusPage />} />
             <Route path="/developers/invite" element={<InviteAccept />} />

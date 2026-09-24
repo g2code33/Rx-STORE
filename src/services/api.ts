@@ -626,6 +626,53 @@ export const api = {
     },
   },
 
+  // Developer community (Phase 20)
+  community: {
+    async categories() {
+      return request<{ categories: any[] }>('/community/categories', { method: 'GET', auth: false });
+    },
+    async discussions(category?: string, page = 1) {
+      const q = new URLSearchParams({ page: String(page) });
+      if (category) q.set('category', category);
+      return request<{ discussions: any[]; pagination: any }>(`/community/discussions?${q}`, { method: 'GET', auth: false });
+    },
+    async discussion(id: string) {
+      return request<{ discussion: any; replies: any[] }>(`/community/discussions/${encodeURIComponent(id)}`, { method: 'GET', auth: false });
+    },
+    async createDiscussion(categoryId: string, title: string, body: string) {
+      return request<{ discussion: any }>('/community/discussions', { method: 'POST', body: JSON.stringify({ categoryId, title, body }) });
+    },
+    async createReply(discussionId: string, body: string) {
+      return request<{ reply: any }>(`/community/discussions/${encodeURIComponent(discussionId)}/replies`, { method: 'POST', body: JSON.stringify({ body }) });
+    },
+    async report(targetType: 'discussion' | 'reply', targetId: string, reason: string, details?: string) {
+      return request<{ report: any }>('/community/reports', { method: 'POST', body: JSON.stringify({ targetType, targetId, reason, details }) });
+    },
+  },
+
+  // Developer API tokens (Phase 20)
+  developerTokens: {
+    async list() {
+      return request<{ tokens: any[] }>('/developers/tokens', { method: 'GET' });
+    },
+    async create(name: string, scopes: string[]) {
+      return request<{ token: any; secret: string; note: string }>('/developers/tokens', { method: 'POST', body: JSON.stringify({ name, scopes }) });
+    },
+    async revoke(id: string) {
+      return request<{ success: boolean }>(`/developers/tokens/${encodeURIComponent(id)}/revoke`, { method: 'POST', body: '{}' });
+    },
+  },
+
+  // Admin community moderation (Phase 20)
+  adminCommunity: {
+    async reports(status = 'open') {
+      return request<{ reports: any[] }>(`/admin/community/reports?status=${encodeURIComponent(status)}`, { method: 'GET' });
+    },
+    async moderate(targetType: 'discussion' | 'reply', targetId: string, action: 'hide' | 'restore' | 'remove', reason: string) {
+      return request<any>(`/admin/community/${targetType}/${encodeURIComponent(targetId)}/moderate`, { method: 'POST', body: JSON.stringify({ action, reason }) });
+    },
+  },
+
   // Storefront (Phase 15)
   storefront: {
     async home() {

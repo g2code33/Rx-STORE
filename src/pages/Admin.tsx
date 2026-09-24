@@ -57,6 +57,7 @@ import DeveloperAdminPanel from '../components/admin/DeveloperAdminPanel';
 import StorefrontAdminPanel from '../components/admin/StorefrontAdminPanel';
 import ReviewModerationPanel from '../components/admin/ReviewModerationPanel';
 import PaymentsAdminPanel from '../components/admin/PaymentsAdminPanel';
+import CommunityModerationPanel from '../components/admin/CommunityModerationPanel';
 import AdminSettings from '../components/admin/AdminSettings';
 import RecycleBin from '../components/admin/RecycleBin';
 import { useAuth } from '../context/AuthContext';
@@ -164,6 +165,7 @@ export default function Admin() {
     { id: 'users', label: 'Users', icon: Users },
     { id: 'icons', label: 'Icons', icon: Shapes },
     { id: 'payments', label: 'Payments', icon: CreditCard },
+    { id: 'community', label: 'Community', icon: Users },
     { id: 'reviews', label: 'Reviews', icon: Star },
     { id: 'storefront', label: 'Storefront', icon: Store },
     { id: 'developers', label: 'Developers', icon: Shield },
@@ -474,6 +476,11 @@ export default function Admin() {
           {activeSection === 'users' && (<div className="animate-fade-in"><UserRoleEditor /></div>)}
           {activeSection === 'icons' && (<div className="animate-fade-in"><IconManager /></div>)}
 
+          {activeSection === 'community' && (
+            <div className="animate-fade-in">
+              <CommunityModerationPanel />
+            </div>
+          )}
           {activeSection === 'payments' && (
             <div className="animate-fade-in">
               <PaymentsAdminPanel />

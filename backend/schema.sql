@@ -611,3 +611,51 @@ CREATE TABLE IF NOT EXISTS developer_payouts (
 );
 CREATE INDEX IF NOT EXISTS idx_developer_payouts_dev ON developer_payouts(developer_id);
 CREATE INDEX IF NOT EXISTS idx_developer_payouts_status ON developer_payouts(status);
+
+
+-- Phase 20: developer community + API tokens.
+CREATE TABLE IF NOT EXISTS community_categories (
+  id TEXT PRIMARY KEY, slug TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
+  description TEXT, sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS community_discussions (
+  id TEXT PRIMARY KEY,
+  category_id TEXT NOT NULL REFERENCES community_categories(id) ON DELETE CASCADE,
+  author_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  developer_org_id TEXT, title TEXT NOT NULL, body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'visible' CHECK (status IN ('visible','hidden','removed')),
+  moderation_reason TEXT, moderated_at TEXT, moderated_by TEXT,
+  reply_count INTEGER NOT NULL DEFAULT 0, last_activity_at TEXT DEFAULT (datetime('now')),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_community_discussions_category ON community_discussions(category_id, status, last_activity_at DESC);
+CREATE TABLE IF NOT EXISTS community_replies (
+  id TEXT PRIMARY KEY,
+  discussion_id TEXT NOT NULL REFERENCES community_discussions(id) ON DELETE CASCADE,
+  author_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  developer_org_id TEXT, body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'visible' CHECK (status IN ('visible','hidden','removed')),
+  moderation_reason TEXT, moderated_at TEXT, moderated_by TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_community_replies_discussion ON community_replies(discussion_id, status, created_at);
+CREATE TABLE IF NOT EXISTS community_reports (
+  id TEXT PRIMARY KEY,
+  target_type TEXT NOT NULL CHECK (target_type IN ('discussion','reply')),
+  target_id TEXT NOT NULL,
+  reporter_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  reason TEXT NOT NULL CHECK (reason IN ('spam','harassment','irrelevant','malicious_content','other')),
+  details TEXT,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved','dismissed')),
+  resolved_by TEXT, resolved_at TEXT, created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(target_type, target_id, reporter_user_id)
+);
+CREATE TABLE IF NOT EXISTS developer_api_tokens (
+  id TEXT PRIMARY KEY,
+  developer_id TEXT NOT NULL REFERENCES developers(id) ON DELETE CASCADE,
+  created_by TEXT NOT NULL, name TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE, token_prefix TEXT NOT NULL,
+  scopes TEXT NOT NULL DEFAULT '[]', last_used_at TEXT, revoked_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_developer_api_tokens_dev ON developer_api_tokens(developer_id);

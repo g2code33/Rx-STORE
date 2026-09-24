@@ -106,7 +106,7 @@ export default function Footer() {
             </Editable>
           </div>
 
-          {/* Developers */}
+          {/* Developers — every link is a real, functioning route (Phase 20) */}
           <div>
             <h3 className="text-sm font-semibold text-white mb-4 uppercase tracking-wider">Developers</h3>
             <ul className="space-y-3">
@@ -116,22 +116,25 @@ export default function Footer() {
                 </Link>
               </li>
               <li>
+                <Link to="/developers/docs" className="text-sm text-rx-gray-medium/70 hover:text-rx-yellow transition-colors">
+                  API Documentation
+                </Link>
+              </li>
+              <li>
                 <button onClick={submitAnApp} className="text-sm text-rx-gray-medium/70 hover:text-rx-yellow transition-colors text-left">
                   Submit an App
                 </button>
               </li>
-              {['API Documentation', 'SDK Downloads', 'Community Forum'].map((item) => (
-                <li key={item}>
-                  <button
-                    onClick={() => toast(`${item} — coming soon 🚧`, { icon: '🛠️' })}
-                    className="text-sm text-rx-gray-medium/70 hover:text-rx-yellow transition-colors flex items-center gap-2"
-                    title="Not available yet"
-                  >
-                    {item}
-                    <span className="text-[9px] font-bold uppercase tracking-wider bg-rx-yellow/15 text-rx-yellow px-1.5 py-0.5 rounded">Soon</span>
-                  </button>
-                </li>
-              ))}
+              <li>
+                <Link to="/developers/sdk" className="text-sm text-rx-gray-medium/70 hover:text-rx-yellow transition-colors">
+                  SDK Downloads
+                </Link>
+              </li>
+              <li>
+                <Link to="/developers/community" className="text-sm text-rx-gray-medium/70 hover:text-rx-yellow transition-colors">
+                  Community
+                </Link>
+              </li>
             </ul>
           </div>
 
