@@ -25,6 +25,11 @@ AI_BASE_URL_NVIDIA = "https://integrate.api.nvidia.com/v1"
 AI_BASE_URL_OPENROUTER = "https://openrouter.ai/api/v1"
 AI_BASE_URL_OPENAI = "https://api.openai.com/v1"
 AI_BASE_URL_GEMINI = "https://generativelanguage.googleapis.com/v1beta"
+# Package security (Phase 13) — malware scanner selection. NOTE: this MUST live
+# inside [vars]; when it sat below the [[kv_namespaces]] table TOML attached it
+# to the KV namespace (wrangler warning "Unexpected fields found in
+# kv_namespaces[0]") and the value was never applied to the Worker.
+MALWARE_SCANNER = "virustotal"
 
 # D1 — isolated marketplace DB (create with: wrangler d1 create rx-store-db)
 [[d1_databases]]
@@ -52,11 +57,12 @@ preview_id = "e056396b15db4fd490a2f3024ffda05e"
 #                                    -> {status: CLEAN|DETECTED|FAILED|UNAVAILABLE, provider, version, details})
 #                                    + optional secret MALWARE_SCANNER_KEY (Bearer)
 # Optional dependency/metadata checker: DEP_SECURITY_URL (same response shape).
+# The MALWARE_SCANNER value itself is set in [vars] above (TOML tables end at
+# the next [table] header — anything typed below here belongs to the resource,
+# not to the Worker's environment).
 # Real scanner activation: set the VIRUSTOTAL_API_KEY secret (this stays "virustotal").
 #   npx wrangler secret put VIRUSTOTAL_API_KEY
 # Without the secret, results are honestly UNAVAILABLE and publication needs an override.
-MALWARE_SCANNER = "virustotal"
-# DEP_SECURITY_URL = ""
 
 # --- Marketplace payments (Phase 18) ---
 # Paystack is the production provider. The provider hosts ALL card/mobile-money
