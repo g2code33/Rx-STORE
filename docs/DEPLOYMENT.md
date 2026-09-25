@@ -86,6 +86,8 @@ The mandatory/optional matrix and the pre-flight check:
 | `JWT_SECRET` | Worker secret | authentication (everything) |
 | `PAYSTACK_SECRET_KEY` | Worker secret | paid apps / purchases |
 | `VIRUSTOTAL_API_KEY` | Worker secret | package malware scanning |
+| `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` | Worker secrets | Google sign-in (optional) |
+| `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET` | Worker secrets | GitHub sign-in (optional) |
 | `RESEND_API_KEY` + `FROM_EMAIL` | Worker secrets | email (password reset, release notices) |
 | `AI_*_API_KEY` (one or more) | Worker secrets | AI chat |
 | `CORS_ALLOWED_ORIGINS`, `RX_STORE_WEB_URL`, `MALWARE_SCANNER` | `backend/wrangler.toml` `[vars]` | API config |

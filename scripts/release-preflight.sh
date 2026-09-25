@@ -46,6 +46,10 @@ has RESEND_API_KEY      && row ok    "RESEND_API_KEY" "email delivery possible" 
 has FROM_EMAIL          && row ok    "FROM_EMAIL" "sender identity configured" 0 || row warn "FROM_EMAIL" "absent — email sending skipped" 0
 has NVIDIA_API_KEY || has OPENAI_API_KEY || has OPENROUTER_API_KEY || has GEMINI_API_KEY \
                         && row ok    "AI provider key" "at least one provider configured" 0 || row warn "AI provider key" "none — AI chat falls back / disabled" 0
+has GOOGLE_CLIENT_ID     && has GOOGLE_CLIENT_SECRET \
+                        && row ok    "Google sign-in" "OAuth configured" 0 || row warn "GOOGLE_CLIENT_ID/SECRET" "absent — Google sign-in disabled (buttons hidden)" 0
+has GITHUB_CLIENT_ID     && has GITHUB_CLIENT_SECRET \
+                        && row ok    "GitHub sign-in" "OAuth configured" 0 || row warn "GITHUB_CLIENT_ID/SECRET" "absent — GitHub sign-in disabled (buttons hidden)" 0
 echo
 
 # ---- Worker vars (from wrangler.toml) --------------------------------------

@@ -310,6 +310,39 @@ Full integration guide (banner, platforms, mandatory updates, security):
 
 ---
 
+### OAuth (secondary sign-in: Google / GitHub)
+
+Optional secondary authentication on top of email/password. Enabled per
+provider by setting `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` or
+`GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` Worker secrets.
+
+| Endpoint | Auth | Purpose |
+| --- | --- | --- |
+| `GET /auth/oauth/providers` | none | Which providers are configured: `{ google: bool, github: bool }` |
+| `GET /auth/oauth/{google\|github}/start?redirect=/path` | none | Begin the flow → 302 to the provider (state is server-generated, single-use, 10 min) |
+| `GET /auth/oauth/{google\|github}/callback` | none | Provider callback → 302 to the web app's `/oauth/callback` with a one-time completion code |
+| `POST /auth/oauth/complete` `{code}` | none | Exchange the completion code (or a sign-in code) for a **normal** login response (`user`, `token`, `refreshToken`, `status`, `redirect`) |
+| `POST /auth/oauth/link-start` `{provider}` | Bearer | (Signed-in) start CONNECTING a provider → `{url}` |
+| `POST /auth/oauth/link/confirm` `{token, password}` | none | Attach a provider identity to an existing account after proving its password → normal session |
+| `POST /auth/oauth/pairing-code` | Bearer | Issue a one-time sign-in code for another device (10 min, single use) |
+| `GET /auth/methods` | Bearer | Connected methods: password + google + github (connected/linkedAt/lastUsedAt/canDisconnect) |
+| `POST /auth/oauth/{provider}/disconnect` | Bearer | Disconnect a linked provider (fails 403 when it is the last usable method) |
+| `POST /auth/set-password` `{password}` | Bearer | Set a password for a social-only account (409 when one exists) |
+
+Identity rules: the provider SUBJECT is the permanent key; a verified-email
+match with an existing account NEVER auto-merges (password-confirmed linking
+only); fresh users are created without a password. OAuth client secrets are
+backend-only and never appear in any response. Errors: `501 NOT_IMPLEMENTED`
+provider not configured · `400 VALIDATION_ERROR` · `401 INVALID_TOKEN`
+expired/invalid state or code · `409 CONFLICT` already connected ·
+`403 FORBIDDEN` last-method protection.
+
+**Callback URLs to register:**
+`https://rx-store-api.calcitoninpay.workers.dev/auth/oauth/google/callback` ·
+`…/auth/oauth/github/callback` (local dev: `http://localhost:8787/…`).
+
+---
+
 ### Users (Authenticated)
 
 #### GET /users/me

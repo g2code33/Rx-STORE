@@ -233,6 +233,65 @@ export const api = {
         body: JSON.stringify(updates),
       });
     },
+    // ---- OAuth (secondary auth: Google / GitHub) ----
+    /** Public: which OAuth providers are configured on this deployment. */
+    async oauthProviders() {
+      return request<{ google: boolean; github: boolean }>('/auth/oauth/providers', { method: 'GET', auth: false });
+    },
+    /** Exchange the one-time completion code (OAuth callback / sign-in code) for a normal session. */
+    async oauthComplete(code: string) {
+      const data = await request<{ user: any; token: string; refreshToken: string; status?: string; redirect?: string }>('/auth/oauth/complete', {
+        method: 'POST',
+        body: JSON.stringify({ code, deviceId: currentDeviceId() }),
+        auth: false,
+      });
+      setAccessToken(data.token);
+      if (data.refreshToken) setRefreshToken(data.refreshToken);
+      return data;
+    },
+    /** Start CONNECTING a provider to the signed-in account → { url } to open. */
+    async oauthLinkStart(provider: 'google' | 'github') {
+      return request<{ url: string }>('/auth/oauth/link-start', {
+        method: 'POST',
+        body: JSON.stringify({ provider }),
+      });
+    },
+    /** Confirm linking a provider identity to an existing account (password proof). */
+    async oauthLinkConfirm(token: string, password: string) {
+      const data = await request<{ user: any; token: string; refreshToken: string; status?: string; redirect?: string }>('/auth/oauth/link/confirm', {
+        method: 'POST',
+        body: JSON.stringify({ token, password, deviceId: currentDeviceId() }),
+        auth: false,
+      });
+      setAccessToken(data.token);
+      if (data.refreshToken) setRefreshToken(data.refreshToken);
+      return data;
+    },
+    /** Issue a one-time sign-in code usable on another device/shell. */
+    async oauthPairingCode() {
+      return request<{ code: string; expiresInMinutes: number }>('/auth/oauth/pairing-code', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+    },
+    /** Connected authentication methods (Account Security). */
+    async authMethods() {
+      return request<any>('/auth/methods', { method: 'GET' });
+    },
+    /** Disconnect a linked provider (never the last usable method). */
+    async oauthDisconnect(provider: 'google' | 'github') {
+      return request<{ success: boolean; disconnected: string }>(`/auth/oauth/${provider}/disconnect`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+    },
+    /** Set an RX Store password for a social-only account. */
+    async setPassword(password: string) {
+      return request<{ success: boolean; message: string }>('/auth/set-password', {
+        method: 'POST',
+        body: JSON.stringify({ password }),
+      });
+    },
     async forgotPassword(email: string) {
       return request<{ success: boolean; message: string; resetToken?: string }>('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }), auth: false });
     },

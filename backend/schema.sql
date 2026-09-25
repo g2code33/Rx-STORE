@@ -106,6 +106,41 @@ CREATE TABLE IF NOT EXISTS app_versions (
   UNIQUE(app_id, version)
 );
 
+-- ============== OAUTH IDENTITIES (secondary auth: Google/GitHub) ==============
+-- The provider SUBJECT (Google `sub` / GitHub immutable id) is the identity key —
+-- never the email, never the username. One account may hold many identities.
+-- Provider access tokens are deliberately NOT stored.
+CREATE TABLE IF NOT EXISTS auth_identities (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL CHECK (provider IN ('google','github')),
+  provider_subject TEXT NOT NULL,
+  provider_email TEXT,
+  provider_email_verified INTEGER DEFAULT 0,
+  display_name TEXT,
+  avatar_url TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT,
+  last_login_at TEXT,
+  UNIQUE (provider, provider_subject)
+);
+CREATE INDEX IF NOT EXISTS idx_auth_identities_user ON auth_identities(user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_identities_provider_subject ON auth_identities(provider, provider_subject);
+
+-- Short-lived, single-use, hashed one-time tokens for the OAuth flow
+-- (state / completion codes / linking tokens / linking intents).
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('state','code','link','intent')),
+  token_hash TEXT NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_hash ON oauth_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_expiry ON oauth_tokens(expires_at);
+
 -- ==================== DOWNLOADS ====================
 CREATE TABLE IF NOT EXISTS downloads (
   id TEXT PRIMARY KEY,

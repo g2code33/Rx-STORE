@@ -7,6 +7,7 @@ import { rateLimiter } from './middleware/rateLimiter';
 import { corsMiddleware, corsHeaders } from './middleware/cors';
 
 import { authRoutes } from './routes/auth';
+import { oauthRoutes } from './routes/oauth';
 import { appsRoutes } from './routes/apps';
 import { usersRoutes } from './routes/users';
 
@@ -756,13 +757,41 @@ export default {
         }
       } catch (e: any) { console.error(`[${requestId}] error:`, redact(String(e?.message||e))); return fail('INTERNAL', 'Something went wrong. Please try again.'); }
     }
+    // ---- OAuth (secondary auth: Google/GitHub) — GET redirects + provider list ----
+    if (request.method === 'GET' && (path.startsWith('/auth/oauth/') || path === '/auth/methods')) {
+      try {
+        let out: any;
+        if (path === '/auth/oauth/providers') out = await oauthRoutes.providers(normalizedRequest as any, env);
+        else if (path === '/auth/methods') out = await oauthRoutes.methods(normalizedRequest as any, env);
+        else {
+          const parts = path.split('/'); // ['', 'auth', 'oauth', provider, ...]
+          const provider = parts[3] || '';
+          const tail = parts.slice(4).join('/');
+          if (tail === 'callback') out = await oauthRoutes.callback(normalizedRequest as any, env, provider);
+          else if (tail === '' || tail === 'start') out = await oauthRoutes.start(normalizedRequest as any, env, provider);
+          else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown OAuth route' } }, 404, origin);
+        }
+        if (out instanceof Response) return out; // 302 redirects (provider / web callback)
+        if (out?.code || out?.error) {
+          const status = out.code === 'UNAUTHORIZED' ? 401 : out.code === 'NOT_FOUND' ? 404
+            : out.code === 'INVALID_TOKEN' ? 401 : out.code === 'NOT_IMPLEMENTED' ? 501
+            : out.code === 'VALIDATION_ERROR' ? 400 : 400;
+          return respond({ success: false, error: { code: out.code || 'VALIDATION_ERROR', message: out.message || out.error } }, status, origin);
+        }
+        return respond({ success: true, data: out }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] oauth:`, redact(String(e?.message || e)));
+        return fail('INTERNAL', 'Sign-in provider error. Please try again.');
+      }
+    }
+
     if (path.startsWith('/auth/') && request.method === 'POST') {
       const seg = path.split('/')[2];
       // Map an auth-route result code to the standardized error shape + status.
       const authCodes: Record<string, ErrorCode> = {
         VALIDATION_ERROR: 'VALIDATION_ERROR', CONFLICT: 'CONFLICT', UNAUTHORIZED: 'AUTH_REQUIRED',
         FORBIDDEN: 'FORBIDDEN', NOT_FOUND: 'NOT_FOUND', TOKEN_EXPIRED: 'TOKEN_EXPIRED',
-        INVALID_TOKEN: 'INVALID_TOKEN',
+        INVALID_TOKEN: 'INVALID_TOKEN', NOT_IMPLEMENTED: 'NOT_IMPLEMENTED',
       };
       const finish = (d: any) => {
         if (d?.code || d?.error) {
@@ -772,6 +801,21 @@ export default {
         return respond({ success: true, data: d }, 200, origin);
       };
       try {
+        if (seg === 'oauth') {
+          // POST /auth/oauth/complete | link-start | link/confirm | pairing-code | :provider/disconnect
+          const sub = path.split('/')[3] || '';
+          const sub2 = path.split('/')[4] || '';
+          let data: any;
+          if (sub === 'complete') data = await oauthRoutes.complete(normalizedRequest as any, env);
+          else if (sub === 'link-start') data = await oauthRoutes.linkStart(normalizedRequest as any, env);
+          else if (sub === 'link' && sub2 === 'confirm') data = await oauthRoutes.linkConfirm(normalizedRequest as any, env);
+          else if (sub === 'pairing-code') data = await oauthRoutes.pairingCode(normalizedRequest as any, env);
+          else if ((sub === 'google' || sub === 'github') && sub2 === 'disconnect') data = await oauthRoutes.disconnect(normalizedRequest as any, env, sub);
+          else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown OAuth route' } }, 404, origin);
+          if (data instanceof Response) return data;
+          return finish(data);
+        }
+        if (seg === 'set-password') return finish(await oauthRoutes.setPassword(normalizedRequest as any, env));
         if (seg === 'register') return finish(await authRoutes.register(normalizedRequest as any, env));
         if (seg === 'login') return finish(await authRoutes.login(normalizedRequest as any, env));
         if (seg === 'refresh') return finish(await authRoutes.refresh(normalizedRequest as any, env));

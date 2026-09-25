@@ -18,6 +18,7 @@ export type ErrorCode =
   | 'NOT_FOUND'
   | 'RATE_LIMITED'
   | 'PAYMENTS_NOT_ENABLED'
+  | 'NOT_IMPLEMENTED'
   | 'MAINTENANCE'
   | 'DOWNLOAD_UNAVAILABLE'
   | 'INTERNAL';
@@ -25,6 +26,7 @@ export type ErrorCode =
 /** Numeric HTTP status per code. */
 const STATUS: Record<ErrorCode, number> = {
   AUTH_REQUIRED: 401,
+  NOT_IMPLEMENTED: 501,
   INVALID_TOKEN: 401,
   TOKEN_EXPIRED: 401,
   FORBIDDEN: 403,

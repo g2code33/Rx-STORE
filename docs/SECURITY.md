@@ -9,6 +9,46 @@ Legend: **IMPLEMENTED** · **PARTIAL** · **PLANNED**
 
 ---
 
+## Authentication model
+
+**PRIMARY:** email/phone + password (unchanged, fully backward compatible).
+**SECONDARY (optional):** Google and GitHub OAuth — secondary methods on top
+of the password system, never a replacement.
+
+```
+RX Store Login ── Continue with Google/GitHub
+  → backend generates single-use state (10 min, PKCE S256 + nonce for Google)
+  → provider authorization → backend callback
+  → provider identity VALIDATED server-side (Google id_token: RS256/JWKS +
+    iss/aud/exp/nonce; GitHub: server-side token exchange + /user + verified
+    primary email)
+  → identity resolution by provider SUBJECT (never by email):
+      existing link            → log into that account
+      verified email match     → NO merge — explicit password-confirmed linking
+      no match                 → create a fresh account (no invented password)
+  → ONE-TIME completion code → SPA exchanges it → NORMAL RX Store session
+    (JWT access token + opaque persistent refresh credential + auth_sessions)
+```
+
+Rules enforced (and unit-tested in `backend/src/oauth.test.ts`):
+
+* Provider **subject** (`sub` / immutable GitHub id) is the permanent identity
+  key — emails and usernames never are.
+* **Email never auto-merges**: a provider identity matching an existing
+  account's email requires that account's PASSWORD before it attaches.
+* One-time tokens (state/completion codes/link tokens/link intents) are
+  hashed, 10-minute, **single-use enforced atomically in D1** — replay is
+  impossible, including across concurrent requests.
+* OAuth client secrets live only as Worker secrets; they never reach the
+  frontend bundle, logs, or API responses (asserted by tests).
+* The final redirect always targets the configured web origin with a SAFE
+  in-app path only — no open redirects, no arbitrary callback URLs.
+* A user can never remove their last usable sign-in method (password or the
+  final connected provider) — enforced server-side.
+* Google blocks OAuth in embedded WebViews: native shells (Android app,
+  Electron) sign in via the web deployment and carry the session over with a
+  one-time **sign-in code** (10 min, single use) — documented, deliberate.
+
 ## Authentication & sessions
 
 | Control | Status | Notes |

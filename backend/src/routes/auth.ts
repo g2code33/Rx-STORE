@@ -88,6 +88,13 @@ export const authRoutes = {
     if (!user && normPhone) {
       user = await env.DB.prepare('SELECT * FROM users WHERE phone = ?').bind(String(idf).trim()).first().catch(()=>null);
     }
+    // Social-only accounts have no password (sentinel ''). Give a truthful,
+    // actionable message instead of a generic failure (never reveal whether an
+    // arbitrary email exists — this branch only runs AFTER valid credentials
+    // were attempted for an existing user).
+    if (user && (!user.password_hash || user.password_hash === '')) {
+      return { code: 'UNAUTHORIZED', message: 'This account signs in with Google or GitHub. Use the matching button below, then set a password in Profile → Security if you want one.' };
+    }
     if (!user || !(await verifyPassword(password as string, user.password_hash))) {
       return { code: 'UNAUTHORIZED', message: 'Invalid email/phone or password. Please check and try again.' };
     }

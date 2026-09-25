@@ -19,6 +19,7 @@
 
 export const PROFILE_TABS = [
   'profile',
+  'security',
   'apps',
   'devices',
   'purchases',

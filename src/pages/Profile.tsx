@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, Navigate, useSearchParams, useLocation } from 'react-router-dom';
-import { Download, CreditCard, Bell, Settings, LogOut, X, Trash2, RefreshCw, Rocket, Monitor, Smartphone, Globe, Laptop, UserCircle, Save } from 'lucide-react';
+import { Download, CreditCard, Bell, Settings, LogOut, X, Trash2, RefreshCw, Rocket, Monitor, Smartphone, Globe, Laptop, UserCircle, Save, ShieldCheck, Link2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import { useApps } from '../context/AppContext';
@@ -193,6 +193,7 @@ export default function Profile() {
 
   const tabs: { id: ProfileTab; label: string; icon: any; count?: number }[] = [
     { id: 'profile', label: 'Personal Details', icon: UserCircle },
+    { id: 'security', label: 'Security', icon: ShieldCheck },
     { id: 'apps', label: 'My Applications', icon: Download, count: (installedApps || []).length },
     { id: 'devices', label: 'My Devices', icon: Monitor, count: devices.filter((d) => d.status !== 'revoked').length },
     { id: 'purchases', label: 'Purchases', icon: CreditCard },
@@ -206,6 +207,7 @@ export default function Profile() {
   // without horizontal-scrolling the tab strip.
   const quickLinks: { tab: ProfileTab; label: string }[] = [
     { tab: 'profile', label: 'Personal Details' },
+    { tab: 'security', label: 'Security' },
     { tab: 'apps', label: 'My Apps' },
     { tab: 'devices', label: 'My Devices' },
     { tab: 'purchases', label: 'Purchases' },
@@ -293,6 +295,8 @@ export default function Profile() {
           </div>
         </div>
       )}
+
+      {activeTab === 'security' && <SecuritySection />}
 
       {activeTab === 'apps' && (
         <div className="animate-fade-in">
@@ -579,6 +583,152 @@ function PurchaseHistory() {
       )}
       <p className="text-[11px] text-rx-gray-medium/70">
         Payment card and mobile-money details are handled entirely by the payment provider — RX Store never sees or stores them.
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Account Security (Phase 8): connected authentication methods + passwords.
+// ---------------------------------------------------------------------------
+function SecuritySection() {
+  const { user } = useAuth();
+  const [methods, setMethods] = useState<any>(null);
+  const [busy, setBusy] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [pwBusy, setPwBusy] = useState(false);
+
+  const load = () => { api.auth.authMethods().then(setMethods).catch(() => setMethods(null)); };
+  React.useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const connect = async (provider: 'google' | 'github') => {
+    setBusy(provider);
+    try {
+      const { url } = await api.auth.oauthLinkStart(provider);
+      window.location.assign(url); // the provider flow returns to /oauth/callback
+    } catch (e: any) {
+      toast.error(e?.message || 'Could not start the connection.');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const disconnect = async (provider: 'google' | 'github') => {
+    const label = provider === 'google' ? 'Google' : 'GitHub';
+    if (!confirm(`Disconnect ${label} from your RX Store account? You will no longer be able to sign in with ${label}.`)) return;
+    setBusy(provider);
+    try {
+      await api.auth.oauthDisconnect(provider);
+      toast.success(`${label} disconnected`);
+      load();
+    } catch (e: any) {
+      toast.error(e?.message || 'Could not disconnect.');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const setPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPassword.length < 8) { toast.error('Password must be at least 8 characters'); return; }
+    setPwBusy(true);
+    try {
+      const res = await api.auth.setPassword(newPassword);
+      toast.success(res.message || 'Password set');
+      setNewPassword('');
+      load();
+    } catch (e: any) {
+      toast.error(e?.message || 'Could not set the password.');
+    } finally {
+      setPwBusy(false);
+    }
+  };
+
+  if (!user) return null;
+  if (!methods) return <div className="card p-8 animate-pulse" />;
+
+  const rows = [
+    {
+      key: 'password' as const,
+      label: 'Email & password',
+      connected: !!methods.password?.connected,
+      note: methods.password?.connected ? 'Password sign-in enabled' : 'No password set (social sign-in only)',
+      action: methods.password?.connected ? null : (
+        <form onSubmit={setPassword} className="flex flex-wrap gap-2 w-full sm:w-auto">
+          <input
+            type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)}
+            placeholder="New password (8+ chars)" minLength={8} required
+            className="flex-1 min-w-40 bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2 text-sm text-white"
+          />
+          <button type="submit" disabled={pwBusy} className="btn-primary text-sm !py-2">{pwBusy ? '…' : 'Set password'}</button>
+        </form>
+      ),
+    },
+    {
+      key: 'google' as const,
+      label: 'Google',
+      connected: !!methods.google?.connected,
+      note: methods.google?.connected
+        ? `Connected${methods.google.lastUsedAt ? ` · last used ${formatDate(methods.google.lastUsedAt)}` : ''}`
+        : 'Not connected',
+      action: methods.google?.connected ? (
+        <button onClick={() => disconnect('google')} disabled={busy === 'google' || !methods.google.canDisconnect}
+          title={methods.google.canDisconnect ? 'Disconnect Google' : 'Set another sign-in method first'}
+          className="px-3 py-1.5 text-xs text-red-400 hover:text-white bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed">
+          Disconnect
+        </button>
+      ) : (
+        <button onClick={() => connect('google')} disabled={busy === 'google'} className="btn-secondary text-xs !py-2 flex items-center gap-1.5">
+          <Link2 className="w-3.5 h-3.5" /> {busy === 'google' ? 'Opening Google…' : 'Connect Google'}
+        </button>
+      ),
+    },
+    {
+      key: 'github' as const,
+      label: 'GitHub',
+      connected: !!methods.github?.connected,
+      note: methods.github?.connected
+        ? `Connected${methods.github.lastUsedAt ? ` · last used ${formatDate(methods.github.lastUsedAt)}` : ''}`
+        : 'Not connected',
+      action: methods.github?.connected ? (
+        <button onClick={() => disconnect('github')} disabled={busy === 'github' || !methods.github.canDisconnect}
+          title={methods.github.canDisconnect ? 'Disconnect GitHub' : 'Set another sign-in method first'}
+          className="px-3 py-1.5 text-xs text-red-400 hover:text-white bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed">
+          Disconnect
+        </button>
+      ) : (
+        <button onClick={() => connect('github')} disabled={busy === 'github'} className="btn-secondary text-xs !py-2 flex items-center gap-1.5">
+          <Link2 className="w-3.5 h-3.5" /> {busy === 'github' ? 'Opening GitHub…' : 'Connect GitHub'}
+        </button>
+      ),
+    },
+  ];
+
+  return (
+    <div className="animate-fade-in max-w-2xl">
+      <h2 className="text-xl font-bold text-white mb-1">Account Security</h2>
+      <p className="text-xs text-rx-gray-medium mb-6">
+        Every method resolves to the same RX Store account. You can never remove your last usable sign-in method.
+      </p>
+      <div className="card divide-y divide-white/5">
+        {rows.map((r) => (
+          <div key={r.key} className="p-5 flex flex-col sm:flex-row sm:items-center gap-3">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-white flex items-center gap-2">
+                {r.label}
+                <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded ${r.connected ? 'bg-green-400/15 text-green-300' : 'bg-white/5 text-rx-gray-medium'}`}>
+                  {r.connected ? 'CONNECTED' : 'NOT CONNECTED'}
+                </span>
+              </p>
+              <p className="text-xs text-rx-gray-medium mt-0.5">{r.note}</p>
+            </div>
+            <div className="flex-shrink-0 flex items-center">{r.action}</div>
+          </div>
+        ))}
+      </div>
+      <p className="text-[11px] text-rx-gray-medium/70 mt-4">
+        Google/GitHub sign-in is optional and never replaces your password. Provider access tokens are not stored;
+        only the provider account id is kept to recognise you next time.
       </p>
     </div>
   );

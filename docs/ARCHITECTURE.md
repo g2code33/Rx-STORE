@@ -175,7 +175,7 @@ All apps poll same endpoint.
 
 - Single JWT (access 15m + refresh 7d) issued by `rx-store-api`.
 - Satellite apps validate via `GET /auth/verify` or shared `JWT_SECRET`.
-- OAuth ready (Google, GitHub) via Workers OAuth.
+- OAuth IMPLEMENTED: Google + GitHub secondary sign-in (backend/src/routes/oauth.ts) resolving to normal RX Store sessions.
 - Roles: `user` | `developer` | `admin` — enforced in middleware.
 
 ---

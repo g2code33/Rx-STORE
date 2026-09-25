@@ -11,7 +11,9 @@ interface AuthContextType {
   isLoading: boolean;
   login: (email: string, password: string) => Promise<boolean>;
   register: (name: string, email: string, password: string, phone?: string) => Promise<boolean>;
-  forgotPassword: (email: string) => Promise<{ message: string; resetToken?: string }>;
+  forgotPassword: (email: string) => Promise<{ message: string; delivery?: string; resetToken?: string }>;
+  completeOAuth: (code: string) => Promise<{ status?: string; redirect?: string }>;
+  oauthLinkConfirm: (token: string, password: string) => Promise<{ status?: string; redirect?: string }>;
   resetPassword: (token: string, password: string) => Promise<void>;
   logout: (opts?: { allDevices?: boolean }) => void;
   updateProfile: (updates: Partial<User>) => Promise<void>;
@@ -189,6 +191,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  /**
+   * Confirm SAFE provider linking: attach a provider identity to the existing
+   * account after proving its password (Phase 5). Issues a normal session.
+   */
+  const oauthLinkConfirm = async (token: string, password: string): Promise<{ status?: string; redirect?: string }> => {
+    setIsLoading(true);
+    try {
+      if (!isApiConfigured()) throw new Error('RX Store cannot reach the account service. Please try again shortly.');
+      const { user: apiUser, status, redirect } = await api.auth.oauthLinkConfirm(token, password);
+      setUser(apiUser);
+      userRef.current = apiUser;
+      localStorage.setItem('rx-store-user', JSON.stringify(apiUser));
+      dispatchAuth(apiUser);
+      return { status, redirect };
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  /**
+   * Complete an OAuth sign-in with the one-time completion code (from the
+   * /oauth/callback page or a pairing code typed on another device). Issues a
+   * NORMAL session — identical to password login from here on.
+   */
+  const completeOAuth = async (code: string): Promise<{ status?: string; redirect?: string }> => {
+    setIsLoading(true);
+    try {
+      if (!isApiConfigured()) throw new Error('RX Store cannot reach the account service. Please try again shortly.');
+      const { user: apiUser, status, redirect } = await api.auth.oauthComplete(code);
+      setUser(apiUser);
+      userRef.current = apiUser;
+      localStorage.setItem('rx-store-user', JSON.stringify(apiUser));
+      dispatchAuth(apiUser);
+      return { status, redirect };
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const forgotPassword = async (email: string): Promise<{ message: string; delivery?: string; resetToken?: string }> => {
     const res: any = await api.auth.forgotPassword(email);
     // `delivery` ('sent' | 'unconfigured' | 'failed' | 'debug') keeps the UI
@@ -306,6 +347,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isLoading,
         login,
         register,
+        completeOAuth,
+        oauthLinkConfirm,
         forgotPassword,
         resetPassword,
         logout,

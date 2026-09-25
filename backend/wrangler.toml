@@ -76,6 +76,26 @@ preview_id = "e056396b15db4fd490a2f3024ffda05e"
 # Webhook URL to set in the Paystack dashboard:
 #   https://rx-store-api.calcitoninpay.workers.dev/payments/webhook/paystack
 
+# --- OAuth secondary authentication (Google + GitHub) ---
+# Optional secondary sign-in methods on top of email/password. Set BOTH the
+# client id and client secret per provider to enable it; without them the
+# provider button is hidden and the endpoints report not-configured.
+#   npx wrangler secret put GOOGLE_CLIENT_ID     --config backend/wrangler.toml
+#   npx wrangler secret put GOOGLE_CLIENT_SECRET --config backend/wrangler.toml
+#   npx wrangler secret put GITHUB_CLIENT_ID     --config backend/wrangler.toml
+#   npx wrangler secret put GITHUB_CLIENT_SECRET --config backend/wrangler.toml
+# Registered callback URLs (must match EXACTLY):
+#   Google: https://rx-store-api.calcitoninpay.workers.dev/auth/oauth/google/callback
+#   GitHub: https://rx-store-api.calcitoninpay.workers.dev/auth/oauth/github/callback
+# Local dev (wrangler dev, http://localhost:8787):
+#   http://localhost:8787/auth/oauth/google/callback
+#   http://localhost:8787/auth/oauth/github/callback
+# Optional local-dev overrides (set in .dev.vars, never in Git):
+#   OAUTH_WEB_URL  e.g. http://localhost:5173  (where the SPA runs)
+#   OAUTH_API_BASE e.g. http://localhost:8787  (defaults to the request origin)
+# Client secrets are backend-only. They are NEVER sent to the frontend bundle,
+# never logged, and never returned in any API response.
+
 # Secrets (set with: wrangler secret put <NAME>)
 # JWT_SECRET (required)
 # NVIDIA_API_KEY (nvapi-...), OPENAI_API_KEY (sk-...), OPENROUTER_API_KEY (sk-or-...), GEMINI_API_KEY (AIza...)

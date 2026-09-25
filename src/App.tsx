@@ -64,6 +64,8 @@ const AppDetail = lazy(() => import('./pages/AppDetail'));
 const Categories = lazy(() => import('./pages/Categories'));
 const CategoryPage = lazy(() => import('./pages/CategoryPage'));
 const Login = lazy(() => import('./pages/Login'));
+const OAuthCallback = lazy(() => import('./pages/OAuthCallback'));
+const OAuthLink = lazy(() => import('./pages/OAuthLink'));
 const Profile = lazy(() => import('./pages/Profile'));
 const About = lazy(() => import('./pages/About'));
 const Admin = lazy(() => import('./pages/Admin'));
@@ -211,6 +213,8 @@ export default function App() {
             <Route path="/categories" element={<Categories />} />
             <Route path="/categories/:category" element={<CategoryPage />} />
             <Route path="/login" element={<Login />} />
+            <Route path="/oauth/callback" element={<OAuthCallback />} />
+            <Route path="/oauth/link" element={<OAuthLink />} />
             <Route path="/profile" element={<Profile />} />
             <Route path="/about" element={<About />} />
             <Route path="/privacy" element={<Privacy />} />
