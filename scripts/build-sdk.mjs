@@ -17,7 +17,6 @@
  *
  * Usage: node scripts/build-sdk.mjs   (root: `npm run build:sdk`)
  */
-import { build } from 'esbuild';
 import { cpSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

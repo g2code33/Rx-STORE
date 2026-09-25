@@ -35,7 +35,7 @@
     "test:reliability": "node --experimental-strip-types --test src/native/reliability.test.ts",
     "test:hardening": "node --experimental-strip-types --test src/native/hardening.test.ts",
     "build:sdk": "node scripts/build-sdk.mjs",
-    "verify:sdk": "node scripts/build-sdk.mjs && cd sdk && npm pack --silent && cd sample-app && npm install --no-audit --no-fund && npm run verify"
+    "verify:sdk": "node scripts/build-sdk.mjs && cd sdk && npm pack --silent && cd sample-app && rm -f package-lock.json && npm install --no-audit --no-fund && npm run verify"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",

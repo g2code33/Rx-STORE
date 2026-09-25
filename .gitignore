@@ -59,4 +59,7 @@ android/build/
 sdk/build-src/
 sdk/dist/
 sdk/*.tgz
+# The sample app installs the REBUILT tarball — a committed lockfile would pin a
+# stale tarball integrity hash and fail with EINTEGRITY on every fresh checkout.
+sdk/sample-app/package-lock.json
 sdk/.build-src/
