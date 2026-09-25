@@ -1,0 +1,308 @@
+name: Production Release
+
+# ATOMIC, TAG-CONTROLLED RELEASE PIPELINE (production gate §4 + §5).
+#
+# Trigger: a vX.Y.Z tag ONLY (or a manual workflow_dispatch for controlled
+# recovery). Ordinary main pushes run ci.yml (validation, no publishing).
+#
+# The pipeline builds EVERYTHING, verifies EVERYTHING (artifacts, signatures,
+# versions) and only THEN publishes — as a draft release that flips to
+# published once all assets are uploaded. If any platform fails, no release
+# becomes visible. A tag can never silently overwrite an existing production
+# release: republishing requires an explicit workflow_dispatch opt-in.
+#
+# REQUIRED SECRETS
+#   ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS /
+#   ANDROID_KEY_PASSWORD — release signing. WITHOUT THEM THE ANDROID BUILD
+#   FAILS CLOSED (a debug-signed production APK is never built or published).
+# OPTIONAL SECRETS
+#   WIN_CSC_LINK (base64 PFX) + WIN_CSC_KEY_PASSWORD — Windows code signing.
+#   When absent the installer is built UNSIGNED and labelled "unsigned" in the
+#   release notes (honest), unless the repo variable REQUIRE_WIN_SIGNING=true
+#   is set, in which case the release FAILS CLOSED.
+#   VITE_API_URL — Actions variable (or secret) with the Worker URL incl. /v1.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      allow_republish:
+        description: 'Recovery only — allow overwriting an existing release for this tag'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: production-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, verify, publish (atomic)
+    runs-on: ubuntu-latest
+    env:
+      VITE_API_URL: ${{ vars.VITE_API_URL || secrets.VITE_API_URL }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check out repository (tag)
+        uses: actions/checkout@v7
+
+      # ---- §5 version/tag control: verify BEFORE building anything --------
+      - name: Verify tag matches package.json version and is not already published
+        run: |
+          set -euo pipefail
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          TAG="${GITHUB_REF_NAME}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Ref '$TAG' is not a production version tag (expected vX.Y.Z). Use ci.yml for validation-only runs."
+            exit 1
+          fi
+          if [ "v$PKG_VERSION" != "$TAG" ]; then
+            echo "::error::Tag $TAG does not match package.json version $PKG_VERSION. Bump the version or fix the tag."
+            exit 1
+          fi
+          echo "VERSION=$PKG_VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          # Fail rather than silently overwrite an existing production release.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.allow_republish }}" != "true" ]; then
+            echo "Manual dispatch without allow_republish — existing assets (if any) will not be overwritten."
+          fi
+          EXISTING_ASSETS="$(gh release view "$TAG" --json assets --jq '.assets | length' 2>/dev/null || echo 0)"
+          if [ "$EXISTING_ASSETS" != "0" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.allow_republish }}" = "true" ]; then
+              echo "::warning::Recovery run — overwriting the existing release for $TAG (--clobber)."
+            else
+              echo "::error::Release $TAG already exists with $EXISTING_ASSETS asset(s). Refusing to silently overwrite a production release. (Controlled recovery: workflow_dispatch with allow_republish=true.)"
+              exit 1
+            fi
+          fi
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check (app + backend + SDK)
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Tests (backend + frontend + SDK + deep links)
+        run: npm test
+
+      - name: Verify production API configuration
+        run: |
+          set -e
+          if [ -z "$VITE_API_URL" ]; then
+            echo "::error::Actions variable or secret VITE_API_URL is missing."
+            exit 1
+          fi
+          case "$VITE_API_URL" in
+            https://*) ;;
+            *) echo "::error::VITE_API_URL must use HTTPS: $VITE_API_URL"; exit 1 ;;
+          esac
+          curl --fail --silent --show-error --retry 3 --connect-timeout 10 --max-time 30 "${VITE_API_URL%/}/health" > /dev/null
+
+      - name: Build renderer (web)
+        run: npm run build:web
+
+      - name: Build Electron main process
+        run: npm run build:electron
+
+      - name: SDK — build, pack, install into clean sample app, compile
+        run: npm run verify:sdk
+
+      # ---- §3 Windows code signing: explicit, never falsely described ------
+      - name: Windows signing configuration (explicit)
+        id: winsign
+        env:
+          WIN_CSC_LINK_B64: ${{ secrets.WIN_CSC_LINK_B64 }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "$WIN_CSC_LINK_B64" ]; then
+            echo "$WIN_CSC_LINK_B64" | base64 -d > /tmp/rxstore-codesign.pfx
+            echo "WIN_CSC_LINK=/tmp/rxstore-codesign.pfx" >> "$GITHUB_ENV"
+            echo "WIN_CSC_KEY_PASSWORD=${WIN_CSC_KEY_PASSWORD}" >> "$GITHUB_ENV"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "Windows installer: code-SIGNED (certificate configured)."
+          elif [ "${{ vars.REQUIRE_WIN_SIGNING }}" = "true" ]; then
+            echo "::error::REQUIRE_WIN_SIGNING=true but no WIN_CSC_LINK_B64 secret is configured — failing closed."
+            exit 1
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No signing certificate configured — the Windows installer will be built UNSIGNED and labelled as such in the release notes."
+          fi
+
+      - name: Install Wine (for the Windows installer icon)
+        id: wine
+        run: |
+          sudo apt-get update -y -o Acquire::Retries=3 || sudo apt-get update -y || true
+          sudo apt-get install -y --no-install-recommends wine64 || sudo apt-get install -y --no-install-recommends wine || true
+          WINEBIN="$(command -v wine || command -v wine64 || ls /usr/lib/wine/wine /usr/lib/wine/wine64 2>/dev/null | head -n 1 || true)"
+          if [ -n "$WINEBIN" ]; then
+            sudo ln -sf "$WINEBIN" /usr/local/bin/wine
+            echo "wine_ok=1" >> "$GITHUB_OUTPUT"
+            wine --version || true
+          else
+            echo "wine_ok=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::Wine unavailable — .exe ships without embedded icon/metadata; the installer itself is unaffected."
+          fi
+
+      # ---- §4 atomicity: build with -p never; publish happens ONLY after
+      #      every platform artifact + signature + version check passes.
+      - name: Build Windows .exe + Linux .deb/.AppImage (no publishing yet)
+        run: |
+          set -e
+          if [ "${{ steps.wine.outputs.wine_ok }}" != "1" ]; then
+            npm pkg set build.win.signAndEditExecutable=false
+          fi
+          npx electron-builder --win --linux --publish never
+
+      # ---- §2 Android: fail-closed release signing -------------------------
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Android SDK (self-contained)
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          [ -d "$SDK" ] || SDK="/usr/local/lib/android/sdk"
+          find_sdkmanager() {
+            for p in "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+                     "$SDK/cmdline-tools/bin/sdkmanager" \
+                     "$SDK/tools/bin/sdkmanager"; do
+              if [ -x "$p" ]; then printf '%s\n' "$p"; return 0; fi
+            done
+            return 1
+          }
+          if SDKMANAGER="$(find_sdkmanager)"; then
+            echo "Using runner-provided Android SDK at $SDK"
+          else
+            echo "No cmdline-tools found — installing fresh SDK"
+            SDK="$RUNNER_TEMP/android-sdk"
+            mkdir -p "$SDK/cmdline-tools"
+            curl -fsSL --retry 3 --connect-timeout 15 -o /tmp/cmdtools.zip \
+              "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+            unzip -q /tmp/cmdtools.zip -d "$SDK/cmdline-tools"
+            mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
+            SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          echo "ANDROID_HOME=$SDK"     >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools"   >> "$GITHUB_PATH"
+          echo "$SDK/build-tools/36.0.0" >> "$GITHUB_PATH"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-36" >/dev/null || true
+          "$SDKMANAGER" --install "build-tools;36.0.0" >/dev/null || true
+          "$SDKMANAGER" --version
+
+      - name: Build Android release APK (fail-closed signing)
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "::error::Android release signing secrets are INCOMPLETE. A production release cannot be debug-signed — aborting. Set ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD."
+            exit 1
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/release-keystore.p12
+          npx cap sync android
+          cd android && ./gradlew assembleRelease --no-daemon
+
+      - name: Verify Android APK — release-signed, correct version
+        run: |
+          set -euo pipefail
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$APK" ]; then
+            echo "::error::Release APK missing: $APK"
+            exit 1
+          fi
+          # Signature verification (apksigner checks v1/v2/v3 schemes).
+          apksigner verify --print-certs "$APK" > /tmp/apk-certs.txt
+          if grep -qi "CN=Android Debug" /tmp/apk-certs.txt; then
+            echo "::error::The production APK is DEBUG-SIGNED. This must never be published."
+            exit 1
+          fi
+          # Version verification (aapt2 badging).
+          BADGE_VERSION="$(aapt2 dump badging "$APK" | head -n1 | sed -n 's/.*versionName='\''\([^'\'']*\)'\''.*/\1/p')"
+          if [ "$BADGE_VERSION" != "$VERSION" ]; then
+            echo "::error::APK versionName ($BADGE_VERSION) != package.json version ($VERSION)."
+            exit 1
+          fi
+          echo "APK verified: release-signed (non-debug certificate), versionName $BADGE_VERSION ✓"
+          cp "$APK" "rx-store-$VERSION.apk"
+
+      # ---- §4 final gate: EVERY artifact must exist before publishing ------
+      - name: Verify all release artifacts exist
+        run: |
+          set -euo pipefail
+          MISSING=0
+          for f in \
+            "release/RXStore-Setup-$VERSION.exe" \
+            "release/latest.yml" \
+            "release/RX-Store-$VERSION.deb" \
+            "release/RX-Store-$VERSION.AppImage" \
+            "release/latest-linux.yml" \
+            "rx-store-$VERSION.apk"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing required release artifact: $f"
+              MISSING=1
+            else
+              echo "✓ $f ($(du -h "$f" | cut -f1))"
+            fi
+          done
+          if [ "$MISSING" != "0" ]; then
+            echo "::error::Artifact verification failed — NO release will be published."
+            exit 1
+          fi
+
+      # ---- §4 atomic publish: draft first, flip only after every upload ----
+      - name: Publish release (all assets at once, draft → published)
+        run: |
+          set -euo pipefail
+          SIGNED_NOTE="The Windows installer is code-signed."
+          UNSIGNED_NOTE="The Windows installer is UNSIGNED (no code-signing certificate is configured on this deployment)."
+          if [ "${{ steps.winsign.outputs.signed }}" = "true" ]; then NOTE="$SIGNED_NOTE"; else NOTE="$UNSIGNED_NOTE"; fi
+          cleanup() {
+            # A partial upload must never stay visible: remove the draft.
+            gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          }
+          trap 'cleanup' ERR
+          NOTES="RX Store $VERSION
+
+          - Windows installer: RXStore-Setup-$VERSION.exe (+ latest.yml for the in-app auto-updater)
+          - Linux: RX-Store-$VERSION.deb / RX-Store-$VERSION.AppImage (+ latest-linux.yml)
+          - Android: rx-store-$VERSION.apk (release-signed)
+
+          $NOTE
+
+          All platforms were built and verified from tag $TAG (type-check, lint, full test suite, SDK external-consumer gate, Android release-signature + version verification). Atomic release: no asset is visible until every check passed."
+          gh release create "$TAG" \
+            "release/RXStore-Setup-$VERSION.exe" \
+            "release/latest.yml" \
+            "release/RX-Store-$VERSION.deb" \
+            "release/RX-Store-$VERSION.AppImage" \
+            "release/latest-linux.yml" \
+            "rx-store-$VERSION.apk" \
+            --title "RX Store $VERSION" \
+            --draft \
+            --notes "$NOTES"
+          # Every asset uploaded — flip the draft to published.
+          gh release edit "$TAG" --draft=false
+          trap - ERR
+          echo "Published $TAG with all assets."

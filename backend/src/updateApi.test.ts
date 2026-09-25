@@ -62,7 +62,7 @@ function seedApp(env: any, over: Record<string, unknown> = {}) {
   });
   env.releases.set(`${app.id}:1.1.5`, {
     id: 'rel115', application_id: app.id, version: '1.1.5',
-    channel: 'stable', minimum_supported_version: null,
+    channel: 'stable', minimum_supported_version: null, status: 'published',
   });
   return app;
 }
@@ -155,16 +155,36 @@ test('PAID applications never expose a binary download URL (SDK safety)', async 
   assert.equal(data.checksum, `sha256:${'a'.repeat(64)}`, 'metadata (checksum) is fine to expose');
 });
 
-test('unknown application → error (404 at the dispatch layer)', async () => {
+test('unknown application → coded NOT_FOUND (404 at the dispatch layer)', async () => {
   const env = fakeEnv();
   const data: any = await check(env, '?app=ghost&currentVersion=1.0.0&platform=android');
+  assert.equal(data.code, 'NOT_FOUND');
   assert.equal(data.error, 'Application not found');
 });
 
-test('missing parameters → error', async () => {
+test('missing parameters → coded VALIDATION_ERROR (400 at the dispatch layer)', async () => {
   const env = fakeEnv();
   const data: any = await check(env, '?app=pharmatrack&platform=android');
+  assert.equal(data.code, 'VALIDATION_ERROR');
   assert.match(String(data.error), /Missing required parameters/);
+});
+
+test('draft/rolled-back releases never influence the public update contract', async () => {
+  const env = fakeEnv();
+  seedApp(env);
+  // A draft release claiming a NEWER version + mandatory must be ignored…
+  env.releases.set('app_pharma:1.1.6', {
+    id: 'rel116', application_id: 'app_pharma', version: '1.1.6',
+    channel: 'beta', minimum_supported_version: '1.1.5', status: 'draft',
+  });
+  // …and a rolled-back release row for the CURRENT version is ignored too
+  // (metadata falls back to stable defaults instead of the dead release).
+  env.releases.get('app_pharma:1.1.5').status = 'rolled_back';
+  const data: any = await check(env, '?app=pharmatrack&currentVersion=1.1.4&platform=android');
+  assert.equal(data.latestVersion, '1.1.5', 'application.current_version (publish-gated) stays authoritative');
+  assert.equal(data.channel, 'stable', 'rolled-back release channel ignored → default stable');
+  assert.equal(data.minimumSupportedVersion, null, 'rolled-back release min-supported ignored');
+  assert.equal(data.mandatory, false, 'no mandatory leakage from non-published rows');
 });
 
 test('platform aliases keep working (deb → linux_deb file selection)', async () => {

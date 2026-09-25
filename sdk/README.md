@@ -19,32 +19,49 @@ HOST APP → SDK → GET /updates/check → update metadata
 **The SDK never downloads or installs anything.** It contains no secrets —
 the update check uses the same public API a browser uses.
 
-> **Status (honest):** the SDK source lives in this repository at `sdk/`.
-> It is not yet published to npm as `@rx-store/sdk` — until it is, consume it
-> directly from the repository (see Installation). The API below is stable
-> and versioned with SemVer.
+> **Status (honest):** the SDK builds into a real compiled npm package
+> (`sdk/dist`: ESM JavaScript + declarations) that CI installs into a clean
+> sample app and compiles before any release. It is **not yet published to the
+> public npm registry** — until it is, use the verified tarball path in
+> Installation. The API below is stable and versioned with SemVer.
 
 ---
 
 ## Installation
 
-Not on npm yet — install from the repository:
+**Target developer experience (what the package is built for):**
 
 ```bash
-npm install g2code33/Rx-STORE#v1.5.1 --save
+npm install @rx-store/sdk
 ```
 
 ```ts
-// package.json dependency (path/git form also works for monorepos):
-// "@rx-store/sdk": "github:g2code33/Rx-STORE#v1.5.1"
+import { createRxStoreSDK } from '@rx-store/sdk';
+import { RxStoreUpdateBanner } from '@rx-store/sdk/react';   // optional
 ```
 
-Then import from the package root:
+**Honest status:** the package is NOT yet published to the public npm registry
+— do not expect `npm install @rx-store/sdk` to work until it is. What IS real
+today: the repository builds a proper compiled package (plain ESM JavaScript +
+`.d.ts` declarations under `sdk/dist`, tree-shakeable, `sideEffects: false`,
+`/react` subpath optional) and CI verifies it by installing the packed tarball
+into a clean sample application (`sdk/sample-app/`) and compiling it
+(`npm run verify:sdk` from the repo root). Until the npm publication happens,
+consume the verified tarball:
 
-```ts
-import { createRxStoreSDK } from '@rx-store/sdk';            // src/index.ts
-import { RxStoreUpdateBanner } from '@rx-store/sdk/react';   // optional React UI
+```bash
+# Build + pack from the repository (verified path, no TypeScript shipped to consumers):
+git clone https://github.com/g2code33/Rx-STORE && cd Rx-STORE
+npm install && npm run build:sdk          # → sdk/dist (JS + declarations)
+cd sdk && npm pack                        # → rx-store-sdk-<version>.tgz
+
+# In YOUR application:
+npm install ./path/to/rx-store-sdk-0.1.0.tgz
 ```
+
+The package contents (`npm pack`) are exactly `dist/` + this README — compiled
+JavaScript and declarations only, never SDK TypeScript sources, and never any
+secrets (a build-time scan enforces this).
 
 ## Quick start
 

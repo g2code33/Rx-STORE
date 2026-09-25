@@ -266,8 +266,10 @@ Field notes:
 - All values are SERVER-AUTHORITATIVE; clients must not trust locally
   supplied versions/flags.
 
-**Errors:** `404` unknown app · `400` (`NOT_FOUND` code) missing parameters ·
-`429` rate limited.
+**Errors:** `400` `VALIDATION_ERROR` missing/invalid parameters · `404`
+`NOT_FOUND` unknown application · `429` `RATE_LIMITED` (sliding window over
+KV) · `5xx` server failure. Rate limiting is applied inline to every request
+(300/min general bucket; see `backend/src/middleware/rateLimiter.ts`).
 
 **Rate limit:** 300 requests/minute/IP (the general API bucket).
 

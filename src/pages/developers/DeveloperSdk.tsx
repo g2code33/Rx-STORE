@@ -120,10 +120,13 @@ export default function DeveloperSdk() {
       {/* 2. Installation */}
       <Section id="installation" icon={<Terminal className="w-5 h-5 text-rx-yellow" />} title="2 · Installation">
         <p className="text-sm text-rx-gray-medium">
-          The SDK source lives in this repository at <code className="text-rx-yellow">sdk/</code> (package name <code className="text-rx-yellow">@rx-store/sdk</code>).
-          It is <b className="text-white">not yet published to npm</b> — consume it from the repository:
+          The SDK builds into a real compiled npm package — plain ESM JavaScript + TypeScript declarations
+          (<code className="text-rx-yellow">sdk/dist</code>, tree-shakeable, zero runtime dependencies). It is
+          <b className="text-white"> not yet published to the public npm registry</b>; until it is, install the
+          verified tarball (CI installs the same artifact into a clean sample app and compiles it before every release):
         </p>
-        <Snippet title="Install (until the npm package is published)" code={`npm install g2code33/Rx-STORE#v1.5.1`} />
+        <Snippet title="Target install (once published on npm)" code={`npm install @rx-store/sdk`} />
+        <Snippet title="Verified install today (build + pack from the repository)" code={`git clone https://github.com/g2code33/Rx-STORE && cd Rx-STORE\nnpm install && npm run build:sdk     # → sdk/dist (compiled JS + .d.ts)\ncd sdk && npm pack                   # → rx-store-sdk-<version>.tgz\n\n# then in YOUR app:\nnpm install ./path/to/rx-store-sdk-0.1.0.tgz`} />
         <Snippet title="Import" code={`import { createRxStoreSDK } from '@rx-store/sdk';            // core (no React)\nimport { RxStoreUpdateBanner } from '@rx-store/sdk/react';   // optional React banner`} />
       </Section>
 

@@ -48,3 +48,25 @@ rm rx-store-release.p12.base64
 If the APK currently installed on a device used a temporary/debug key, uninstall it once before installing the first APK signed by this stable key. Every later release can then install over the existing app as long as these same four secrets remain configured.
 
 The release workflow injects the keystore into `android/app/release-keystore.p12` only on the GitHub runner. The file is ignored by Git and must never enter the repository.
+
+## 4. Fail-closed release signing (production gate)
+
+`android/app/build.gradle` **aborts `assembleRelease` when the release keystore
+is absent** — a production APK is never silently debug-signed. Debug signing
+exists ONLY as an explicit local-development opt-in:
+
+```bash
+./gradlew assembleRelease -PrxAllowDebugSigning=true   # local development only
+# (or: RX_ALLOW_DEBUG_SIGNING=1)
+```
+
+CI (`release.yml`) additionally:
+
+1. fails the release when any of the four signing secrets is missing;
+2. verifies the built APK with `apksigner` (v1/v2/v3 schemes);
+3. rejects the APK if the signer certificate is the Android debug certificate
+   (`CN=Android Debug`);
+4. verifies the APK `versionName` equals the release tag version.
+
+None of the signing material ever appears in logs — secrets are injected as
+files on the runner only.

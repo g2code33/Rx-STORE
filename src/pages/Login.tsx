@@ -74,8 +74,17 @@ export default function Login() {
     try {
       const res: any = await forgotPassword(forgotEmail.trim());
       if (res.resetToken) setResetToken(res.resetToken);
-      toast.success('If that email exists, a reset link has been sent');
-      if (res.resetToken) toast(`Demo token: ${res.resetToken.slice(0,8)}…`, { icon: '🔑' });
+      // Truthful recovery state: the server says exactly what happened
+      // ('sent' | 'unconfigured' | 'failed' | 'debug') — the UI never claims
+      // an email was sent when email delivery is not configured.
+      if (res.delivery === 'unconfigured') {
+        toast(res.message || 'Password reset emails are not configured on this deployment.', { icon: '⚠️', duration: 6000 });
+      } else if (res.delivery === 'failed') {
+        toast.error(res.message || 'The reset email could not be sent right now.');
+      } else {
+        toast.success(res.message || 'If that email is registered, a reset link has been sent.');
+      }
+      if (res.resetToken) toast(`Dev token: ${res.resetToken.slice(0,8)}…`, { icon: '🔑' });
     } catch (e: any) { toast.error(e.message || 'Failed to send reset email'); }
     setForgotLoading(false);
   };

@@ -27,7 +27,8 @@ export const updatesRoutes = {
     const channel = url.searchParams.get('channel') || 'stable';
 
     if (!appId || !currentVersion || !platform) {
-      return { error: 'Missing required parameters: app, currentVersion, platform' };
+      // 400 VALIDATION_ERROR (dispatched in index.ts) — matches the SDK contract.
+      return { code: 'VALIDATION_ERROR', error: 'Missing required parameters: app, currentVersion, platform' };
     }
 
     let plat = String(platform).toLowerCase();
@@ -36,13 +37,13 @@ export const updatesRoutes = {
     let arch: string | null = architecture ? String(architecture).toLowerCase() : null;
 
     const app = await env.DB.prepare('SELECT * FROM applications WHERE slug = ?').bind(appId).first().catch(()=>null);
-    if (!app) return { error: 'Application not found' };
+    if (!app) return { code: 'NOT_FOUND', error: 'Application not found' };
 
     // Canonical release metadata for THIS version (channel + minimum supported
     // version are release-level policy, stored on the canonical `releases`
     // table). `mandatory` lives on the synced app_versions row (see below).
     const releaseRow: any = await env.DB.prepare(
-      'SELECT channel, minimum_supported_version FROM releases WHERE application_id = ? AND version = ? ORDER BY created_at DESC LIMIT 1'
+      "SELECT channel, minimum_supported_version FROM releases WHERE application_id = ? AND version = ? AND status = 'published' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1"
     ).bind(app.id, app.current_version).first().catch(() => null);
 
     // Web origin for the store page / SDK fallback link. Explicit var wins

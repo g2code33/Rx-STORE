@@ -189,9 +189,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const forgotPassword = async (email: string): Promise<{ message: string; resetToken?: string }> => {
+  const forgotPassword = async (email: string): Promise<{ message: string; delivery?: string; resetToken?: string }> => {
     const res: any = await api.auth.forgotPassword(email);
-    return { message: res.message || 'Reset email sent', resetToken: res.resetToken };
+    // `delivery` ('sent' | 'unconfigured' | 'failed' | 'debug') keeps the UI
+    // truthful — the server never claims an email was sent when it wasn't.
+    return { message: res.message || 'Reset email sent', delivery: res.delivery, resetToken: res.resetToken };
   };
   const resetPassword = async (token: string, password: string): Promise<void> => {
     await api.auth.resetPassword(token, password);

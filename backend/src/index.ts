@@ -138,6 +138,12 @@ export default {
       return new Response(null, { status: 204, headers: { ...corsHeaders(origin, env), 'X-Request-Id': requestId, ...SECURITY_HEADERS } });
     }
 
+    // Rate limiting (inline — the router-mounted middleware is never
+    // dispatched, see backend/src/router.ts). Returns a 429 RATE_LIMITED
+    // response when the bucket is exhausted, null when allowed.
+    const limited = await rateLimiter(request, env);
+    if (limited) return limited;
+
     // Every /admin/* endpoint requires a valid admin JWT (production hardening —
     // previously PUT/DELETE apps, releases, uploads etc. were open to any request)
     if (path.startsWith('/admin')) {
@@ -146,7 +152,14 @@ export default {
 
     if ((path === '/updates/check' || path === '/update/check' || path === '/api/updates/check' || path === '/api/update/check') && request.method === 'GET') {
       const data = await updatesRoutes.checkUpdate(normalizedRequest as any, env);
-      if ((data as any)?.error) return respond({ success: false, error: { code: 'NOT_FOUND', message: (data as any).error } }, 404, origin);
+      if ((data as any)?.error) {
+        // Canonical error contract: missing parameters -> 400 VALIDATION_ERROR,
+        // unknown application -> 404 NOT_FOUND. Rate limiting (429) happens
+        // above; 5xx stays 5xx.
+        const code = (data as any).code === 'VALIDATION_ERROR' ? 'VALIDATION_ERROR' : 'NOT_FOUND';
+        const status = code === 'VALIDATION_ERROR' ? 400 : 404;
+        return respond({ success: false, error: { code, message: (data as any).error } }, status, origin);
+      }
       return respond({ success: true, data }, 200, origin);
     }
 

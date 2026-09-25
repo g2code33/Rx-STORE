@@ -54,3 +54,9 @@ android/app/build/
 android/.gradle/
 android/local.properties
 android/build/
+
+# SDK build staging + output (never committed)
+sdk/build-src/
+sdk/dist/
+sdk/*.tgz
+sdk/.build-src/

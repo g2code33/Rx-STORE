@@ -1,0 +1,114 @@
+name: CI
+
+# VALIDATION ONLY (production gate §5): every ordinary push to main and every
+# PR runs the full quality gate but publishes NOTHING. Production release
+# publication happens exclusively in release.yml, triggered by a vX.Y.Z tag.
+# No release artifacts are ever produced here — Android is compile-checked
+# with assembleDebug (the release build correctly REQUIRES signing secrets).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate (no publishing)
+    runs-on: ubuntu-latest
+    env:
+      VITE_API_URL: ${{ vars.VITE_API_URL || secrets.VITE_API_URL }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check (app + backend + SDK)
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Tests (backend + frontend + SDK + deep links)
+        run: npm test
+
+      - name: Verify production API configuration
+        run: |
+          set -e
+          if [ -z "$VITE_API_URL" ]; then
+            echo "::error::Actions variable or secret VITE_API_URL is missing. Set it to the RX Store Worker URL (including /v1)."
+            exit 1
+          fi
+          case "$VITE_API_URL" in
+            https://*) ;;
+            *) echo "::error::VITE_API_URL must use HTTPS: $VITE_API_URL"; exit 1 ;;
+          esac
+          curl --fail --silent --show-error --retry 3 --connect-timeout 10 --max-time 30 "${VITE_API_URL%/}/health" > /dev/null
+
+      - name: Build renderer (web)
+        run: npm run build:web
+
+      - name: Build Electron main process
+        run: npm run build:electron
+
+      # SDK external-consumer gate (§1/§11): build the package, npm pack it,
+      # install the tarball into the clean sample application and compile +
+      # smoke-test it — the proof that external developers can use the SDK.
+      - name: SDK — build, pack, install into clean sample app, compile
+        run: npm run verify:sdk
+
+      # Android compile validation only (debug build — the release build
+      # correctly fails without signing secrets, by design).
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Android SDK (self-contained)
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          [ -d "$SDK" ] || SDK="/usr/local/lib/android/sdk"
+          find_sdkmanager() {
+            for p in "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+                     "$SDK/cmdline-tools/bin/sdkmanager" \
+                     "$SDK/tools/bin/sdkmanager"; do
+              if [ -x "$p" ]; then printf '%s\n' "$p"; return 0; fi
+            done
+            return 1
+          }
+          if SDKMANAGER="$(find_sdkmanager)"; then
+            echo "Using runner-provided Android SDK at $SDK"
+          else
+            echo "No cmdline-tools found — installing fresh SDK"
+            SDK="$RUNNER_TEMP/android-sdk"
+            mkdir -p "$SDK/cmdline-tools"
+            curl -fsSL --retry 3 --connect-timeout 15 -o /tmp/cmdtools.zip \
+              "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+            unzip -q /tmp/cmdtools.zip -d "$SDK/cmdline-tools"
+            mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
+            SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          echo "ANDROID_HOME=$SDK"     >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools"   >> "$GITHUB_PATH"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-36" >/dev/null || true
+          "$SDKMANAGER" --install "build-tools;36.0.0" >/dev/null || true
+          "$SDKMANAGER" --version
+
+      - name: Android compile check (assembleDebug — no publishing)
+        run: |
+          npx cap sync android
+          cd android && ./gradlew assembleDebug --no-daemon

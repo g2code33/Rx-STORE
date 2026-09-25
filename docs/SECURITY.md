@@ -19,11 +19,11 @@ Legend: **IMPLEMENTED** · **PARTIAL** · **PLANNED**
 | Access tokens (JWT) | **IMPLEMENTED** | HS256 only; `alg` is verified (a forged `alg:none` token is rejected). `iss`/`aud`/`exp`/`iat`/`jti` are set and validated. |
 | Refresh tokens | **IMPLEMENTED** | Server-side sessions; only the SHA-256 **hash** of a refresh token is stored (`auth_sessions`), never the raw token. |
 | Refresh rotation | **IMPLEMENTED** | `POST /auth/refresh` revokes the presented token and issues a new pair. Replaying a rotated token fails. |
-| Session expiry | **IMPLEMENTED** | Refresh sessions expire (30 days); access tokens expire (24 h). |
+| Session expiry | **IMPLEMENTED** | **Persistent device sessions**: access tokens expire (24 h) and refresh silently; refresh credentials are opaque with no embedded expiry and end ONLY via revocation (sign-out / all-devices / password reset / admin revoke). Legacy 30-day sessions migrated to persistent on first refresh. |
 | Session revocation / logout | **IMPLEMENTED** | `POST /auth/logout` revokes the current session, or **all** sessions with `allDevices: true`. Session revocation never touches app installations. |
 | Token-type confusion protection | **IMPLEMENTED** | A refresh token cannot be used as an access token (and vice versa). |
 | Rate limiting on auth endpoints | **IMPLEMENTED** | Sliding window over KV; stricter limits on login/register/reset/refresh. |
-| Password reset | **PARTIAL** | Single-use, 30-minute, stored **hashed**. **Email delivery is NOT configured** — in production the token is never returned to the client; in non-production it may be returned for testing (`ENVIRONMENT` / `RESET_TOKEN_DEBUG`). |
+| Password reset | **IMPLEMENTED (truthful)** | Single-use, 30-minute, stored **hashed**. Production + configured email (`RESEND_API_KEY`/`FROM_EMAIL`) → sends the reset email; production + unconfigured → the API/UI truthfully report `delivery: unconfigured` and never claim an email was sent; the raw token is NEVER returned in production. |
 | Password change invalidates sessions | **IMPLEMENTED** | `reset-password` revokes all of the user's sessions. |
 | Account lockout after failed attempts | **PLANNED** | Not implemented. Rate limiting mitigates brute force; there is no per-account lockout. |
 | Two-factor authentication (2FA/TOTP) | **PLANNED** | Not implemented. |
@@ -145,9 +145,45 @@ authenticating. Keys follow a predictable pattern
 ## Known gaps summary
 
 * No 2FA, no account lockout, no email verification.
-* No malware scanning, no signed download URLs, no signed update manifests.
+* Malware scanning IS implemented (VirusTotal hash lookup / custom REST via `MALWARE_SCANNER`); signature chain-of-trust validation is honestly NEEDS_REVIEW with an admin-override path (not possible inside the Workers runtime).
+* Paid downloads use short-lived signed grants (see below); free published binaries are public by design.
 * No `Content-Security-Policy` for the web app; no global request-size limit.
 * No compliance certifications (HIPAA/GDPR/SOC 2/PCI DSS) — do not claim any.
-* Password reset depends on an email provider that is not configured.
-* Object storage (`/r2/*`) is public by key; published packages are not access-controlled.
+* Password reset email delivery requires `RESEND_API_KEY` + `FROM_EMAIL` to be configured; without them the deployment reports the unconfigured state truthfully instead of pretending an email was sent.
 * Argon2id/bcrypt are unavailable in the Workers runtime; PBKDF2-HMAC-SHA256 is used instead.
+
+---
+
+## Download security — free vs paid (canonical model)
+
+**Paid applications (entitlement-gated, fail closed):**
+
+```
+purchase → entitlement (payments ledger)
+        → download endpoint checks entitlement
+        → issues a 10-minute, SHA-256-hashed download grant
+        → GET /downloads/<grant> proxies the binary from R2
+```
+
+Paid binaries are NEVER publicly addressable: the `/r2/` public route denies
+every key owned by a paid application (`r2KeyIsPubliclyServed`), the legacy
+`app_versions.files` fallback fails closed for paid apps, and the unauthenticated
+`/updates/check` response never contains a binary URL for a paid app — the SDK
+only receives the store/deep-link destination. Grants are single-purpose,
+short-lived and bound to user + package; revoked entitlements invalidate the
+flow at grant-resolution time.
+
+**Free applications (public by design):**
+
+Published packages of FREE applications are intentionally **public**: a valid,
+published, non-deleted package key of a free app is served by `/r2/<key>`
+without authentication. This is the documented model for open distribution —
+`/r2/<key>` for free apps is **not private and does not expire**, and must
+never be described as such.
+
+**Future hardening path (implementation-ready, not breaking the current model):**
+free downloads can adopt the SAME short-lived grant flow as paid downloads
+(entitlement check replaced by a rate-limited anonymous grant). The
+`resolveDownloadGrant` machinery and the `/downloads/:token` proxy already
+support it; switching free apps to grant-gated downloads is a policy change in
+`r2KeyIsPubliclyServed` + grant issuance, not new architecture.

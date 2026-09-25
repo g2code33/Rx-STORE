@@ -6,6 +6,7 @@ import { validateEmail, validatePassword, PASSWORD_REQUIREMENT, validateId } fro
 import { getSetting } from '../services/settings.ts';
 import { createSession, findLiveSession, revokeByToken, revokeAllSessions, ensureSessionTable, touchSession } from '../services/sessions.ts';
 import { apiErrorBody } from '../services/errors.ts';
+import { sendEmail } from '../services/email.ts';
 
 function normalizePhone(p: any): string | null {
   if (!p) return null;
@@ -222,8 +223,21 @@ export const authRoutes = {
     try { body = await request.json(); } catch { return { code: 'VALIDATION_ERROR', message: 'Invalid JSON body' }; }
     const { email } = body || {};
     if (!email || !validateEmail(email)) return { code: 'VALIDATION_ERROR', message: 'Valid email is required' };
-    const generic = { success: true, message: 'If that email is registered, a reset link has been sent.' };
-    const user: any = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(String(email).trim().toLowerCase()).first().catch(() => null);
+
+    const isProduction = String(env?.ENVIRONMENT || '').toLowerCase() === 'production';
+    // TRUTHFUL states (§ production gate 9) — the API never implies an email
+    // was sent when email delivery is not configured, and NEVER returns the
+    // reset token in production.
+    const emailConfigured = !!(env?.RESEND_API_KEY && env?.FROM_EMAIL);
+    const unconfigured = {
+      success: true,
+      delivery: 'unconfigured',
+      message: 'Password reset emails are not configured on this deployment. Contact support to reset your password.',
+    };
+    if (!emailConfigured && isProduction) return unconfigured;
+
+    const generic = { success: true, delivery: 'sent', message: 'If that email is registered, a reset link has been sent.' };
+    const user: any = await env.DB.prepare('SELECT id, name FROM users WHERE email = ?').bind(String(email).trim().toLowerCase()).first().catch(() => null);
     if (!user) return generic; // never leak whether an account exists
 
     // Single-use, short-lived, stored HASHED (never the raw token).
@@ -235,10 +249,27 @@ export const authRoutes = {
         .bind(tokenHash, expiry, user.id).run();
     } catch { return generic; }
 
-    // Email delivery is NOT configured in this project. In development we may
-    // return the token so the flow is testable; in production we never do.
+    // Production + configured email → actually SEND the recovery email through
+    // the existing provider boundary (services/email.ts). The raw token only
+    // ever travels inside that email — never in an API response.
+    if (isProduction) {
+      const webBase = String(env?.RX_STORE_WEB_URL || 'https://rx-store-web.pages.dev').replace(/\/+$/, '');
+      const link = `${webBase}/login?reset=${rawToken}`;
+      const sent = await sendEmail(env, {
+        to: String(email).trim().toLowerCase(),
+        subject: 'Reset your RX Store password',
+        html: `<p>Hello ${String(user.name || 'there').replace(/[<>&]/g, '')},</p>
+               <p>Someone requested a password reset for your RX Store account. This link expires in 30 minutes:</p>
+               <p><a href="${link}">Reset my password</a></p>
+               <p>If you did not request this, you can ignore this email — your password stays unchanged.</p>`,
+      });
+      // Delivery result is reported honestly without leaking internals.
+      return sent.ok ? generic : { success: true, delivery: 'failed', message: 'The reset email could not be sent right now. Please try again shortly or contact support.' };
+    }
+
+    // Non-production: the debug token keeps the flow testable locally.
     if (resetTokenDebugAllowed(env)) {
-      return { ...generic, resetToken: rawToken, devNote: 'DEV ONLY: resetToken is returned because email delivery is not configured and ENVIRONMENT is not production.' };
+      return { ...generic, delivery: 'debug', resetToken: rawToken, devNote: 'DEV ONLY: resetToken is returned because ENVIRONMENT is not production.' };
     }
     return generic;
   },

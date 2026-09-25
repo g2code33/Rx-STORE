@@ -216,3 +216,39 @@ Non-destructive: existing rows are copied forward, with a missing architecture
 normalized to `x64` (the previous hard-coded value), so behaviour for
 single-architecture releases is unchanged. Indexes are recreated after the table
 rename (D1 drops indexes with the table).
+
+---
+
+## Production release flow (CI, tag-controlled + atomic)
+
+Implemented in `.github/workflows/release.yml` (validation-only runs are
+`.github/workflows/ci.yml` — every ordinary push to `main` and every PR).
+
+```
+git tag vX.Y.Z && git push origin vX.Y.Z      # X.Y.Z MUST equal package.json version
+   ↓
+typecheck → lint → full test suite → web build → Electron build
+   → SDK external-consumer gate (pack → clean sample app → compile)
+   → Windows .exe + Linux .deb/.AppImage (built with --publish never)
+   → Android assembleRelease (FAILS CLOSED without signing secrets)
+   → verify: all 6 artifacts exist
+   → verify: APK release-signed (apksigner, non-debug certificate)
+   → verify: APK versionName == tag version
+   → verify: tag == package.json version, release not already published
+   → publish: draft release with ALL assets at once → flip to published
+```
+
+Fail-closed rules:
+
+* Tag/version mismatch → **fail** (no release).
+* The tag already has a published release → **fail** (controlled recovery only
+  via manual dispatch with `allow_republish`).
+* Missing/incomplete Android signing secrets → **fail** (Gradle itself refuses
+  to produce a debug-signed release APK; local dev must explicitly opt in with
+  `-PrxAllowDebugSigning=true`).
+* Windows installer: code-signed only when `WIN_CSC_LINK_B64` +
+  `WIN_CSC_KEY_PASSWORD` are configured; otherwise built and **labelled
+  UNSIGNED** in the release notes — unless the repo variable
+  `REQUIRE_WIN_SIGNING=true` makes absence a hard failure.
+* Any platform build/verification failure → **no release** becomes visible
+  (assets are uploaded to a DRAFT that is deleted on error).

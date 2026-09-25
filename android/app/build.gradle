@@ -24,10 +24,15 @@ android {
     namespace = "com.calcitonin.rxstore"
     compileSdk = rootProject.ext.compileSdkVersion
 
-    // Signing: CI injects android/app/release-keystore.p12 from repo secrets
-    // (ANDROID_KEYSTORE_BASE64/…). Without it the release APK falls back to
-    // the debug key so the build never breaks and the APK still installs.
+    // SIGNING (production gate §2): the release build FAILS CLOSED. Without
+    // the production keystore (injected by CI from repo secrets, or placed
+    // here for local release builds) `assembleRelease` ABORTS — a production
+    // APK must NEVER be signed with the debug key. Debug signing is allowed
+    // ONLY for explicit local development, opt-in per-build:
+    //   ./gradlew assembleRelease -PrxAllowDebugSigning=true
+    //   (or env RX_ALLOW_DEBUG_SIGNING=1)
     def hasReleaseKeystore = file('release-keystore.p12').exists()
+    def rxAllowDebugSigning = (project.findProperty('rxAllowDebugSigning') ?: System.getenv('RX_ALLOW_DEBUG_SIGNING') ?: 'false').toString().toLowerCase() == 'true'
 
     signingConfigs {
         release {
@@ -60,10 +65,18 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
             if (hasReleaseKeystore) {
                 signingConfig signingConfigs.release
-            } else {
-                // No keystore available (local dev without secrets) — sign with
-                // the debug key so the APK is still installable.
+            } else if (rxAllowDebugSigning) {
+                // EXPLICIT local-development opt-in only. CI never sets this —
+                // production release builds without a keystore fail below.
+                logger.warn('WARNING: release APK is DEBUG-signed (local development opt-in). NEVER distribute this build.')
                 signingConfig signingConfigs.debug
+            } else {
+                throw new GradleException(
+                    'Production release signing is REQUIRED but no release keystore was found.\n' +
+                    'Inject android/app/release-keystore.p12 (CI secrets ANDROID_KEYSTORE_BASE64, ' +
+                    'ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD) or run a local ' +
+                    'development build explicitly: ./gradlew assembleRelease -PrxAllowDebugSigning=true\n' +
+                    'A debug-signed production APK will NOT be built.')
             }
         }
     }

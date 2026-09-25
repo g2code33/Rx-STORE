@@ -1,16 +1,35 @@
-# RX Store — Final Integration Audit & Release Readiness (Prompt 10)
+# RX Store — Release Readiness
 
-**Date:** 2026-09-10 · **Version:** 1.4.0 · **Phase:** final verification (no new features)
+## Production secrets pre-flight (current, v1.5.x)
 
-This is the release-readiness assessment for the complete RX Store system after
-Prompts 1–10. It verifies that everything works together as **one coherent
-system**, per the fundamental model:
+Run `./scripts/release-preflight.sh` from the repository root — it checks the
+LIVE deployment and prints presence (never values). Mandatory vs optional:
 
-> One account → many devices → each device has its own real installation state
-> → native reality is authoritative for the current device → backend stores
-> last-known state for other devices → downloads are verified → installations
-> are verified → updates are verified → uninstall is verified → synchronization
-> is reliable.
+| Capability | Setting | Where | Mandatory? |
+| --- | --- | --- | --- |
+| Authentication (everything) | `JWT_SECRET` | Worker secret | **YES** |
+| API configuration | `ENVIRONMENT=production`, `CORS_ALLOWED_ORIGINS`, `RX_STORE_WEB_URL`, `MALWARE_SCANNER` | `backend/wrangler.toml` `[vars]` | **YES** |
+| Web/desktop/Android builds | `VITE_API_URL` (HTTPS Worker URL incl. `/v1`) | `.env.production` + Actions variable | **YES** |
+| Paid apps / purchases | `PAYSTACK_SECRET_KEY` | Worker secret | YES **when paid apps are enabled** |
+| Package malware scanning | `VIRUSTOTAL_API_KEY` (+ `MALWARE_SCANNER=virustotal`) | Worker secret + `[vars]` | optional — without it security results are honestly UNAVAILABLE and publishing needs an admin override |
+| Email (password reset, release notices) | `RESEND_API_KEY` + `FROM_EMAIL` | Worker secrets | optional — without them password reset truthfully reports `unconfigured` |
+| AI chat | one of `NVIDIA_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `GEMINI_API_KEY` | Worker secrets | optional |
+| Android release APK | `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | GitHub secrets | **YES for any release** (the pipeline fails closed without them) |
+| Windows code signing | `WIN_CSC_LINK_B64` + `WIN_CSC_KEY_PASSWORD` | GitHub secrets | optional — installers are labelled UNSIGNED without them; set repo variable `REQUIRE_WIN_SIGNING=true` to make absence a hard failure |
+
+No certificate or keystore material is ever committed to the repository
+(`.gitignore` blocks `*.p12`, `*.keystore`, `*.jks`).
+
+---
+
+## Historical record: final integration audit (Prompt 10, v1.4.0, 2026-09-10)
+
+*The document below is the historical Prompt-10 audit, kept as a record. Items
+marked PLANNED there may since be implemented — the current status of malware
+scanning (implemented), payments (implemented), sessions (persistent), and the
+release pipeline (tag-controlled + atomic) is documented in
+[`SECURITY.md`](./SECURITY.md), [`RELEASES.md`](./RELEASES.md),
+[`DEPLOYMENT.md`](./DEPLOYMENT.md) and this file's pre-flight section above.*
 
 **Status legend** — **PASS** (implemented and verified here), **FAIL** (broken),
 **BLOCKED** (cannot be verified in this sandbox; never reported as PASS),
@@ -334,7 +353,7 @@ runtime honesty, no secrets in bundles (§20) · full test matrix (§21).
 1. Signed, expiring download URLs (extension point ready in `buildManifest()`).
 2. Email delivery for password reset (no provider integrated; tokens hashed +
    never leaked, but delivery is manual in production).
-3. 2FA, account lockout, email verification, malware scanning of uploads,
+3. 2FA, account lockout, email verification (malware scanning of uploads HAS since been implemented — see SECURITY.md),
    signed update manifests — none present; all documented in
    `docs/SECURITY.md`.
 4. PBKDF2 600k iterations vs Workers free-plan CPU budget — paid plan or a
