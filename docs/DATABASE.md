@@ -121,6 +121,7 @@ columns), so back up before applying it.
 0014_ratings_reviews.sql             Reviews: titles, moderation states, developer responses, reports table
 0015_payments_entitlements.sql       Marketplace payments: purchases, entitlements, webhook_events, download_grants
 0016_developer_finance.sql          Developer finance: download kind/geo columns, billing, payouts
+0016b_finance_completion.sql         Idempotent completion of 0016 (tables + seed only — use when 0016's ALTERs already ran)
 0017_developer_community.sql         Developer community (categories/discussions/replies/reports) + scoped API tokens
 0018_persistent_sessions.sql         PERSISTENT auth sessions: auth_sessions.expires_at becomes NULLABLE (NULL = until revoked)
 0019_auth_identities.sql              OAuth identities (google/github) + hashed single-use OAuth tokens (state/code/link/intent)

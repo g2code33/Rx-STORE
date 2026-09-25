@@ -26,13 +26,16 @@ row() { # status name detail mandatory(0/1)
   esac
 }
 
-echo "${BOLD}RX Store production pre-flight$(RST)"
-echo "$(DIM)Secret VALUES are never printed — only presence.$(RST)"
+echo "${BOLD}RX Store production pre-flight${RST}"
+echo "${DIM}Secret VALUES are never printed — only presence.${RST}"
 echo
 
 # ---- Worker secrets (via wrangler; read-only) -----------------------------
 if command -v npx >/dev/null 2>&1; then
-  SECRETS="$(npx wrangler secret list --config backend/wrangler.toml 2>/dev/null | tr -d ' ",' | cut -d: -f1 | grep -v '^\[' | grep -v '^$' || true)"
+  # wrangler prints pretty JSON: [ { "name": "X", "type": "secret_text" }, … ].
+  # Parse it with node (always available in this repo) — never with string
+  # slicing, which mis-reads multi-line JSON and reports false MISSING.
+  SECRETS="$(npx wrangler secret list --config backend/wrangler.toml 2>/dev/null | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const j=JSON.parse(d);console.log((Array.isArray(j)?j:[]).map(x=>x&&x.name).filter(Boolean).join('\n'))}catch(e){console.log('')}})")"
 else
   SECRETS=""
 fi
@@ -82,17 +85,17 @@ echo "Release signing (from the latest GitHub release, if any):"
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   LATEST="$(gh release list --repo g2code33/Rx-STORE --limit 1 2>/dev/null | head -1 || true)"
   if [ -n "$LATEST" ]; then
-    echo "  $(DIM)latest release: $(echo "$LATEST" | tr -s ' ' | cut -d' ' -f1-3)$(RST)"
+    echo "  ${DIM}latest release: $(echo "$LATEST" | tr -s ' ' | cut -d' ' -f1-3)${RST}"
     NOTES="$(gh release view --repo g2code33/Rx-STORE --json body --jq .body 2>/dev/null || true)"
     echo "$NOTES" | grep -qi "UNSIGNED" \
       && row warn "Windows code signing" "latest release labelled UNSIGNED — set WIN_CSC_LINK_B64 + WIN_CSC_KEY_PASSWORD for signed installers" 0 \
-      || echo "  $(DIM)check the release notes for the signing label$(RST)"
+      || echo "  ${DIM}check the release notes for the signing label${RST}"
   else
-    echo "  $(DIM)no releases yet$(RST)"
+    echo "  ${DIM}no releases yet${RST}"
   fi
   row warn "Android signing secrets" "verify ANDROID_KEYSTORE_BASE64/…_PASSWORD/_ALIAS/_KEY_PASSWORD exist — release.yml fails closed without them" 0
 else
-  echo "  $(DIM)gh CLI not authenticated — skipped$(RST)"
+  echo "  ${DIM}gh CLI not authenticated — skipped${RST}"
 fi
 echo
 
@@ -102,5 +105,5 @@ if [ "$FAILURES" -gt 0 ]; then
   exit 1
 fi
 echo "${OK}${BOLD}READY:${RST} mandatory items configured ($WARNINGS warning(s))."
-[ "$WARNINGS" -gt 0 ] && echo "  $(DIM)Warnings list optional capabilities that are currently degraded — see above.$(RST)"
+[ "$WARNINGS" -gt 0 ] && echo "  ${DIM}Warnings list optional capabilities that are currently degraded — see above.${RST}"
 exit 0
