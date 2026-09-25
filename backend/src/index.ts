@@ -1339,7 +1339,8 @@ export default {
     if (path.startsWith('/admin/payments')) {
       try {
         let d: any;
-        if (path === '/admin/payments/transactions' && request.method === 'GET') d = await adminPaymentRoutes.transactions(normalizedRequest as any, env);
+        if (path === '/admin/payments/status' && request.method === 'GET') d = await adminPaymentRoutes.status(normalizedRequest as any, env);
+        else if (path === '/admin/payments/transactions' && request.method === 'GET') d = await adminPaymentRoutes.transactions(normalizedRequest as any, env);
         else if (path === '/admin/payments/entitlements' && request.method === 'GET') d = await adminPaymentRoutes.entitlements(normalizedRequest as any, env);
         else if (path.match(/^\/admin\/payments\/[^\/]+\/refund$/) && request.method === 'POST') d = await adminPaymentRoutes.refund(normalizedRequest as any, env);
         else if (path.match(/^\/admin\/payments\/entitlements\/[^\/]+\/revoke$/) && request.method === 'POST') d = await adminPaymentRoutes.revoke(normalizedRequest as any, env);

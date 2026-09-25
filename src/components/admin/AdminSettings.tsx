@@ -37,6 +37,8 @@ export default function AdminSettings() {
   const [loading, setLoading] = useState('');
   const [showResetModal, setShowResetModal] = useState<null | 'stats' | 'apps'>(null);
   const [pwd, setPwd] = useState('');
+  const [payStatus, setPayStatus] = useState<any>(null);
+  const [feeSaving, setFeeSaving] = useState(false);
   const token = localStorage.getItem('rx-store-token') || '';
 
   useEffect(() => {
@@ -45,7 +47,25 @@ export default function AdminSettings() {
       .then((r) => r.json())
       .then((j) => { if (j?.data) setSettings(j.data); })
       .catch(() => toast.error('Could not load settings'));
+    fetch(`${API_URL}/admin/payments/status`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.json())
+      .then((j) => { if (j?.data) setPayStatus(j.data); })
+      .catch(() => { /* the payments card simply shows its unknown state */ });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Save the marketplace fee (drives developer revenue splits). */
+  const saveFee = async () => {
+    if (!settings) return;
+    const raw = String(settings.marketplace_fee_percent ?? '15').trim();
+    const pct = Number(raw);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 90) { toast.error('Fee must be a percentage between 0 and 90'); return; }
+    setFeeSaving(true);
+    try {
+      await save({ marketplace_fee_percent: String(pct) });
+      toast.success(`Marketplace fee set to ${pct}%`);
+    } catch (e: any) { toast.error(e.message); }
+    finally { setFeeSaving(false); }
+  };
 
   const save = async (updates: Settings) => {
     const res = await fetch(`${API_URL}/admin/settings`, {
@@ -204,10 +224,62 @@ export default function AdminSettings() {
         </div>
       </div>
 
-      {/* Payments — honest state */}
+      {/* Payments — LIVE state from the deployment */}
       <div className="card p-6">
         <h3 className="font-semibold text-white">Payments</h3>
-        <p className="text-xs text-rx-gray-medium mt-1">Not configured yet. Checkout (Paystack / Mobile Money) arrives in a future release — the API route <code className="px-1 bg-white/10 rounded">/payments/initialize</code> is already wired for it.</p>
+        {payStatus ? (
+          <div className="mt-2 space-y-4">
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+              <p className="text-sm text-white flex items-center gap-2">
+                Paystack
+                {payStatus.configured ? (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-400/15 text-green-300">CONNECTED · LIVE</span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300">NOT CONFIGURED</span>
+                )}
+              </p>
+              <p className="text-xs text-rx-gray-medium">
+                {payStatus.configured
+                  ? `Real checkout active (${payStatus.currency}). Card & mobile-money authorization happens on Paystack's hosted page — no card data ever reaches RX Store.`
+                  : 'Set the PAYSTACK_SECRET_KEY Worker secret to enable real checkout.'}
+              </p>
+            </div>
+            {payStatus.webhookUrl && (
+              <div>
+                <p className="text-xs text-rx-gray-medium mb-1">Webhook endpoint (register in Paystack → Settings → API Keys &amp; Webhooks):</p>
+                <div className="flex items-center gap-2">
+                  <code className="text-[11px] text-white/85 bg-black/30 rounded px-2 py-1 truncate flex-1">{payStatus.webhookUrl}</code>
+                  <button
+                    onClick={() => { try { navigator.clipboard.writeText(payStatus.webhookUrl); toast.success('Copied'); } catch { toast.error('Copy failed'); } }}
+                    className="px-3 py-1.5 text-xs rounded-xl bg-white/5 border border-white/10 text-white hover:bg-white/10"
+                  >Copy</button>
+                </div>
+                <p className="text-[11px] mt-1">
+                  {payStatus.webhook?.events > 0
+                    ? <span className="text-green-300">✓ {payStatus.webhook.events} webhook event(s) received{payStatus.webhook.lastType ? ` · last: ${payStatus.webhook.lastType}` : ''}</span>
+                    : <span className="text-amber-300">No webhooks received yet — register the URL so completions and refunds sync automatically.</span>}
+                </p>
+              </div>
+            )}
+            <div className="flex flex-wrap items-end gap-2">
+              <div>
+                <label className="block text-xs text-rx-gray-medium mb-1">Marketplace fee (%) — applied to developer revenue</label>
+                <input
+                  type="number" min={0} max={90} step="0.5"
+                  value={String(settings?.marketplace_fee_percent ?? '15')}
+                  onChange={(e) => settings && setSettings({ ...settings, marketplace_fee_percent: e.target.value })}
+                  className="w-24 bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white"
+                />
+              </div>
+              <button onClick={saveFee} disabled={feeSaving} className="btn-primary text-sm flex items-center gap-2 disabled:opacity-50">
+                {feeSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save fee
+              </button>
+              <p className="text-[11px] text-rx-gray-medium">Full transactions, refunds &amp; payouts: <b className="text-white">Admin → Payments</b>.</p>
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs text-rx-gray-medium mt-1">Loading payment configuration…</p>
+        )}
       </div>
 
       <div className="card p-6 border border-red-500/10">

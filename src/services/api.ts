@@ -679,6 +679,10 @@ export const api = {
 
   // Admin payments (Phase 18)
   adminPayments: {
+    /** LIVE payment configuration state (booleans + counters, never secrets). */
+    async status() {
+      return request<any>('/admin/payments/status', { method: 'GET' });
+    },
     async transactions(status?: string) {
       return request<{ transactions: any[] }>(`/admin/payments/transactions${status ? `?status=${encodeURIComponent(status)}` : ''}`, { method: 'GET' });
     },

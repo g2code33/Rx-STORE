@@ -36,6 +36,7 @@ export default function PaymentsAdminPanel() {
   const [entitlements, setEntitlements] = useState<any[]>([]);
   const [payouts, setPayouts] = useState<any[]>([]);
   const [reconciliation, setReconciliation] = useState<any>(null);
+  const [status, setStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [revokeReason, setRevokeReason] = useState<Record<string, string>>({});
@@ -45,11 +46,13 @@ export default function PaymentsAdminPanel() {
   const load = () => {
     setLoading(true);
     Promise.all([
+      api.adminPayments.status().catch(() => null),
       api.adminPayments.transactions().catch(() => ({ transactions: [] })),
       api.adminPayments.entitlements().catch(() => ({ entitlements: [] })),
       (api as any).adminFinance.payouts().catch(() => ({ payouts: [] })),
       (api as any).adminFinance.reconciliation().catch(() => null),
-    ]).then(([t, e, po, rec]: any[]) => {
+    ]).then(([st, t, e, po, rec]: any[]) => {
+      if (st) setStatus(st);
       setTransactions(t.transactions || []);
       setEntitlements(e.entitlements || []);
       setPayouts(po?.payouts || []);
@@ -99,6 +102,55 @@ export default function PaymentsAdminPanel() {
         </div>
         <button onClick={load} className="btn-secondary text-sm flex items-center gap-2"><RefreshCw className="w-4 h-4" /> Refresh</button>
       </div>
+
+      {/* LIVE provider status — what is actually configured on this deployment */}
+      {status && (
+        <div className="card p-5">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+            <div>
+              <p className="text-xs uppercase tracking-wider text-rx-gray-medium">Provider</p>
+              <p className="text-sm font-bold text-white flex items-center gap-2">
+                Paystack
+                {status.configured ? (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-400/15 text-green-300">CONNECTED · LIVE</span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300">NOT CONFIGURED</span>
+                )}
+              </p>
+              {status.simulation && <p className="text-[11px] text-amber-300 mt-0.5">Dev simulation active (non-production, no secret).</p>}
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wider text-rx-gray-medium">Purchases</p>
+              <p className="text-sm text-white">{status.purchases?.complete ?? 0} complete · {status.purchases?.refunded ?? 0} refunded · {status.purchases?.total ?? 0} total</p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wider text-rx-gray-medium">Marketplace fee</p>
+              <p className="text-sm text-white">{status.marketplaceFeePercent}% (developer revenue)</p>
+            </div>
+            <div className="flex-1 min-w-64">
+              <p className="text-xs uppercase tracking-wider text-rx-gray-medium">Webhook endpoint</p>
+              <div className="flex items-center gap-2 mt-0.5">
+                <code className="text-[11px] text-white/85 bg-black/30 rounded px-2 py-1 truncate flex-1">{status.webhookUrl}</code>
+                <button
+                  onClick={() => { try { navigator.clipboard.writeText(status.webhookUrl); toast.success('Webhook URL copied'); } catch { toast.error('Copy failed'); } }}
+                  className="btn-secondary text-xs !py-1.5 !px-3"
+                >Copy</button>
+              </div>
+              <p className="text-[11px] mt-1">
+                {status.webhook?.events > 0 ? (
+                  <span className="text-green-300">
+                    ✓ {status.webhook.events} event{status.webhook.events === 1 ? '' : 's'} received{status.webhook.lastType ? ` · last: ${status.webhook.lastType}` : ''}{status.webhook.lastAt ? ` (${formatDate(status.webhook.lastAt)})` : ''}
+                  </span>
+                ) : (
+                  <span className="text-amber-300">
+                    No webhooks received yet — register this URL in your Paystack dashboard (Settings → API Keys &amp; Webhooks) so refunds and completions sync automatically.
+                  </span>
+                )}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex gap-1 bg-rx-dark-secondary rounded-xl p-1 w-fit mt-4">
         {PAYOUT_TABS.map((t) => (

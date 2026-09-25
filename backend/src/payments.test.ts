@@ -64,6 +64,20 @@ function makeEnv(opts: { production?: boolean; secret?: boolean } = {}) {
           if (s.includes('SELECT * FROM purchases WHERE id=?')) return db.purchases.find((x: any) => x.id === a[0]) || null;
           if (s.includes('SELECT * FROM entitlements WHERE id=?')) return db.entitlements.find((x: any) => x.id === a[0]) || null;
           if (s.includes('SELECT * FROM download_grants WHERE token_hash=?')) return db.download_grants.find((x: any) => x.token_hash === a[0]) || null;
+          if (s.includes('SELECT event_type, created_at FROM webhook_events')) {
+            const events = db.webhook_events.filter((w: any) => w.provider === 'paystack');
+            return events.length ? events[events.length - 1] : null;
+          }
+          if (s.includes('SELECT COUNT(*) AS n FROM webhook_events')) {
+            return { n: db.webhook_events.filter((w: any) => w.provider === 'paystack').length };
+          }
+          if (s.includes('SELECT COUNT(*) AS total')) {
+            return {
+              total: db.purchases.length,
+              complete: db.purchases.filter((x: any) => x.status === 'complete').length,
+              refunded: db.purchases.filter((x: any) => x.status === 'refunded').length,
+            };
+          }
           return null;
         },
         async all() {
@@ -99,6 +113,9 @@ function makeEnv(opts: { production?: boolean; secret?: boolean } = {}) {
           }
           if (s.includes('FROM entitlements e JOIN applications a')) {
             return { results: db.entitlements.filter((e: any) => e.user_id === a[0]).map((e: any) => ({ ...e, app_name: 'App' })) };
+          }
+          if (s.includes('SELECT key, value FROM site_settings')) {
+            return { results: (db as any).site_settings || [{ key: 'marketplace_fee_percent', value: '15' }] };
           }
           return { results: [] };
         },
@@ -471,4 +488,61 @@ test('purchase history shows app, date, amount, currency, state, reference, refu
   // Another user's history is theirs alone.
   const other: any = await paymentRoutes.history(req('u2', null, '/payments/history', 'GET'), env);
   assert.equal(other.purchases.length, 0);
+});
+
+
+// ---------------------------------------------------------------------------
+// GET /admin/payments/status — live configuration state for the admin panels
+// (booleans + counters ONLY; secret values must never appear).
+// ---------------------------------------------------------------------------
+
+test('status: reports the LIVE provider state (production + secret = connected)', async () => {
+  const env = makeEnv({ production: true, secret: true });
+  const out: any = await adminPaymentRoutes.status(new Request('https://api.test/admin/payments/status'), env);
+  assert.equal(out.provider, 'paystack');
+  assert.equal(out.configured, true, 'production + secret → connected');
+  assert.equal(out.simulation, false, 'no simulation in production');
+  assert.equal(out.currency, 'GHS');
+  assert.equal(out.webhookUrl, 'https://api.test/payments/webhook/paystack');
+  assert.equal(out.purchases.total, 0);
+  assert.equal(out.webhook.events, 0);
+  assert.equal(out.marketplaceFeePercent, '15');
+});
+
+test('status: NOT configured when the secret is missing (honest, no fake claims)', async () => {
+  const env = makeEnv({ production: true, secret: false });
+  const out: any = await adminPaymentRoutes.status(new Request('https://api.test/admin/payments/status'), env);
+  assert.equal(out.configured, false);
+  assert.equal(out.simulation, false, 'production never simulates');
+});
+
+test('status: dev environment without a secret reports the simulation state', async () => {
+  const env = makeEnv({ production: false, secret: false });
+  const out: any = await adminPaymentRoutes.status(new Request('https://api.test/admin/payments/status'), env);
+  assert.equal(out.configured, false);
+  assert.equal(out.simulation, true);
+});
+
+test('status: webhook stats + purchase totals come from the real ledgers', async () => {
+  const env = makeEnv({ production: true, secret: true });
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const db = (env as any).__db;
+  db.webhook_events.push({ id: 'w1', provider: 'paystack', event_key: 'k1', event_type: 'charge.success', payload: '{}', status: 'processed', created_at: now });
+  db.webhook_events.push({ id: 'w2', provider: 'paystack', event_key: 'k2', event_type: 'refund.processed', payload: '{}', status: 'processed', created_at: now });
+  db.purchases.push({ id: 'p1', user_id: 'u1', app_id: 'app_paid', amount: 2500, currency: 'GHS', provider: 'paystack', provider_reference: 'ref1', status: 'complete', created_at: now });
+  db.purchases.push({ id: 'p2', user_id: 'u2', app_id: 'app_paid', amount: 2500, currency: 'GHS', provider: 'paystack', provider_reference: 'ref2', status: 'refunded', created_at: now });
+  const out: any = await adminPaymentRoutes.status(new Request('https://api.test/admin/payments/status'), env);
+  assert.equal(out.webhook.events, 2);
+  assert.equal(out.webhook.lastType, 'refund.processed');
+  assert.equal(out.purchases.total, 2);
+  assert.equal(out.purchases.complete, 1);
+  assert.equal(out.purchases.refunded, 1);
+});
+
+test('status: NEVER contains secret material', async () => {
+  const env = makeEnv({ production: true, secret: true });
+  const out: any = await adminPaymentRoutes.status(new Request('https://api.test/admin/payments/status'), env);
+  const blob = JSON.stringify(out);
+  assert.ok(!blob.includes(SECRET), 'the Paystack secret never appears');
+  assert.ok(!blob.includes('sk_live') && !blob.includes('sk_test'), 'no key-shaped material');
 });

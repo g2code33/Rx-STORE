@@ -32,6 +32,7 @@
 import {
   initializeTransaction, verifyTransaction, createRefund, verifyWebhookSignature,
 } from '../services/paystack.ts';
+import { getSetting } from '../services/settings.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -358,6 +359,45 @@ function safeEventPayload(type: string, data: any): string {
 // ---------------------------------------------------------------------------
 
 export const adminPaymentRoutes = {
+
+  /**
+   * GET /admin/payments/status — the LIVE payment configuration state for the
+   * admin panels (Phase: payment wiring audit). Booleans and counters ONLY —
+   * never secret values. Tells the admin: is Paystack connected, which webhook
+   * URL must be registered in the provider dashboard, whether webhooks have
+   * ever arrived, purchase totals and the marketplace fee.
+   */
+  async status(request: Request, env: any) {
+    const origin = new URL(request.url).origin;
+    const lastWebhook: any = await env.DB.prepare(
+      "SELECT event_type, created_at FROM webhook_events WHERE provider='paystack' ORDER BY created_at DESC LIMIT 1"
+    ).first().catch(() => null);
+    const webhookCount: any = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM webhook_events WHERE provider='paystack'"
+    ).first().catch(() => null);
+    const purchaseStats: any = await env.DB.prepare(
+      "SELECT COUNT(*) AS total, SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END) AS complete, SUM(CASE WHEN status='refunded' THEN 1 ELSE 0 END) AS refunded FROM purchases"
+    ).first().catch(() => null);
+    return {
+      provider: 'paystack',
+      configured: realPaymentsEnabled(env),
+      environment: String(env?.ENVIRONMENT || ''),
+      simulation: simulationAllowed(env),
+      currency: 'GHS',
+      webhookUrl: `${origin}/payments/webhook/paystack`,
+      webhook: {
+        events: Number(webhookCount?.n) || 0,
+        lastType: lastWebhook?.event_type || null,
+        lastAt: lastWebhook?.created_at || null,
+      },
+      purchases: {
+        total: Number(purchaseStats?.total) || 0,
+        complete: Number(purchaseStats?.complete) || 0,
+        refunded: Number(purchaseStats?.refunded) || 0,
+      },
+      marketplaceFeePercent: await getSetting(env, 'marketplace_fee_percent', '15'),
+    };
+  },
 
   /** GET /admin/payments/transactions?status= */
   async transactions(request: Request, env: any) {
