@@ -51,9 +51,12 @@ The release workflow injects the keystore into `android/app/release-keystore.p12
 
 ## 4. Fail-closed release signing (production gate)
 
-`android/app/build.gradle` **aborts `assembleRelease` when the release keystore
-is absent** — a production APK is never silently debug-signed. Debug signing
-exists ONLY as an explicit local-development opt-in:
+`android/app/build.gradle` **aborts any release build (`assembleRelease` /
+`bundleRelease`) at execution time when the release keystore is absent** — a
+production APK is never silently debug-signed. `assembleDebug` (CI compile
+checks, local development) is unaffected: the guard runs only for release
+tasks, so a missing keystore never blocks debug builds. Debug signing for
+release output exists ONLY as an explicit local-development opt-in:
 
 ```bash
 ./gradlew assembleRelease -PrxAllowDebugSigning=true   # local development only
