@@ -1157,6 +1157,8 @@ export default {
         else if (path.match(/^\/admin\/security\/packages\/[^\/]+$/) && request.method === 'GET') data = await securityAdminRoutes.getPackage(normalizedRequest as any, env);
         else if (path.match(/^\/admin\/security\/packages\/[^\/]+\/override$/) && request.method === 'POST') data = await securityAdminRoutes.overridePackage(normalizedRequest as any, env);
         else if (path.match(/^\/admin\/security\/packages\/[^\/]+\/rescan$/) && request.method === 'POST') data = await securityAdminRoutes.rescanPackage(normalizedRequest as any, env);
+        else if (path === '/admin/security/review-queue' && request.method === 'GET') data = await securityAdminRoutes.reviewQueue(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/security\/packages\/[^\/]+\/manual-review$/) && request.method === 'POST') data = await securityAdminRoutes.manualReview(normalizedRequest as any, env);
         else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown security route' } }, 404, origin);
         if (data?.error) {
           const code: ErrorCode = data.code === 'NOT_FOUND' ? 'NOT_FOUND' : data.code === 'FORBIDDEN' ? 'FORBIDDEN' : 'VALIDATION_ERROR';

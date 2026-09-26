@@ -541,9 +541,36 @@ CREATE TABLE IF NOT EXISTS package_security_overrides (
   reason TEXT NOT NULL,
   prior_state TEXT,
   prior_overall TEXT,
-  created_at TEXT DEFAULT (datetime('now'))
+  sha256 TEXT,
+  invalidated_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')
 );
 CREATE INDEX IF NOT EXISTS idx_pso_package ON package_security_overrides(package_id);
+
+-- Manual security reviews: controlled fallback when automated verification is
+-- indeterminate (UNAVAILABLE/SCANNING/UNKNOWN/NEEDS_REVIEW). APPROVED reviews
+-- authorize exactly the reviewed SHA-256 — replacements invalidate.
+CREATE TABLE IF NOT EXISTS package_manual_reviews (
+  id TEXT PRIMARY KEY,
+  package_id TEXT NOT NULL REFERENCES packages(id) ON DELETE CASCADE,
+  release_id TEXT,
+  sha256 TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  automated_integrity TEXT,
+  automated_malware TEXT,
+  automated_overall TEXT,
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','APPROVED','REJECTED')),
+  admin_user_id TEXT,
+  admin_notes TEXT,
+  audit_event_id TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  reviewed_at TEXT,
+  invalidated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mrev_package ON package_manual_reviews(package_id);
+CREATE INDEX IF NOT EXISTS idx_mrev_status ON package_manual_reviews(status);
+CREATE INDEX IF NOT EXISTS idx_mrev_sha ON package_manual_reviews(sha256);
 
 -- Phase 14: submission review lifecycle + events + private thread attachments.
 CREATE TABLE IF NOT EXISTS developer_submissions (

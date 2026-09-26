@@ -6,7 +6,7 @@
  * All actions hit server-enforced admin endpoints.
  */
 import React, { useEffect, useState } from 'react';
-import { CheckCircle2, XCircle, Edit3, PauseCircle, PlayCircle, Eye, MessageSquare, Send, Shield, RefreshCw } from 'lucide-react';
+import { CheckCircle2, XCircle, Edit3, PauseCircle, PlayCircle, Eye, MessageSquare, Send, Shield, RefreshCw , UserCheck, ShieldCheck, Ban} from 'lucide-react';
 import { api } from '../../services/api';
 import { formatDate } from '../../utils/helpers';
 import toast from 'react-hot-toast';
@@ -47,6 +47,8 @@ export default function DeveloperAdminPanel() {
   const [devReleases, setDevReleases] = useState<any[]>([]);
   const [securityPackages, setSecurityPackages] = useState<any[]>([]);
   const [securityDetail, setSecurityDetail] = useState<any>(null);
+  const [reviewQueue, setReviewQueue] = useState<any[]>([]);
+  const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
   const [submissions, setSubmissions] = useState<any[]>([]);
   const [activeSubmission, setActiveSubmission] = useState<string | null>(null);
   const [appDetail, setAppDetail] = useState<any>(null);
@@ -62,14 +64,16 @@ export default function DeveloperAdminPanel() {
       api.developers.admin.devApps().catch(() => ({ apps: [] })),
       api.developers.admin.devReleases().catch(() => ({ releases: [] })),
       (api as any).developers.security.packages().catch(() => ({ packages: [] })),
+      (api as any).developers.security.reviewQueue().catch(() => ({ queue: [] })),
       (api as any).adminSubmissions.list().catch(() => ({ submissions: [] })),
-    ]).then(([a, d, t, da, dr, sp, sub]) => {
+    ]).then(([a, d, t, da, dr, sp, sub, rq]) => {
       setApplications((a as any).applications || []);
       setDevelopers((d as any).developers || []);
       setThreads((t as any).threads || []);
       setDevApps((da as any).apps || []);
       setDevReleases((dr as any).releases || []);
       setSecurityPackages((sp as any).packages || []);
+      setReviewQueue((rq as any)?.queue || []);
       setSubmissions((sub as any).submissions || []);
     }).finally(() => setLoading(false));
   };
@@ -168,7 +172,62 @@ export default function DeveloperAdminPanel() {
             {/* Reason box for reject / changes */}
             {['SUBMITTED', 'UNDER_REVIEW'].includes(detail.status) && (
               <>
-                <div className="flex flex-wrap gap-2 border-t border-white/5 pt-4">
+                {/* Manual security review — the controlled fallback */}
+            {['UNAVAILABLE', 'SCANNING', 'UNKNOWN', 'NEEDS_REVIEW', 'FAILED', 'PENDING', 'pending'].includes(String(securityDetail.package.malwareStatus)) && (
+              <div className="rounded-xl bg-blue-500/5 border border-blue-400/20 p-4 space-y-3">
+                <p className="text-sm font-semibold text-white flex items-center gap-2"><UserCheck className="w-4 h-4 text-blue-300" /> Manual security review</p>
+                {(securityDetail.manualReviews || []).length > 0 && (
+                  <div className="space-y-2">
+                    {(securityDetail.manualReviews || []).map((m: any) => (
+                      <div key={m.id} className={`p-3 rounded-lg border text-xs ${m.status === 'APPROVED' ? 'bg-green-400/10 border-green-400/20' : m.status === 'REJECTED' ? 'bg-red-400/10 border-red-400/20' : m.invalidatedAt ? 'bg-white/5 border-white/10' : 'bg-amber-500/10 border-amber-500/20'}`}>
+                        <p className="font-semibold text-white">
+                          {m.status}{m.invalidatedAt ? ' (INVALIDATED — package bytes changed)' : ''}{!m.bindsCurrentBytes && !m.invalidatedAt ? ' (bound to older bytes)' : ''}
+                          <span className="text-rx-gray-medium font-normal"> · {m.adminName || 'pending decision'} · {m.reviewedAt ? formatDate(m.reviewedAt) : `opened ${formatDate(m.openedAt)}`}</span>
+                        </p>
+                        <p className="text-rx-gray-medium mt-1">Reason: {m.reason}</p>
+                        {m.adminNotes && <p className="text-rx-gray-medium">Notes: {m.adminNotes}</p>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {(() => {
+                  const pending = (securityDetail.manualReviews || []).find((m: any) => m.status === 'PENDING' && !m.invalidatedAt && m.bindsCurrentBytes);
+                  if (!pending) return <p className="text-xs text-rx-gray-medium">No pending review for the current bytes — re-run the security pipeline to open one when verification cannot conclude.</p>;
+                  return (
+                    <div className="space-y-2">
+                      <textarea rows={2} value={reviewNotes[pending.id] || ''} onChange={(e) => setReviewNotes({ ...reviewNotes, [pending.id]: e.target.value })}
+                        className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white"
+                        placeholder="Review decision notes (REQUIRED, min 10 characters — what you checked and why this decision is safe)…" />
+                      <div className="flex flex-wrap gap-2">
+                        <button onClick={async () => {
+                          try {
+                            const res = await (api as any).developers.security.manualReview(securityDetail.package.id, 'APPROVE', reviewNotes[pending.id] || '');
+                            toast.success(res.publicationAuthorization === 'MANUAL_APPROVAL' ? 'Manual review APPROVED — publication authorized for these exact bytes' : 'Approved');
+                            setSecurityDetail(await (api as any).developers.security.package(securityDetail.package.id)); load();
+                          } catch (e: any) { toast.error(e?.message || 'Approval failed'); }
+                        }} disabled={busy || (reviewNotes[pending.id] || '').trim().length < 10}
+                          className="text-sm flex items-center gap-2 px-4 py-2 rounded-xl bg-green-500/10 text-green-300 border border-green-500/20 hover:bg-green-500/20 disabled:opacity-40">
+                          <ShieldCheck className="w-4 h-4" /> Approve (authorizes this SHA-256)
+                        </button>
+                        <button onClick={async () => {
+                          try {
+                            await (api as any).developers.security.manualReview(securityDetail.package.id, 'REJECT', reviewNotes[pending.id] || '');
+                            toast.success('Manual review REJECTED — publication stays blocked');
+                            setSecurityDetail(await (api as any).developers.security.package(securityDetail.package.id)); load();
+                          } catch (e: any) { toast.error(e?.message || 'Rejection failed'); }
+                        }} disabled={busy || (reviewNotes[pending.id] || '').trim().length < 10}
+                          className="text-sm flex items-center gap-2 px-4 py-2 rounded-xl bg-red-500/10 text-red-300 border border-red-500/20 hover:bg-red-500/20 disabled:opacity-40">
+                          <Ban className="w-4 h-4" /> Reject
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-rx-gray-medium">Approval authorizes publication for exactly the reviewed bytes (SHA-256 bound). Detected malware can never be approved. The automated verdict stays on record.</p>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-2 border-t border-white/5 pt-4">
                   <button onClick={() => act(() => api.developers.admin.startReview(detail.id), 'Review started')} disabled={busy || detail.status !== 'SUBMITTED'}
                     className="btn-secondary text-sm flex items-center gap-2 disabled:opacity-40"><Eye className="w-4 h-4" /> Start review</button>
                   <button onClick={() => act(() => api.developers.admin.approve(detail.id), 'Developer approved — organization created')} disabled={busy}
@@ -536,6 +595,28 @@ export default function DeveloperAdminPanel() {
             </div>
           </div>
         ) : (
+          <div className="space-y-6">
+          {reviewQueue.filter((q) => q.manualReview?.status === 'PENDING' && q.manualReviewEligible).length > 0 && (
+            <div className="card p-5 border-blue-400/20">
+              <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                <UserCheck className="w-4 h-4 text-blue-300" /> Manual review queue ({reviewQueue.filter((q) => q.manualReview?.status === 'PENDING' && q.manualReviewEligible).length})
+              </h3>
+              <p className="text-xs text-rx-gray-medium mt-1 mb-3">Automated verification could not produce a definitive verdict for these packages. Open a package below to approve or reject with audited notes — approvals authorize exactly the reviewed SHA-256.</p>
+              <div className="space-y-2">
+                {reviewQueue.filter((q) => q.manualReview?.status === 'PENDING' && q.manualReviewEligible).map((q) => (
+                  <div key={q.packageId} className="p-3 rounded-xl bg-rx-dark-tertiary/60 border border-white/5 space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium text-white truncate flex-1 min-w-40">{q.app?.name} v{q.release?.version} — {q.filename}</span>
+                      <span className="text-[10px] font-bold px-2 py-1 rounded bg-blue-400/10 text-blue-300">{String(q.automated.malwareStatus).toUpperCase()}</span>
+                      <span className="text-[10px] font-bold px-2 py-1 rounded bg-white/5 text-rx-gray-medium">{(q.sizeBytes / 1024 / 1024).toFixed(1)} MB · {q.platform}</span>
+                    </div>
+                    <p className="text-xs text-rx-gray-medium">{q.manualReview.reason}</p>
+                    <p className="text-[10px] font-mono text-rx-gray-medium/70 break-all">{q.sha256}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="card divide-y divide-white/5">
             {securityPackages.length === 0 ? (
               <p className="p-8 text-center text-sm text-rx-gray-medium">No binary packages yet — uploads appear here with their security state.</p>
@@ -556,6 +637,7 @@ export default function DeveloperAdminPanel() {
                 </div>
               </button>
             ))}
+          </div>
           </div>
         )
       ) : (

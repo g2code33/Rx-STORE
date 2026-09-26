@@ -120,7 +120,7 @@ function fakeD1() {
           if (s.includes('SELECT * FROM packages WHERE id=?')) return db.packages.find((p: any) => p.id === a[0]) || null;
           if (s.includes('SELECT * FROM packages WHERE release_id=?')) return { all: async () => ({ results: db.packages.filter((p: any) => p.release_id === a[0]) }) } as any;
           if (s.includes('SELECT * FROM scanner_cache WHERE sha256=?')) return db.scanner_cache.find((c: any) => c.sha256 === a[0]) || null;
-          if (s.includes('SELECT id FROM package_security_overrides WHERE package_id=?')) return db.package_security_overrides.find((o: any) => o.package_id === a[0]) || null;
+          if (s.includes('FROM package_security_overrides WHERE package_id=?')) return db.package_security_overrides.find((o: any) => o.package_id === a[0] && !o.invalidated_at) || null;
           if (s.includes('SELECT id FROM packages WHERE release_id=? AND platform=? AND architecture=?')) {
             const [release_id, platform, architecture] = a;
             return db.packages.find((p: any) => p.release_id === release_id && p.platform === platform && p.architecture === architecture) || null;

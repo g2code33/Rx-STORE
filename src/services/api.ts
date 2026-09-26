@@ -639,6 +639,17 @@ export const api = {
       async rescan(id: string) {
         return request<any>(`/admin/security/packages/${encodeURIComponent(id)}/rescan`, { method: 'POST', body: '{}' });
       },
+      /** Manual security review queue (packages automated verification could not conclude on). */
+      async reviewQueue() {
+        return request<{ queue: any[] }>('/admin/security/review-queue', { method: 'GET' });
+      },
+      /** APPROVE / REJECT a pending manual review (audited decision; notes required). */
+      async manualReview(id: string, decision: 'APPROVE' | 'REJECT', notes: string) {
+        return request<any>(`/admin/security/packages/${encodeURIComponent(id)}/manual-review`, {
+          method: 'POST',
+          body: JSON.stringify({ decision, notes }),
+        });
+      },
     },
   },
 

@@ -426,7 +426,7 @@ function makeEnv() {
           if (s.includes('SELECT * FROM applications WHERE id=?')) return db.applications.find((x: any) => x.id === a[0]) || null;
           if (s.includes('SELECT id FROM packages WHERE release_id=? AND platform=? AND architecture=?')) return db.packages.find((p: any) => p.release_id === a[0] && p.platform === a[1] && p.architecture === a[2]) || null;
           if (s.includes('SELECT * FROM packages WHERE release_id=?')) return null; // (first() form unused)
-          if (s.includes('SELECT id FROM package_security_overrides WHERE package_id=?')) return db.package_security_overrides.find((o: any) => o.package_id === a[0]) || null;
+          if (s.includes('FROM package_security_overrides WHERE package_id=?')) return db.package_security_overrides.find((o: any) => o.package_id === a[0] && !o.invalidated_at) || null;
           if (s.includes('FROM packages p JOIN applications a ON a.id = p.application_id WHERE p.storage_key = ?')) {
             const p = db.packages.find((x: any) => x.storage_key === a[0]);
             if (!p) return null;

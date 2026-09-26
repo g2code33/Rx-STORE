@@ -1046,6 +1046,100 @@ export function overallFromResults(results: CheckResult[]): 'PASSED' | 'FAILED' 
   return 'PASSED';
 }
 
+// ---------------------------------------------------------------------------
+// Manual security review (controlled fallback for indeterminate results)
+// ---------------------------------------------------------------------------
+
+/**
+ * Malware states for which a manual review may be opened. These mean "the
+ * scanner could not produce a definitive verdict" — NOT "clean". DETECTED is
+ * deliberately absent: detected malware can never be manually approved.
+ */
+export const MANUAL_REVIEW_MALWARE_STATES = ['UNAVAILABLE', 'SCANNING', 'UNKNOWN', 'NEEDS_REVIEW', 'FAILED', 'PENDING'];
+
+export function manualReviewMalwareEligible(malwareStatus: unknown): boolean {
+  return MANUAL_REVIEW_MALWARE_STATES.includes(String(malwareStatus || '').toUpperCase());
+}
+
+async function ensureManualReviewTable(env: any): Promise<void> {
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS package_manual_reviews (
+       id TEXT PRIMARY KEY, package_id TEXT NOT NULL REFERENCES packages(id) ON DELETE CASCADE,
+       release_id TEXT, sha256 TEXT NOT NULL, platform TEXT NOT NULL,
+       automated_integrity TEXT, automated_malware TEXT, automated_overall TEXT,
+       reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','APPROVED','REJECTED')),
+       admin_user_id TEXT, admin_notes TEXT, audit_event_id TEXT,
+       created_at TEXT DEFAULT (datetime('now')), reviewed_at TEXT, invalidated_at TEXT
+     )`
+  ).run().catch(() => {});
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_mrev_package ON package_manual_reviews(package_id)').run().catch(() => {});
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_mrev_status ON package_manual_reviews(status)').run().catch(() => {});
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_mrev_sha ON package_manual_reviews(sha256)').run().catch(() => {});
+}
+
+/**
+ * Auto-open a PENDING manual review when the automated pipeline cannot
+ * conclude (overall NEEDS_REVIEW with an indeterminate malware result).
+ * Idempotent per (package, sha256): re-runs do not duplicate the record.
+ */
+async function openPendingReviewIfNeeded(env: any, pkg: any, results: Partial<Record<CheckType, CheckResult>>): Promise<void> {
+  try {
+    if (!env?.DB?.prepare) return;
+    await ensureManualReviewTable(env);
+    const malware = results.malware;
+    // Open a review only when the blocker is genuinely indeterminate:
+    // malware in the manual-review states (SCANNING/UNAVAILABLE/…) — a clean
+    // malware result with a NEEDS_REVIEW signature/certificate is ALSO a
+    // manual-review case (the classic Phase 13 chain-of-trust situation).
+    const malwareIndeterminate = malware ? manualReviewMalwareEligible(malware.status) : true;
+    if (!malwareIndeterminate) return;
+    const reason = malware
+      ? `${malware.result}${malware.details ? ` — ${malware.details}` : ''}`
+      : 'Automated verification could not conclude';
+    const existing: any = await env.DB.prepare(
+      `SELECT id FROM package_manual_reviews WHERE package_id=? AND sha256=? AND status IN ('PENDING','APPROVED') AND invalidated_at IS NULL LIMIT 1`
+    ).bind(pkg.id, String(pkg.sha256)).first().catch(() => null);
+    if (existing) return;
+    await env.DB.prepare(
+      `INSERT INTO package_manual_reviews (id, package_id, release_id, sha256, platform, automated_integrity, automated_malware, automated_overall, reason, status)
+       VALUES (?,?,?,?,?,?,?,?,?,'PENDING')`
+    ).bind(rid('mrev'), pkg.id, pkg.release_id ?? null, String(pkg.sha256), pkg.platform,
+      results.integrity?.status ?? null, malware?.status ?? null, pkg.overall_security ?? 'PENDING', reason.slice(0, 1000)).run();
+  } catch { /* review creation is best-effort; the gate re-derives eligibility */ }
+}
+
+/**
+ * The latest recorded status of one check type for a package.
+ */
+export async function latestCheckStatus(env: any, packageId: string, checkType: CheckType): Promise<string | null> {
+  const row: any = await env.DB.prepare(
+    `SELECT status FROM package_security_results WHERE package_id=? AND check_type=? ORDER BY created_at DESC, id DESC LIMIT 1`
+  ).bind(packageId, checkType).first().catch(() => null);
+  return row?.status ?? null;
+}
+
+/**
+ * A valid manual approval for THIS EXACT package bytes:
+ *   - status APPROVED, not invalidated
+ *   - review.sha256 === current package sha256 (byte binding)
+ * DETECTED malware and non-PASSED integrity are refused by the callers
+ * (never by trusting the review record alone).
+ */
+export async function validManualApproval(env: any, packageId: string, currentSha256: string): Promise<any | null> {
+  try {
+    if (!env?.DB?.prepare) return null;
+    await ensureManualReviewTable(env);
+    const row: any = await env.DB.prepare(
+      `SELECT * FROM package_manual_reviews WHERE package_id=? AND status='APPROVED' AND invalidated_at IS NULL ORDER BY created_at DESC LIMIT 1`
+    ).bind(packageId).first().catch(() => null);
+    if (!row) return null;
+    if (String(row.sha256).toLowerCase() !== String(currentSha256).toLowerCase()) return null; // bytes changed
+    return row;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Run the full pipeline for one package. Idempotent: re-running replaces the
  * verdicts with fresh rows (history is preserved in package_security_results).
@@ -1142,6 +1236,12 @@ async function finish(env: any, packageId: string, state: PipelineStage, results
   await env.DB.prepare(
     `UPDATE packages SET security_state=?, overall_security=?, verified_at=datetime('now') WHERE id=?`
   ).bind(state, overall, packageId).run().catch(() => {});
+  // Indeterminate outcome → the manual-review queue gets a PENDING record
+  // (SHA-256 bound). Automated statuses are NOT modified by this.
+  if (overall === 'NEEDS_REVIEW') {
+    const pkg: any = await env.DB.prepare('SELECT * FROM packages WHERE id=?').bind(packageId).first().catch(() => null);
+    if (pkg) await openPendingReviewIfNeeded(env, pkg, results);
+  }
   return { state, overall, results };
 }
 
@@ -1151,34 +1251,65 @@ async function finish(env: any, packageId: string, state: PipelineStage, results
  * URL packages (web deployments) have nothing to gate.
  */
 export async function publicationSecurityGate(env: any, releaseId: string): Promise<{
-  ok: boolean; blockers: Array<{ packageId: string; platform: string; filename: string; state: string; overall: string; reasons: string[] }>;
+  ok: boolean;
+  blockers: Array<{ packageId: string; platform: string; filename: string; state: string; overall: string; reasons: string[] }>;
+  authorizations: Array<{ packageId: string; platform: string; publicationAuthorization: 'AUTOMATED' | 'MANUAL_APPROVAL' | 'SECURITY_OVERRIDE' }>;
 }> {
   const pkgs: any = await env.DB.prepare('SELECT * FROM packages WHERE release_id=?').bind(releaseId).all().catch(() => ({ results: [] }));
   const blockers: Array<{ packageId: string; platform: string; filename: string; state: string; overall: string; reasons: string[] }> = [];
+  const authorizations: Array<{ packageId: string; platform: string; publicationAuthorization: 'AUTOMATED' | 'MANUAL_APPROVAL' | 'SECURITY_OVERRIDE' }> = [];
   for (const p of pkgs?.results || []) {
     if (p.deployment_url) continue; // URL-based web packages
     const needsRun = !p.security_state || p.security_state === 'QUARANTINED';
     if (needsRun) await runSecurityPipeline(env, p.id).catch(() => {});
     const fresh: any = await env.DB.prepare('SELECT * FROM packages WHERE id=?').bind(p.id).first().catch(() => null);
     if (!fresh) continue;
-    const overridden: any = await env.DB.prepare(
-      `SELECT id FROM package_security_overrides WHERE package_id=? LIMIT 1`
+
+    // Path 1 — the automated pipeline fully passed.
+    if (fresh.overall_security === 'PASSED' && fresh.security_state === 'SECURITY_REVIEW_COMPLETE') {
+      authorizations.push({ packageId: p.id, platform: p.platform, publicationAuthorization: 'AUTOMATED' });
+      continue;
+    }
+
+    // Path 2 — legacy explicit override, now BOUND TO THE EXACT BYTES: a
+    // replacement upload (different sha256) can no longer ride an old
+    // override. Rows without a hash (pre-0022) remain valid.
+    const override: any = await env.DB.prepare(
+      `SELECT * FROM package_security_overrides WHERE package_id=? AND invalidated_at IS NULL ORDER BY created_at DESC LIMIT 1`
     ).bind(p.id).first().catch(() => null);
-    if (overridden) continue;
+    if (override && (!override.sha256 || String(override.sha256).toLowerCase() === String(fresh.sha256).toLowerCase())) {
+      authorizations.push({ packageId: p.id, platform: p.platform, publicationAuthorization: 'SECURITY_OVERRIDE' });
+      continue;
+    }
+
+    // Path 3 — MANUAL REVIEW APPROVAL (controlled fallback). Requires:
+    //   - a valid APPROVED review for EXACTLY the current sha256
+    //   - automated integrity = PASSED (bytes verified against the record)
+    //   - the latest malware verdict is NOT DETECTED (detected malware can
+    //     never be manually approved — the automated result stays visible)
+    const approval = await validManualApproval(env, p.id, fresh.sha256);
+    if (approval) {
+      const integrity = await latestCheckStatus(env, p.id, 'integrity');
+      const malware = await latestCheckStatus(env, p.id, 'malware');
+      if (integrity === 'PASSED' && malware !== 'DETECTED') {
+        authorizations.push({ packageId: p.id, platform: p.platform, publicationAuthorization: 'MANUAL_APPROVAL' });
+        continue;
+      }
+    }
+
+    // Blocked — collect the honest reasons.
     const failReasons: any = await env.DB.prepare(
       `SELECT check_type, status, result, details FROM package_security_results WHERE package_id=? AND id IN (
          SELECT MAX(id) FROM package_security_results WHERE package_id=? GROUP BY check_type
        ) AND status IN ('FAILED','DETECTED','WARNING','NEEDS_REVIEW','UNAVAILABLE','PENDING','SCANNING')`
     ).bind(p.id, p.id).all().catch(() => ({ results: [] }));
-    if (fresh.overall_security !== 'PASSED' || fresh.security_state !== 'SECURITY_REVIEW_COMPLETE') {
-      blockers.push({
-        packageId: p.id, platform: p.platform, filename: p.filename,
-        state: fresh.security_state || 'QUARANTINED', overall: fresh.overall_security || 'PENDING',
-        reasons: (failReasons?.results || []).map((r: any) => `${r.check_type}: ${r.status} — ${r.result}${r.details ? ` (${r.details})` : ''}`),
-      });
-    }
+    blockers.push({
+      packageId: p.id, platform: p.platform, filename: p.filename,
+      state: fresh.security_state || 'QUARANTINED', overall: fresh.overall_security || 'PENDING',
+      reasons: (failReasons?.results || []).map((r: any) => `${r.check_type}: ${r.status} — ${r.result}${r.details ? ` (${r.details})` : ''}`),
+    });
   }
-  return { ok: blockers.length === 0, blockers };
+  return { ok: blockers.length === 0, blockers, authorizations };
 }
 
 /**

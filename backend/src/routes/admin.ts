@@ -136,6 +136,25 @@ export async function writePackageRow(
          min_os_version=excluded.min_os_version, min_android_sdk=excluded.min_android_sdk,
          created_at=datetime('now')`
     ).bind(...VALS).run();
+    // REPLACEMENT INVALIDATION: security decisions are bound to exact bytes.
+    // Whenever the (release, platform, architecture) row is (re-)written, any
+    // manual review or override bound to DIFFERENT bytes is invalidated — a
+    // replaced package can never ride an old approval.
+    try {
+      const rowId: any = await env.DB.prepare(
+        'SELECT id, sha256 FROM packages WHERE release_id=? AND platform=? AND architecture=?'
+      ).bind(rel.id, platform, architecture).first();
+      if (rowId?.id) {
+        await env.DB.prepare(
+          `UPDATE package_manual_reviews SET invalidated_at=datetime('now')
+           WHERE package_id=? AND sha256 != ? AND invalidated_at IS NULL`
+        ).bind(rowId.id, String(rowId.sha256 || '')).run().catch(() => {});
+        await env.DB.prepare(
+          `UPDATE package_security_overrides SET invalidated_at=datetime('now')
+           WHERE package_id=? AND sha256 IS NOT NULL AND sha256 != ? AND invalidated_at IS NULL`
+        ).bind(rowId.id, String(rowId.sha256 || '')).run().catch(() => {});
+      }
+    } catch { /* invalidation is defence in depth — the gate also compares hashes */ }
   } catch (e: any) {
     const msg = String(e?.message || e);
     if (msg.includes('ON CONFLICT')) {

@@ -127,6 +127,7 @@ columns), so back up before applying it.
 0019_auth_identities.sql              OAuth identities (google/github) + hashed single-use OAuth tokens (state/code/link/intent)
 0020_admin_inbox.sql                  Admin inbox — direct-to-admin messages (ad bookings, contact, support) + admin actions/replies
 0021_scanner_workflow.sql             Scanner workflow columns on package_security_results + scanner_cache (hash-keyed scan reuse)
+0022_manual_review.sql                Manual security reviews (SHA-256-bound APPROVE/REJECT) + override byte-binding
 ```
 
 ### 0018 — persistent sessions (auth hardening)
