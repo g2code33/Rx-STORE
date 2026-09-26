@@ -332,7 +332,10 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
       } else if (result.state === 'INSTALLATION_NOT_DETECTED') {
         toast.error('Installation was not detected. If it succeeded, tap the Install button again to re-check.', { duration: 6000 });
       } else if (result.state === 'INSTALL_FAILED') {
-        toast.error('The installer could not be launched.');
+        // The real reason (password prompt cancelled, apt lock busy, package
+        // error…) travels in result.message — never hide it behind a generic
+        // 'could not be launched', which made failures undiagnosable.
+        toast.error(result.message || 'The installer could not be launched.', { duration: 8000 });
       }
     } catch (e:any) {
       toast.error(e.message || 'Install failed — not marked as complete. You can try again.');

@@ -223,11 +223,40 @@ function safeFileName(value: string) {
  * — never a fake success.
  */
 async function installDebPackage(filePath: string): Promise<{ launched: boolean; installed?: boolean; method: string }> {
+  // Path safety: prefer the absolute system paths — desktop-launch environments
+  // (and AppImage sandboxes) can have a minimal PATH without /usr/sbin.
+  const PKEXEC = existsSync('/usr/bin/pkexec') ? '/usr/bin/pkexec'
+    : existsSync('/usr/sbin/pkexec') ? '/usr/sbin/pkexec'
+    : 'pkexec';
+  const APT_GET = existsSync('/usr/bin/apt-get') ? '/usr/bin/apt-get' : 'apt-get';
+  // Strip apt's noise so the surfaced error is the actual reason (lock busy,
+  // dependency issue…), not a 2KB wall of text.
+  const cleanErr = (e: any) => {
+    const raw = String(e?.stderr || e?.message || e);
+    const line = raw.split('\n').map((l: string) => l.trim()).filter(Boolean)
+      .find((l: string) => /^e:/i.test(l)) || raw.split('\n').filter(Boolean).pop() || 'apt failed';
+    return line.slice(0, 200);
+  };
   try {
-    await execFileAsync('pkexec', ['apt-get', 'install', '--reinstall', '--yes', filePath], { timeout: 15 * 60_000 });
+    await execFileAsync(PKEXEC, [APT_GET, 'install', '--reinstall', '--yes', filePath], { timeout: 15 * 60_000 });
     return { launched: false, installed: true, method: 'apt' };
   } catch (e: any) {
     const msg = String(e?.message || e);
+    // Cancelled password prompt / polkit refusal: an HONEST retryable failure.
+    if (/126|127.*not authorized|not authorized|request dismissed|cancelled|canceled/i.test(msg)) {
+      throw new Error('Installation was cancelled — approve the password prompt (or run again) to update the application.');
+    }
+    // apt lock busy: Ubuntu's unattended-upgrades holds it right after boot.
+    // Wait briefly and retry once — this is the classic transient failure.
+    if (/could not get lock|lock-frontend|dpkg lock/i.test(msg)) {
+      await new Promise((r) => setTimeout(r, 8000));
+      try {
+        await execFileAsync(PKEXEC, [APT_GET, 'install', '--reinstall', '--yes', filePath], { timeout: 15 * 60_000 });
+        return { launched: false, installed: true, method: 'apt-retry-after-lock' };
+      } catch (e2: any) {
+        throw new Error('The package manager is busy (another install/update is running, e.g. Ubuntu automatic updates). Wait a minute and try again.');
+      }
+    }
     if (/ENOENT/i.test(msg)) {
       // pkexec is not installed on this system — last-resort fallback to the
       // distribution's software installer (the pre-fix behaviour).
@@ -235,11 +264,7 @@ async function installDebPackage(filePath: string): Promise<{ launched: boolean;
       if (error) throw new Error(error);
       return { launched: true, method: 'software-center' };
     }
-    // Cancelled password prompt / apt failure: surface the real reason.
-    if (/126|not authorized|cancelled|canceled/i.test(msg)) {
-      throw new Error('Installation was cancelled — approve the password prompt to update the application.');
-    }
-    throw new Error(`Package installation failed: ${msg.slice(0, 200)}`);
+    throw new Error(`Package installation failed: ${cleanErr(e)}`);
   }
 }
 

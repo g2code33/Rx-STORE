@@ -127,3 +127,37 @@ test('desktop launchInstall receives the previous AppImage path as replacePath',
     else if ((globalThis as any).window) delete (globalThis as any).window.rxDesktop;
   }
 });
+
+// ---------------------------------------------------------------------------
+// INSTALL_FAILED carries the real installer message (password cancelled, apt
+// lock busy) — the renderer must surface it, never a generic 'could not be
+// launched' (which made production failures undiagnosable).
+// ---------------------------------------------------------------------------
+
+test('an installer failure carries its real message through the transaction', async () => {
+  const failingRuntime = {
+    canDetect: () => true,
+    refresh: async () => undefined,
+    detect: async () => ({ installed: false }),
+    resolve: async () => ({ state: 'NOT_INSTALLED', otherDevices: 0 }),
+    download: async (_url: string, _meta: any, onProgress: any) => {
+      onProgress({ received: 10, total: 10, percent: 100 });
+      return { data: new Uint8Array(10).buffer as ArrayBuffer };
+    },
+    hash: async () => 'a'.repeat(64),
+    launchInstall: async () => { throw new Error('Installation was cancelled — approve the password prompt (or run again) to update the application.'); },
+  };
+  const { InstallCoordinator } = await import('./installCoordinator.ts');
+  // Verification path on web hashes in place; the 10 zero bytes won't match
+  // 'aaaa…'. Provide a matching hash so the transaction reaches the INSTALL
+  // stage where launchInstall throws.
+  const realHash = await import('./verify.ts').then((m) => m.sha256Hex(new Uint8Array(10).buffer as ArrayBuffer));
+  const coord = new InstallCoordinator(failingRuntime as any, { download: failingRuntime.download as any, hash: async () => realHash, launchInstall: failingRuntime.launchInstall as any });
+  const result = await coord.run({
+    app: { id: 'app1', slug: 'demo', name: 'Demo' } as any,
+    packageMeta: { platform: 'linux_deb', url: 'https://example.test/x.deb', fileName: 'x.deb', version: '2.0.0', size: 10, sha256: realHash },
+    isUpdate: true, previousVersion: '1.0.0',
+  });
+  assert.equal(result.state, 'INSTALL_FAILED');
+  assert.match(result.message || '', /password prompt/, 'the REAL reason survives the transaction');
+});
