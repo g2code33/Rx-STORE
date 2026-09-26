@@ -22,6 +22,7 @@ import type { App } from '../types/index.ts';
 import { createTransaction, transition } from './installTransaction.ts';
 import type { TransactionProgress, TransactionResult, TransactionState } from './installTransaction.ts';;
 import type { PackageMetadata, VerificationResult } from './verify.ts';
+import { normalizeOsReportedVersion } from './verify.ts';
 import { verifyArtifactHash, compareSemver, sha256Hex } from './verify.ts';
 import { getNativeRuntime, type NativeRuntime } from './runtime.ts';
 import { reportCurrentInstallation } from './accountSync.ts';
@@ -310,10 +311,14 @@ export class InstallCoordinator {
         const det = await this.runtime.detect(app);
         if (det?.installed) {
           sawDetection = true;
-          if (!isUpdate) return { detected: true, version: det.version, source: det.source };
+          const detVersion = normalizeOsReportedVersion(det.version) || det.version;
+          if (!isUpdate) return { detected: true, version: detVersion, source: det.source };
           // Update: confirm version actually advanced (or at least changed).
-          if (!det.version || compareSemver(det.version, targetVersion) >= 0 || det.version !== previousVersion) {
-            return { detected: true, version: det.version || targetVersion, source: det.source };
+          // OS-reported versions are normalized (Debian epochs/revisions are
+          // re-packagings, not prereleases) so a completed apt/dpkg update is
+          // recognized as current.
+          if (!detVersion || compareSemver(detVersion, targetVersion) >= 0 || detVersion !== previousVersion) {
+            return { detected: true, version: detVersion || targetVersion, source: det.source };
           }
         }
       } catch { /* detection may be unavailable */ }

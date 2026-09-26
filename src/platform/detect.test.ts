@@ -470,3 +470,24 @@ test('Android uninstall reconciliation: confirmed absence only after re-detectio
   // Report only the CONFIRMED state — never the uninstall intent.
   assert.equal(installStatusForReport(currentDeviceInstallState(after, '1.0.25')), 'not_installed');
 });
+
+// ---------------------------------------------------------------------------
+// OS-reported version normalization (the "update completed but still shows
+// Update" bug): Debian epochs/revisions/ubuntu suffixes are re-packagings of
+// the SAME upstream release — never SemVer prereleases.
+// ---------------------------------------------------------------------------
+
+test('detectionState: a completed update with a Debian-revision version is CURRENT', () => {
+  // dpkg-query returns e.g. '1.11.11-1' (revision) or '2:1.11.11-1' (epoch).
+  // Strict SemVer reads '-1' as a prerelease (LOWER), which made a finished
+  // apt update look permanently out of date.
+  assert.equal(detectionState('1.11.11', true, '1.11.11-1'), 'INSTALLED_CURRENT');
+  assert.equal(detectionState('1.11.11', true, '2:1.11.11-1'), 'INSTALLED_CURRENT');
+  assert.equal(detectionState('1.11.11', true, '1.11.11ubuntu1'), 'INSTALLED_CURRENT');
+  assert.equal(detectionState('1.11.11', true, '1.11.11'), 'INSTALLED_CURRENT');
+  // Genuine older versions still offer the update.
+  assert.equal(detectionState('1.11.11', true, '1.11.10'), 'UPDATE_AVAILABLE');
+  assert.equal(detectionState('1.11.11', true, '1.11.10-2'), 'UPDATE_AVAILABLE');
+  // A real SemVer prerelease of a NEWER version is not a downgrade target.
+  assert.equal(detectionState('1.11.11', true, '1.11.12-beta.1'), 'INSTALLED_CURRENT');
+});

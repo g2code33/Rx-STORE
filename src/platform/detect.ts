@@ -13,7 +13,7 @@
  * turns that into a predictable, normalized UI state.
  */
 
-import { compareSemver } from '../native/verify.ts';
+import { compareSemver, normalizeOsReportedVersion } from '../native/verify.ts';
 
 /** OSes the native RX Store clients can detect against. */
 export type DetectedPlatform = 'windows' | 'linux' | 'android';
@@ -114,10 +114,11 @@ export function detectionState(
   installedVersion?: string | null,
 ): DetectionState {
   if (!installed) return 'NOT_INSTALLED';
-  if (installedVersion === undefined || installedVersion === null || String(installedVersion).trim() === '') {
+  const osVersion = normalizeOsReportedVersion(installedVersion);
+  if (!osVersion) {
     return 'INSTALLED_CURRENT';
   }
-  const cmp = compareVersions(storeVersion, installedVersion);
+  const cmp = compareVersions(storeVersion, osVersion);
   // store <= installed -> current/open ; store > installed -> update
   return cmp > 0 ? 'UPDATE_AVAILABLE' : 'INSTALLED_CURRENT';
 }

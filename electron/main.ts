@@ -692,18 +692,45 @@ async function uninstallLinux(opts: { target: string; appImagePath?: string }): 
     require('node:fs').unlinkSync(t);
     return true;
   }
-  // Debian/Ubuntu package: invoke the package manager directly so the OS handles
-  // privilege authentication. No manual sudo/password handling in RX Store.
+  // Debian/Ubuntu package: purge via pkexec (the standard polkit GUI password
+  // prompt) — the SAME privilege path as install. A bare `apt-get purge` runs
+  // unprivileged and always fails with 'could not open lock file … are you
+  // root?' (the reported production bug).
   if (!/^[a-z0-9+._-]+$/i.test(t)) throw new Error('Invalid package name.');
-  await new Promise<void>((resolve, reject) => {
-    // `apt-get purge` shows a confirmation prompt with sudo/privilege auth.
-    const child = execFile('apt-get', ['purge', '--', t], { stdio: 'inherit' }, (err) => {
-      if (err) reject(new Error('Your OS may have cancelled the uninstall (or requested elevation). ' + err.message));
-      else resolve();
-    });
-    // Keep the child attached so the user can authenticate/confirm.
-    child.on('error', (e) => reject(e));
-  });
+  const PKEXEC = existsSync('/usr/bin/pkexec') ? '/usr/bin/pkexec'
+    : existsSync('/usr/sbin/pkexec') ? '/usr/sbin/pkexec'
+    : 'pkexec';
+  const APT_GET = existsSync('/usr/bin/apt-get') ? '/usr/bin/apt-get' : 'apt-get';
+  const distill = (e: any) => {
+    const raw = String(e?.stderr || e?.message || e);
+    const line = raw.split('\n').map((l: string) => l.trim()).filter(Boolean)
+      .find((l: string) => /^e:/i.test(l)) || raw.split('\n').filter(Boolean).pop() || 'apt failed';
+    return line.slice(0, 200);
+  };
+  const attempt = () => execFileAsync(PKEXEC, [APT_GET, 'purge', '--yes', '--', t], { timeout: 15 * 60_000 });
+  try {
+    await attempt();
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    if (/126|not authorized|request dismissed|cancelled|canceled/i.test(msg)) {
+      throw new Error('Uninstall was cancelled — approve the password prompt (or run again).');
+    }
+    // dpkg lock busy (Ubuntu unattended-upgrades): wait and retry once.
+    if (/could not get lock|lock-frontend|dpkg lock/i.test(msg)) {
+      await new Promise((r) => setTimeout(r, 8000));
+      try {
+        await attempt();
+      } catch {
+        throw new Error('The package manager is busy (another install/update is running, e.g. Ubuntu automatic updates). Wait a minute and try again.');
+      }
+    } else if (/ENOENT/i.test(msg)) {
+      // No pkexec on this system: fall back to the software center's uninstall
+      // by opening the installed .deb (best-effort, honestly reported).
+      throw new Error('Uninstall needs the system package manager: run `sudo apt purge ' + t + '` in a terminal (this system has no password-prompt helper installed).');
+    } else {
+      throw new Error(`Uninstall failed: ${distill(e)}`);
+    }
+  }
   return true;
 }
 

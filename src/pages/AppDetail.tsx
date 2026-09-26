@@ -119,6 +119,40 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   React.useEffect(() => {
     if (recoveryMessage) toast(recoveryMessage, { icon: '♻️', duration: 7000 });
   }, [recoveryMessage]);
+
+  // LIVE install/update feedback: a friendly toast at every transaction
+  // transition so the user always knows what is happening (downloading is
+  // visible in the progress bar; the system-prompt phases would otherwise be
+  // silent while the OS asks for the password).
+  const lastTxStateRef = useRef<string>('IDLE');
+  React.useEffect(() => {
+    const state = installTx.state;
+    if (state === lastTxStateRef.current) return;
+    const prev = lastTxStateRef.current;
+    lastTxStateRef.current = state;
+    if (prev === 'IDLE' && state === 'IDLE') return; // nothing happening
+    switch (state) {
+      case 'DOWNLOAD_STARTED':
+      case 'DOWNLOADING':
+        toast('Downloading the package…', { icon: '⬇️', duration: 2500 });
+        break;
+      case 'VERIFIED':
+        toast('Package verified (SHA-256 ✓)', { icon: '🔒', duration: 2500 });
+        break;
+      case 'INSTALLER_STARTED':
+        toast('Installing — approve your system’s password prompt if it appears.', { icon: '🔐', duration: 7000 });
+        break;
+      case 'INSTALLATION_PENDING':
+      case 'VERIFYING_INSTALLATION':
+        toast('Finishing the installation and confirming the version…', { icon: '⏳', duration: 4000 });
+        break;
+      case 'INSTALLED':
+        toast.success(`Installed v${installTx.targetVersion || ''} ✓`.replace(' v✓', ' ✓'));
+        break;
+      default:
+        break; // failures carry their own messages in doDownload
+    }
+  }, [installTx.state, installTx.targetVersion]); // eslint-disable-line react-hooks/exhaustive-deps
   // Single unified button copy (Downloading X% / Verifying… / Installing… /
   // Checking… / OPEN / UPDATE / Updating X% / RETRY) from the central state.
   const { button: unifiedInstallBtn } = useInstallButton(app as any);
@@ -504,7 +538,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
             </div>
             <div className="flex flex-col items-end gap-3 flex-shrink-0">
               {txBusy ? (
-                <div className="w-[240px] max-w-[260px]">
+                <div className="w-full sm:w-[240px]">
                   {(installTx.state === 'DOWNLOADING' || installTx.state === 'DOWNLOAD_STARTED') ? (
                     <>
                       <div className="flex items-center justify-between text-xs mb-1">

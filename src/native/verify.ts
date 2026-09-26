@@ -178,6 +178,25 @@ function comparePre(a: string[], b: string[]): number {
  *  2.0.0 > 1.9.99
  *  missing/invalid sorts as 0 (never crashes).
  */
+/**
+ * Normalize a version string as reported by the OPERATING SYSTEM for
+ * comparison with the store's SemVer:
+ *   - Debian epoch prefix  '2:1.11.11-1'  → '1.11.11-1'
+ *   - Debian packaging revision '1.11.11-1' → '1.11.11'  (a re-packaging of the
+ *     SAME upstream release — NOT a SemVer prerelease; treating it as one made
+ *     a completed update look permanently out of date)
+ *   - Ubuntu suffixes like '1.11.11ubuntu1' → '1.11.11'
+ * Real SemVer prereleases ('1.2.0-beta.1') are preserved.
+ */
+export function normalizeOsReportedVersion(v?: string | null): string {
+  let out = String(v ?? '').trim();
+  if (!out) return '';
+  out = out.replace(/^\d+:/, '');                       // epoch
+  out = out.replace(/ubuntu\d*$/i, '');                  // ubuntu suffix
+  out = out.replace(/-\d+$/, '');                        // numeric packaging revision
+  return out.trim();
+}
+
 export function compareSemver(a?: string | null, b?: string | null): number {
   const pa = parseSegment(a || '');
   const pb = parseSegment(b || '');
