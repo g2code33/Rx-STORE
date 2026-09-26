@@ -525,10 +525,13 @@ function vtRetryConfig(env: any): { maxRetries: number; delayMs: number } {
 
 function vtPollConfig(env: any): { maxPolls: number; firstIntervalMs: number; growth: number; maxIntervalMs: number } {
   return {
-    maxPolls: Number(env?.VT_SCAN_MAX_POLLS) || 8,
-    firstIntervalMs: Number(env?.VT_SCAN_POLL_INTERVAL_MS) || 4000,
-    growth: Number(env?.VT_SCAN_POLL_GROWTH) || 1.5,
-    maxIntervalMs: Number(env?.VT_SCAN_POLL_MAX_INTERVAL_MS) || 12000,
+    // Defaults are tuned for IN-REQUEST use (publish re-verification): a
+    // fresh upload returns SCANNING after ~15s instead of hanging ~70s, and
+    // later runs resolve through the hash lookup / SCANNING-cache resume.
+    maxPolls: Number(env?.VT_SCAN_MAX_POLLS) || 3,
+    firstIntervalMs: Number(env?.VT_SCAN_POLL_INTERVAL_MS) || 2500,
+    growth: Number(env?.VT_SCAN_POLL_GROWTH) || 2,
+    maxIntervalMs: Number(env?.VT_SCAN_POLL_MAX_INTERVAL_MS) || 6000,
   };
 }
 function scanMaxAgeHours(env: any): number {
@@ -705,8 +708,11 @@ async function vtUploadObject(env: any, input: {
         'Content-Length': String(mp.contentLength),
       },
       body: mp.body as unknown as BodyInit,
+      // Streaming request bodies require the duplex hint in some runtimes;
+      // the Workers runtime accepts and ignores it.
+      duplex: 'half',
       signal: AbortSignal.timeout(120_000),
-    });
+    } as any);
   } catch (e: any) {
     return { error: `upload request failed: ${String(e?.message || e).slice(0, 120)}` };
   }

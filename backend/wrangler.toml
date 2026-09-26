@@ -68,10 +68,13 @@ preview_id = "e056396b15db4fd490a2f3024ffda05e"
 # not to the Worker's environment).
 # Optional VirusTotal upload/poll tuning (leave unset for defaults — all are
 # plain vars, NOT secrets; values are strings in TOML):
-#   VT_SCAN_MAX_POLLS           max analysis polls per pipeline run (default 8)
-#   VT_SCAN_POLL_INTERVAL_MS    first poll delay (default 4000)
-#   VT_SCAN_POLL_GROWTH         backoff multiplier between polls (default 1.5)
-#   VT_SCAN_POLL_MAX_INTERVAL_MS cap between polls (default 12000)
+#   VT_SCAN_MAX_POLLS           max analysis polls per pipeline run (default 3)
+#   VT_SCAN_POLL_INTERVAL_MS    first poll delay (default 2500)
+#   VT_SCAN_POLL_GROWTH         backoff multiplier between polls (default 2)
+#   VT_SCAN_POLL_MAX_INTERVAL_MS cap between polls (default 6000)
+#   (Defaults are tuned for in-request use — publish re-verification returns
+#    SCANNING after ~15s instead of hanging ~70s; re-runs resolve the verdict
+#    through the hash lookup / SCANNING-cache resume.)
 #   VT_SCAN_MAX_AGE_HOURS       scan-cache freshness before rescan (default 720 = 30 days)
 #   VT_SCAN_MAX_RETRIES         bounded in-run retries when the scanner answers 429 (default 2, max 5)
 #   VT_SCAN_RETRY_DELAY_MS      backoff between 429 retries (default 1500, max 30000)

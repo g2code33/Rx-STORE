@@ -1,37 +1,37 @@
 /**
  * RX Store Backend API — Cloudflare Workers entry point
  */
-import { Router } from './router';
-import { authMiddleware } from './middleware/auth';
-import { rateLimiter } from './middleware/rateLimiter';
-import { corsMiddleware, corsHeaders } from './middleware/cors';
+import { Router } from './router.ts';
+import { authMiddleware } from './middleware/auth.ts';
+import { rateLimiter } from './middleware/rateLimiter.ts';
+import { corsMiddleware, corsHeaders } from './middleware/cors.ts';
 
-import { authRoutes } from './routes/auth';
-import { oauthRoutes } from './routes/oauth';
-import { inboxRoutes } from './routes/inbox';
-import { appsRoutes } from './routes/apps';
-import { usersRoutes } from './routes/users';
+import { authRoutes } from './routes/auth.ts';
+import { oauthRoutes } from './routes/oauth.ts';
+import { inboxRoutes } from './routes/inbox.ts';
+import { appsRoutes } from './routes/apps.ts';
+import { usersRoutes } from './routes/users.ts';
 
-import { adminRoutes } from './routes/admin';
-import { aiRoutes } from './routes/ai';
-import { getSetting, getAllSettings, putSettings, SETTING_DEFAULTS, PUBLIC_SETTING_KEYS } from './services/settings';
-import { getAllContent, putContent, getContentHistory, revertContent } from './services/content';
-import { trackAdEvent, getAdStats, createAdShare, listAdShares, revokeAdShare, getPublicShare } from './services/ads';
-import { updatesRoutes } from './routes/updates';
-import { devicesRoutes } from './routes/devices';
-import { developerRoutes, adminDeveloperRoutes } from './routes/developers';
-import { developerAppRoutes, adminDeveloperAppRoutes } from './routes/developerApps';
-import { securityAdminRoutes } from './routes/securityAdmin';
-import { developerSubmissionRoutes, adminSubmissionRoutes } from './routes/submissions';
-import { reviewRoutes, developerReviewRoutes, adminReviewRoutes } from './routes/reviews';
-import { paymentRoutes, webhookRoutes, adminPaymentRoutes, appIsPaid, activeEntitlement } from './routes/payments';
-import { developerFinanceRoutes, adminFinanceRoutes } from './routes/developerFinance';
-import { communityRoutes, adminCommunityRoutes, developerTokenRoutes, authenticateApiToken } from './routes/community';
-import { storefrontRoutes, adminStorefrontRoutes, adminStorefrontAppSearch } from './routes/storefront';
-import { r2KeyIsPubliclyServed, resolveDownloadGrant, legacyDownloadAllowed } from './services/packageSecurity';
-import { verifyAccessToken } from './services/auth';
-import { apiErrorBody, statusForCode, requestIdFor, redact, type ErrorCode } from './services/errors';
-import { selectPackage, buildManifest, normalizeChannel, defaultChannel } from './services/releases';
+import { adminRoutes } from './routes/admin.ts';
+import { aiRoutes } from './routes/ai.ts';
+import { getSetting, getAllSettings, putSettings, SETTING_DEFAULTS, PUBLIC_SETTING_KEYS } from './services/settings.ts';
+import { getAllContent, putContent, getContentHistory, revertContent } from './services/content.ts';
+import { trackAdEvent, getAdStats, createAdShare, listAdShares, revokeAdShare, getPublicShare } from './services/ads.ts';
+import { updatesRoutes } from './routes/updates.ts';
+import { devicesRoutes } from './routes/devices.ts';
+import { developerRoutes, adminDeveloperRoutes } from './routes/developers.ts';
+import { developerAppRoutes, adminDeveloperAppRoutes } from './routes/developerApps.ts';
+import { securityAdminRoutes } from './routes/securityAdmin.ts';
+import { developerSubmissionRoutes, adminSubmissionRoutes } from './routes/submissions.ts';
+import { reviewRoutes, developerReviewRoutes, adminReviewRoutes } from './routes/reviews.ts';
+import { paymentRoutes, webhookRoutes, adminPaymentRoutes, appIsPaid, activeEntitlement } from './routes/payments.ts';
+import { developerFinanceRoutes, adminFinanceRoutes } from './routes/developerFinance.ts';
+import { communityRoutes, adminCommunityRoutes, developerTokenRoutes, authenticateApiToken } from './routes/community.ts';
+import { storefrontRoutes, adminStorefrontRoutes, adminStorefrontAppSearch } from './routes/storefront.ts';
+import { r2KeyIsPubliclyServed, resolveDownloadGrant, legacyDownloadAllowed } from './services/packageSecurity.ts';
+import { verifyAccessToken } from './services/auth.ts';
+import { apiErrorBody, statusForCode, requestIdFor, redact, type ErrorCode } from './services/errors.ts';
+import { selectPackage, buildManifest, normalizeChannel, defaultChannel } from './services/releases.ts';
 
 const router = new Router();
 
@@ -144,7 +144,12 @@ export default {
     // dispatched, see backend/src/router.ts). Returns a 429 RATE_LIMITED
     // response when the bucket is exhausted, null when allowed.
     const limited = await rateLimiter(request, env);
-    if (limited) return limited;
+    if (limited) return withCors(limited, origin, env, requestId);
+
+    // EVERYTHING below runs inside the last-resort error boundary (the catch
+    // at the end of this handler): no exception may escape fetch() without a
+    // structured, CORS-enabled JSON response.
+    try {
 
     // Every /admin/* endpoint requires a valid admin JWT (production hardening —
     // previously PUT/DELETE apps, releases, uploads etc. were open to any request)
@@ -235,9 +240,20 @@ export default {
       return respond({ success: true, data }, 200, origin);
     }
     if (path.match(/^\/admin\/releases\/[^\/]+\/publish$/) && request.method === 'POST') {
-      const data = await (adminRoutes as any).publishRelease(normalizedRequest as any, env);
-      if ((data as any)?.error) return respond({ success: false, error: { code: 'ERROR', message: (data as any).error } }, 400, origin);
-      return respond({ success: true, data }, 200, origin);
+      // Publish re-runs the security pipeline (streamed hashing, scanner
+      // upload, polling) and then finalizes the release — a long, multi-stage
+      // operation. EVERY failure must surface as a structured, CORS-enabled
+      // response: an escaped exception would make the Workers runtime answer
+      // with its own opaque error page (no CORS headers) — the exact
+      // '503 + CORS policy' failure seen in production.
+      try {
+        const data = await (adminRoutes as any).publishRelease(normalizedRequest as any, env);
+        if ((data as any)?.error) return respond({ success: false, error: { code: 'ERROR', message: (data as any).error, requestId } }, 400, origin);
+        return respond({ success: true, data }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] publish release failed:`, redact(String(e?.message || e)));
+        return respond(apiErrorBody('INTERNAL', `Publication failed with an internal error. Retry in a moment — if it persists, run the security pipeline from Admin → Security and publish again. Report to support with request id ${requestId}.`, requestId), 500, origin);
+      }
     }
     // Package upload for a release: stores to R2 + sha256 + packages row, keeps releases in sync
     if (path.match(/^\/admin\/releases\/[^\/]+\/upload$/) && request.method === 'POST') {
@@ -1434,6 +1450,16 @@ export default {
 
     const res = await router.handle(normalizedRequest as any, env);
     return withCors(res, origin, env, requestId);
+    } catch (e: any) {
+      // LAST-RESORT ERROR BOUNDARY: nothing may escape fetch() — an uncaught
+      // exception makes the Workers runtime answer with its own opaque error
+      // page (500/503) WITHOUT CORS headers, which the browser reports as a
+      // CORS policy failure and hides the real cause. Every failure becomes a
+      // structured JSON response with CORS + the request id so an admin can
+      // report it and `wrangler tail` correlates the server-side log.
+      console.error(`[${requestId}] UNCAUGHT error (${request.method} ${path}):`, redact(String(e?.message || e)));
+      return jsonRaw(apiErrorBody('INTERNAL', `Something went wrong on our side (request id ${requestId}). Please try again.`, requestId), 500, origin, env, requestId);
+    }
   },
 };
 

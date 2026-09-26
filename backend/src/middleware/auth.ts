@@ -1,4 +1,4 @@
-import { verifyToken } from '../services/auth';
+import { verifyToken } from '../services/auth.ts';
 
 /** Verify the HMAC signature + expiry and attach the authenticated payload. */
 export async function authMiddleware(request: Request, env: any) {
