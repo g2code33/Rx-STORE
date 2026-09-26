@@ -415,6 +415,30 @@ test('shape self-heal falls back to sequential statements when batch is unavaila
 // Logout semantics
 // ---------------------------------------------------------------------------
 
+test('JWT_SECRET rotation is seamless: sessions survive and silently re-issue', async () => {
+  // The durable credential is the OPAQUE refresh token (hash-lookup in
+  // auth_sessions) — not a JWT — so rotating the signing secret must not sign
+  // anyone out: the client's next request 401s, the refresh path runs, and a
+  // new access token is issued under the NEW secret.
+  const { env, res } = await registerUser('Rotate Test', 'rotate@example.com');
+  // The pre-rotation access token verifies under the OLD secret…
+  const before = await verifyAccessToken(res.token, SECRET);
+  assert.equal(before.userId, res.user.id);
+  // …rotate the signing secret (as `wrangler secret put JWT_SECRET` would)…
+  env.JWT_SECRET = 'rotated-secret-v2-completely-different';
+  // …the old access token is now rejected (fail-closed, as intended)…
+  await assert.rejects(() => verifyAccessToken(res.token, env.JWT_SECRET));
+  // …but the persistent session survives WITHOUT re-login: the refresh token
+  // still resolves, and the new access token is signed with the NEW secret.
+  const out = await authRoutes.refresh(jsonRequest('/auth/refresh', { refreshToken: res.refreshToken }), env);
+  assert.ok(!out.code, out.message);
+  const after = await verifyAccessToken(out.token, env.JWT_SECRET);
+  assert.equal(after.userId, res.user.id);
+  assert.equal(after.role, res.user.role);
+  assert.ok(await findLiveSession(env, out.refreshToken), 'session continues under the rotated credential');
+  assert.equal(await findLiveSession(env, res.refreshToken), null, 'old credential rotated away (replay-safe)');
+});
+
 test('sign out (current device) revokes ONLY that session — other devices stay signed in', async () => {
   const { env, res } = await registerUser('Multi Device', 'multi@example.com');
   // A second device signs in.

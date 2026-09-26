@@ -88,6 +88,35 @@ either raise the plan or lower `PBKDF2_ITERATIONS` in
 hash, and `needsRehash` will transparently upgrade hashes on the next login after
 you raise it again).
 
+### JWT secret rotation (seamless by design)
+
+Rotating `JWT_SECRET` does **not** sign anyone out. Access JWTs live at most
+24 h and are disposable; the durable credential is the **opaque** refresh token,
+which is a random string stored only as a SHA-256 hash in `auth_sessions` — it
+is not a JWT and its validity never depends on the signing secret. After a
+rotation:
+
+1. In-flight access tokens fail verification → clients receive a 401.
+2. The existing session-restoration path automatically presents the refresh
+   credential; the server validates it against `auth_sessions` (hash lookup,
+   revocation check — no JWT involved).
+3. A fresh access token is issued under the NEW secret; the user never sees a
+   login screen.
+
+Worst case a user experiences one silently-retried request. This property is
+regression-tested (`persistentSessions.test.ts` → *"JWT_SECRET rotation is
+seamless"*). Rotation procedure:
+
+```bash
+npx wrangler secret put JWT_SECRET --config backend/wrangler.toml   # paste a NEW long random value
+```
+
+Notes: use a 32+ byte random value; rotating also invalidates any admin JWT in
+circulation (they re-issue identically via refresh); no database change is
+needed. Legacy 30-day JWT refresh tokens (pre-persistent model) WOULD be
+affected by a rotation — none are issued since the persistent-session change,
+and any that remain expire on their own within their original 30-day window.
+
 ---
 
 ## API security

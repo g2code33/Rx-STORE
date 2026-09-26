@@ -93,7 +93,7 @@ The mandatory/optional matrix and the pre-flight check:
 | `CORS_ALLOWED_ORIGINS`, `RX_STORE_WEB_URL`, `MALWARE_SCANNER` | `backend/wrangler.toml` `[vars]` | API config |
 | `VITE_API_URL` | `.env.production` (committed; public URL) | web/desktop/Android builds |
 | `ANDROID_KEYSTORE_*` (4) | GitHub secrets | release APK signing |
-| `WIN_CSC_LINK_B64` + `WIN_CSC_KEY_PASSWORD` | GitHub secrets | Windows code signing (optional; label is honest without it) |
+| `WIN_CSC_LINK_B64` + `WIN_CSC_KEY_PASSWORD` | GitHub secrets | Windows code signing (optional; label is honest without it) — full guide: [`WINDOWS_SIGNING.md`](./WINDOWS_SIGNING.md) |
 | `VITE_API_URL` | GitHub Actions variable | CI/release builds |
 
 ## Local development
@@ -108,6 +108,12 @@ npx wrangler dev --config backend/wrangler.toml   # local Worker + D1
 The web build **refuses to compile** without a valid HTTPS `VITE_API_URL`
 (vite.config.ts guard; escape hatch `VITE_ALLOW_UNCONFIGURED=1` for
 intentional offline builds).
+
+## Operational runbooks
+
+* **Launch checklist** (live verifications): [`LAUNCH_CHECKLIST.md`](./LAUNCH_CHECKLIST.md)
+* **Backup & recovery** (D1 export, R2 mirror, Time Travel, restore): [`BACKUP_RECOVERY.md`](./BACKUP_RECOVERY.md)
+* **Windows code signing** (current state + setup): [`WINDOWS_SIGNING.md`](./WINDOWS_SIGNING.md)
 
 ## CI / release workflows
 
