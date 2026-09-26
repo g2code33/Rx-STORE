@@ -18,6 +18,7 @@ import { getSetting, getAllSettings, putSettings, SETTING_DEFAULTS, PUBLIC_SETTI
 import { getAllContent, putContent, getContentHistory, revertContent } from './services/content.ts';
 import { trackAdEvent, getAdStats, createAdShare, listAdShares, revokeAdShare, getPublicShare } from './services/ads.ts';
 import { updatesRoutes } from './routes/updates.ts';
+import { SECURITY_PIPELINE_VERSION } from './services/packageSecurity.ts';
 import { devicesRoutes } from './routes/devices.ts';
 import { developerRoutes, adminDeveloperRoutes } from './routes/developers.ts';
 import { developerAppRoutes, adminDeveloperAppRoutes } from './routes/developerApps.ts';
@@ -81,6 +82,14 @@ async function isAdminRequest(request: Request, env: Env): Promise<boolean> {
   if (!auth.startsWith('Bearer ')) return false;
   try { return (await verifyAccessToken(auth.slice(7), env.JWT_SECRET || '')).role === 'admin'; }
   catch { return false; }
+}
+
+
+/** Transient infrastructure failures (D1/R2/network/timeout) are 503 Service
+ *  Unavailable — genuinely temporary, safe to retry — while everything else
+ *  stays 500 Internal. Both ALWAYS carry CORS + the request id. */
+function isTransientInfraError(e: any): boolean {
+  return /\b(D1|R2|network|timeout|unavailable|econn|fetch failed|1101|1102)\b/i.test(String(e?.message || e));
 }
 
 function withCors(res: Response, origin: string, env?: any, requestId?: string): Response {
@@ -252,7 +261,13 @@ export default {
         return respond({ success: true, data }, 200, origin);
       } catch (e: any) {
         console.error(`[${requestId}] publish release failed:`, redact(String(e?.message || e)));
-        return respond(apiErrorBody('INTERNAL', `Publication failed with an internal error. Retry in a moment — if it persists, run the security pipeline from Admin → Security and publish again. Report to support with request id ${requestId}.`, requestId), 500, origin);
+        const transient = isTransientInfraError(e);
+        return respond(apiErrorBody(
+          transient ? 'SERVICE_UNAVAILABLE' : 'INTERNAL',
+          transient
+            ? `Publication hit a temporary service problem (storage/database/network). Retry in a moment — request id ${requestId}.`
+            : `Publication failed with an internal error. Retry in a moment — if it persists, run the security pipeline from Admin → Security and publish again. Report to support with request id ${requestId}.`,
+          requestId), transient ? 503 : 500, origin);
       }
     }
     // Package upload for a release: stores to R2 + sha256 + packages row, keeps releases in sync
@@ -1441,8 +1456,14 @@ export default {
       const healthy = critical.every((c) => c.status === 'ok');
       return respond({
         status: healthy ? 'ok' : 'degraded',
+        service: 'rx-store-api',
         version: env.API_VERSION || 'v1',
         environment: env.ENVIRONMENT || 'unknown',
+        // Runtime identity: which security-pipeline generation is actually
+        // serving (bumped on every security-pipeline change). The deployed
+        // commit is main HEAD at deploy time (git-connected Worker).
+        securityPipelineVersion: SECURITY_PIPELINE_VERSION,
+        buildTimestamp: env.BUILD_TIMESTAMP || null,
         timestamp: new Date().toISOString(),
         checks,
       }, healthy ? 200 : 503, origin);
@@ -1458,7 +1479,11 @@ export default {
       // structured JSON response with CORS + the request id so an admin can
       // report it and `wrangler tail` correlates the server-side log.
       console.error(`[${requestId}] UNCAUGHT error (${request.method} ${path}):`, redact(String(e?.message || e)));
-      return jsonRaw(apiErrorBody('INTERNAL', `Something went wrong on our side (request id ${requestId}). Please try again.`, requestId), 500, origin, env, requestId);
+      const transientTop = isTransientInfraError(e);
+      return jsonRaw(apiErrorBody(
+        transientTop ? 'SERVICE_UNAVAILABLE' : 'INTERNAL',
+        `Something went wrong on our side (request id ${requestId}). ${transientTop ? 'This looks temporary — please retry shortly.' : 'Please try again.'}`,
+        requestId), transientTop ? 503 : 500, origin, env, requestId);
     }
   },
 };
@@ -1482,6 +1507,7 @@ interface Env {
   PAYSTACK_SECRET_KEY?: string;
   // Non-secret configuration surfaced by the health check.
   API_VERSION?: string;
+  BUILD_TIMESTAMP?: string;
   ENVIRONMENT?: string;
   CORS_ALLOWED_ORIGINS?: string;
   RESET_TOKEN_DEBUG?: string;

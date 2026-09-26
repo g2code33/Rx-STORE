@@ -21,11 +21,13 @@ export type ErrorCode =
   | 'NOT_IMPLEMENTED'
   | 'MAINTENANCE'
   | 'DOWNLOAD_UNAVAILABLE'
-  | 'INTERNAL';
+  | 'INTERNAL'
+  | 'SERVICE_UNAVAILABLE';
 
 /** Numeric HTTP status per code. */
 const STATUS: Record<ErrorCode, number> = {
   AUTH_REQUIRED: 401,
+  SERVICE_UNAVAILABLE: 503,
   NOT_IMPLEMENTED: 501,
   INVALID_TOKEN: 401,
   TOKEN_EXPIRED: 401,

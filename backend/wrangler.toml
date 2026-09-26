@@ -36,6 +36,8 @@ AI_BASE_URL_GEMINI = "https://generativelanguage.googleapis.com/v1beta"
 # to the KV namespace (wrangler warning "Unexpected fields found in
 # kv_namespaces[0]") and the value was never applied to the Worker.
 MALWARE_SCANNER = "virustotal"
+# Optional build metadata surfaced by /health (nullable; set by CI when wired).
+# BUILD_TIMESTAMP = "2026-09-26T00:00:00Z"
 
 # D1 — isolated marketplace DB (create with: wrangler d1 create rx-store-db)
 [[d1_databases]]

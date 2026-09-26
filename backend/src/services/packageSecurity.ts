@@ -41,6 +41,13 @@ export type CheckType = (typeof CHECK_ORDER)[number];
 import { sha256R2Object, streamToMultipart } from './streaming.ts';
 
 /** Malware scan statuses (spec §5). */
+/**
+ * Bumped whenever the security pipeline's semantics change — surfaced via
+ * /health so a deployment's actual behavior generation is verifiable
+ * without guessing from commit SHAs.
+ */
+export const SECURITY_PIPELINE_VERSION = '2026-09-26.3'; // gate freshness window + 503 distinction
+
 export type MalwareStatus = 'PENDING' | 'SCANNING' | 'CLEAN' | 'DETECTED' | 'FAILED' | 'UNAVAILABLE';
 /** Generic check statuses (spec §8). */
 export type CheckStatus = 'PASSED' | 'FAILED' | 'WARNING' | 'NEEDS_REVIEW' | 'NOT_APPLICABLE' | 'UNAVAILABLE' | 'CLEAN' | 'DETECTED' | 'SCANNING' | 'PENDING';
@@ -1401,15 +1408,37 @@ export async function publicationSecurityGate(env: any, releaseId: string): Prom
       continue;
     }
 
-    // RE-VERIFY WITH CURRENT CODE: recorded results may be stale — written by
-    // an older pipeline version, an earlier scanner outage, or superseded by a
-    // replacement upload. Publication must never replay old verdicts, so any
-    // package not yet authorized gets a FRESH pipeline run here. The pipeline
-    // is idempotent and scanner-resilient (bounded retries, SHA-256 scan
-    // cache, SCANNING resumption), so re-running is safe and quota-friendly.
-    // A definitive DETECTED from this run also invalidates outstanding manual
+    // RE-VERIFY WITH CURRENT CODE — bounded by a freshness window: recorded
+    // results may be stale (older pipeline version, scanner outage, superseded
+    // by a replacement upload), and publication must never replay old
+    // verdicts. A fresh pipeline run happens when:
+    //   - there are no results yet, or
+    //   - the latest malware/integrity results are INDETERMINATE
+    //     (SCANNING/UNAVAILABLE/PENDING — re-checks are cheap: the scanner
+    //     cache resumes polling instead of re-uploading), or
+    //   - the latest FINAL results are older than PUBLISH_REVERIFY_WINDOW_MS
+    //     (default 10 minutes).
+    // Fresh FINAL results (<= window) are trusted: this bounds the per-request
+    // work on repeated publish attempts (an 86MB re-hash + scanner upload does
+    // not repeat on every click) and protects scanner quota, while stale or
+    // indeterminate state always gets re-verified with the current code.
+    // A definitive DETECTED from a re-run also invalidates outstanding manual
     // approvals (see finish()).
-    await runSecurityPipeline(env, p.id).catch(() => {});
+    const windowMs = Number(env?.PUBLISH_REVERIFY_WINDOW_MS) || 10 * 60_000;
+    const latestInteg = await latestCheckStatus(env, p.id, 'integrity').catch(() => null);
+    const latestMals = await latestCheckStatus(env, p.id, 'malware').catch(() => null);
+    const nonFinal = (st: string | null) => !st || ['SCANNING', 'UNAVAILABLE', 'PENDING', 'UNKNOWN', 'NEEDS_REVIEW'].includes(st);
+    let reverify = nonFinal(latestInteg) || nonFinal(latestMals);
+    if (!reverify) {
+      const times: any = await env.DB.prepare(
+        `SELECT MAX(CASE WHEN check_type='integrity' THEN created_at END) AS integrity_at,
+                MAX(CASE WHEN check_type='malware' THEN created_at END) AS malware_at
+         FROM package_security_results WHERE package_id=?`
+      ).bind(p.id).first().catch(() => null);
+      const lastAt = Date.parse(String(times?.malware_at || times?.integrity_at || '').replace(' ', 'T') + 'Z');
+      reverify = !Number.isFinite(lastAt) || (Date.now() - lastAt) > windowMs;
+    }
+    if (reverify) await runSecurityPipeline(env, p.id).catch(() => {});
     fresh = await env.DB.prepare('SELECT * FROM packages WHERE id=?').bind(p.id).first().catch(() => null);
     if (!fresh) continue;
     // The fresh run may have completed an in-flight analysis or cleared a

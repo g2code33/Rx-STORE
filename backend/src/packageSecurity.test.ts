@@ -450,6 +450,13 @@ function makeEnv() {
             const rows = db.package_security_results.filter((r: any) => r.package_id === a[0] && r.check_type === a[1]);
             return rows.length ? rows[rows.length - 1] : null;
           }
+          if (s.includes('MAX(CASE WHEN check_type=')) {
+            // Freshness-window timestamps: latest created_at per check type.
+            const integ = db.package_security_results.filter((r: any) => r.package_id === a[0] && r.check_type === 'integrity');
+            const mals = db.package_security_results.filter((r: any) => r.package_id === a[0] && r.check_type === 'malware');
+            const pick = (rows: any[]) => (rows.length ? rows.map((r: any) => r.created_at).sort().pop() : null);
+            return { integrity_at: pick(integ), malware_at: pick(mals) };
+          }
           if (s.includes('SELECT id FROM package_manual_reviews WHERE package_id=? AND sha256=?')) {
             return db.package_manual_reviews.find((r: any) => r.package_id === a[0] && String(r.sha256).toLowerCase() === String(a[1]).toLowerCase() && ['PENDING', 'APPROVED'].includes(r.status) && !r.invalidated_at) ? { id: 'x' } : null;
           }
@@ -889,4 +896,63 @@ test('gate: an explicit override authorizes WITHOUT re-running the pipeline (aud
   assert.equal(gate.authorizations[0].publicationAuthorization, 'SECURITY_OVERRIDE');
   assert.equal(fetchCalls, 0, 'the override is honored without re-verification');
   assert.equal(env.db.package_security_results.length, 0, 'no pipeline ran');
+});
+
+// ---------------------------------------------------------------------------
+// Gate freshness window: fresh FINAL results trusted; indeterminate/stale re-run
+// ---------------------------------------------------------------------------
+
+test('gate freshness: FINAL results newer than the window are trusted — no pipeline re-run on repeated publish clicks', async () => {
+  const env = makeEnv();
+  await seedSignedApkPackage(env);
+  const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  // Fresh FINAL results (2 minutes old): integrity PASSED, malware CLEAN.
+  env.db.package_security_results.push(
+    { package_id: 'pkg_apk_1', check_type: 'integrity', status: 'PASSED', result: 'streamed hash matches', created_at: nowIso },
+    { package_id: 'pkg_apk_1', check_type: 'malware', status: 'CLEAN', result: 'no engine detections', created_at: nowIso },
+  );
+  env.db.packages[0].security_state = 'SECURITY_REVIEW_COMPLETE';
+  env.db.packages[0].overall_security = 'NEEDS_REVIEW'; // signature chain blocker — final verdicts present
+  let fetchCalls = 0;
+  globalThis.fetch = (async () => { fetchCalls++; return new Response('{}', { status: 500 }); }) as any;
+  const scanEnv = { ...env, MALWARE_SCANNER: 'virustotal', VIRUSTOTAL_API_KEY: 'vt_test' };
+  const gate = await publicationSecurityGate(scanEnv, 'rel_1');
+  assert.equal(fetchCalls, 0, 'fresh FINAL results → the scanner was not re-contacted (quota protected)');
+  // Still blocked on the signature chain (honest NEEDS_REVIEW preserved).
+  assert.equal(gate.ok, false);
+});
+
+test('gate freshness: FINAL results older than the window are re-verified', async () => {
+  const env = makeEnv();
+  await seedSignedApkPackage(env);
+  const oldIso = new Date(Date.now() - 30 * 60_000).toISOString().replace('T', ' ').slice(0, 19);
+  env.db.package_security_results.push(
+    { package_id: 'pkg_apk_1', check_type: 'integrity', status: 'PASSED', result: 'ok', created_at: oldIso },
+    { package_id: 'pkg_apk_1', check_type: 'malware', status: 'CLEAN', result: 'clean', created_at: oldIso },
+  );
+  env.db.packages[0].security_state = 'SECURITY_REVIEW_COMPLETE';
+  env.db.packages[0].overall_security = 'NEEDS_REVIEW';
+  let fetchCalls = 0;
+  globalThis.fetch = (async () => { fetchCalls++; return new Response(JSON.stringify({ data: { attributes: { last_analysis_stats: { malicious: 0, suspicious: 0 } } } }), { status: 200 }); }) as any;
+  const scanEnv = { ...env, MALWARE_SCANNER: 'virustotal', VIRUSTOTAL_API_KEY: 'vt_test' };
+  await publicationSecurityGate(scanEnv, 'rel_1');
+  assert.ok(fetchCalls > 0, 'stale FINAL results → the pipeline re-ran with the current code');
+});
+
+test('gate freshness: INDETERMINATE malware results are ALWAYS re-checked (never trusted from the window)', async () => {
+  const env = makeEnv();
+  await seedSignedApkPackage(env);
+  const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  env.db.package_security_results.push(
+    { package_id: 'pkg_apk_1', check_type: 'integrity', status: 'PASSED', result: 'ok', created_at: nowIso },
+    { package_id: 'pkg_apk_1', check_type: 'malware', status: 'SCANNING', result: 'analysis in progress', created_at: nowIso },
+  );
+  env.db.packages[0].security_state = 'MALWARE_SCAN';
+  env.db.packages[0].overall_security = 'NEEDS_REVIEW';
+  let fetchCalls = 0;
+  globalThis.fetch = (async () => { fetchCalls++; return new Response(JSON.stringify({ data: { attributes: { status: 'completed', stats: { malicious: 2, suspicious: 0 } } } }), { status: 200 }); }) as any;
+  const scanEnv = { ...env, MALWARE_SCANNER: 'virustotal', VIRUSTOTAL_API_KEY: 'vt_test' };
+  const gate = await publicationSecurityGate(scanEnv, 'rel_1');
+  assert.ok(fetchCalls > 0, 'SCANNING re-polled even though the results are brand new');
+  assert.equal(gate.ok, false, 'the completed DETECTED verdict blocks');
 });

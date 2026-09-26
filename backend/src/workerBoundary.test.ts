@@ -26,9 +26,9 @@ beforeEach(async () => {
 });
 
 /** Bindings whose DB throws on EVERY query — forces internal failures. */
-function throwingEnv() {
+function throwingEnv(msg = 'D1 exploded') {
   return {
-    DB: { prepare() { throw new Error('D1 exploded'); } },
+    DB: { prepare() { throw new Error(msg); } },
     STORAGE: { async get() { throw new Error('R2 exploded'); }, async head() { throw new Error('R2 exploded'); } },
     CACHE: { async get() { return null; }, async put() {} },
     JWT_SECRET: JWT,
@@ -154,7 +154,7 @@ test('OPTIONS preflight for /publish succeeds with CORS for the production origi
 test('an internal DB failure becomes 500 JSON WITH CORS + X-Request-Id (never an opaque error page)', async () => {
   // getRelease has an uncaught query → escapes the route → the TOP-LEVEL
   // boundary catches it: structured JSON, CORS, request id.
-  const res = await worker.fetch(req('GET', '/v1/admin/releases/rel-1', adminToken) as any, throwingEnv() as any);
+  const res = await worker.fetch(req('GET', '/v1/admin/releases/rel-1', adminToken) as any, throwingEnv('TypeError: x is not a function') as any);
   assert.equal(res.status, 500);
   assert.equal(res.headers.get('Access-Control-Allow-Origin'), ORIGIN, 'CORS present on the 500');
   assert.ok(res.headers.get('X-Request-Id'), 'request id present');
@@ -166,7 +166,7 @@ test('an internal DB failure becomes 500 JSON WITH CORS + X-Request-Id (never an
 
 test('the publish route converts its own internal failures into structured 500s with CORS', async () => {
   // The publish dispatch's try/catch: release lookup throws → 500 JSON + CORS.
-  const res = await worker.fetch(req('POST', PUBLISH, adminToken) as any, throwingEnv() as any);
+  const res = await worker.fetch(req('POST', PUBLISH, adminToken) as any, throwingEnv('TypeError: x is not a function') as any);
   assert.equal(res.status, 500);
   assert.equal(res.headers.get('Access-Control-Allow-Origin'), ORIGIN);
   const j: any = await res.json();
@@ -218,4 +218,44 @@ test('the Worker boots and /health responds with CORS', async () => {
   const res = await worker.fetch(new Request('https://rx-store-api.calcitoninpay.workers.dev/v1/health', { headers: { Origin: ORIGIN } }) as any, publishEnv() as any);
   assert.ok(res.status === 200 || res.status === 503, `health responded ${res.status}`);
   assert.equal(res.headers.get('Access-Control-Allow-Origin'), ORIGIN);
+});
+
+// ---------------------------------------------------------------------------
+// D. Transient infrastructure failure → 503 JSON + CORS (spec §12D)
+// ---------------------------------------------------------------------------
+
+test('a transient (D1/network) failure becomes 503 SERVICE_UNAVAILABLE JSON WITH CORS + request id', async () => {
+  const res = await worker.fetch(req('POST', PUBLISH, adminToken) as any, throwingEnv('D1 exploded') as any);
+  assert.equal(res.status, 503);
+  assert.equal(res.headers.get('Access-Control-Allow-Origin'), ORIGIN, 'CORS present on the 503');
+  assert.ok(res.headers.get('X-Request-Id'));
+  const j: any = await res.json();
+  assert.equal(j.error.code, 'SERVICE_UNAVAILABLE');
+  assert.match(j.error.message, /temporary/);
+  assert.ok(j.error.requestId);
+});
+
+// ---------------------------------------------------------------------------
+// E. Non-transient internal failure → 500 JSON + CORS (spec §12E)
+// ---------------------------------------------------------------------------
+
+test('a non-transient internal failure becomes 500 INTERNAL JSON WITH CORS', async () => {
+  const res = await worker.fetch(req('POST', PUBLISH, adminToken) as any, throwingEnv('TypeError: undefined is not a function') as any);
+  assert.equal(res.status, 500);
+  assert.equal(res.headers.get('Access-Control-Allow-Origin'), ORIGIN);
+  const j: any = await res.json();
+  assert.equal(j.error.code, 'INTERNAL');
+});
+
+// ---------------------------------------------------------------------------
+// §7. /health exposes runtime version metadata (no secrets)
+// ---------------------------------------------------------------------------
+
+test('/health exposes service, environment and securityPipelineVersion', async () => {
+  const res = await worker.fetch(new Request('https://rx-store-api.calcitoninpay.workers.dev/v1/health', { headers: { Origin: ORIGIN } }) as any, publishEnv() as any);
+  const j: any = await res.json();
+  assert.equal(j.service, 'rx-store-api');
+  assert.equal(j.environment, 'production');
+  assert.match(j.securityPipelineVersion, /^\d{4}-\d{2}-\d{2}\./);
+  assert.ok(!JSON.stringify(j).includes('JWT'), 'no secrets in health output');
 });
