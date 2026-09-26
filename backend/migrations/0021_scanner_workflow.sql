@@ -14,7 +14,13 @@
 -- Additive only — no destructive change, existing rows untouched.
 --
 -- Run: npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0021_scanner_workflow.sql
--- Safe to re-run (IF NOT EXISTS + best-effort ALTERs).
+-- Re-run behaviour: the CREATEs are IF NOT EXISTS (no-ops), but SQLite has no
+-- ADD COLUMN IF NOT EXISTS — re-running after a successful apply fails with
+-- 'duplicate column name: scanner_analysis_id'. THAT ERROR IS HARMLESS and
+-- simply means the migration is already applied (D1 rolls the re-run back
+-- atomically). Verify with:
+--   npx wrangler d1 execute rx-store-db --remote --command "SELECT name FROM pragma_table_info('package_security_results') WHERE name LIKE 'scanner_%'"
+-- (expect 6 rows).
 
 ALTER TABLE package_security_results ADD COLUMN scanner_analysis_id TEXT;
 ALTER TABLE package_security_results ADD COLUMN scanner_started_at TEXT;

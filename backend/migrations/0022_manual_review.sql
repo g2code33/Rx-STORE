@@ -18,7 +18,12 @@
 -- Additive only; every automated check, status and audit trail is preserved.
 --
 -- Run: npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0022_manual_review.sql
--- Safe to re-run (IF NOT EXISTS; the ALTERs fail harmlessly when repeated).
+-- Re-run behaviour: the CREATEs are IF NOT EXISTS (no-ops), but the ALTERs
+-- fail with 'duplicate column name: sha256' on a database where 0022 is
+-- already applied. THAT ERROR IS HARMLESS — it is the 'already applied'
+-- signal (D1 rolls the re-run back atomically). Verify with:
+--   npx wrangler d1 execute rx-store-db --remote --command "SELECT name FROM pragma_table_info('package_security_overrides')"
+-- (expect sha256 + invalidated_at among the columns).
 
 CREATE TABLE IF NOT EXISTS package_manual_reviews (
   id TEXT PRIMARY KEY,                     -- mrev_<...>
