@@ -303,7 +303,7 @@ async function seedPasswordUser(env: any, email = 'existing@example.com', passwo
 /** Full Google callback with a freshly signed id_token bound to the live state. */
 async function runGoogleCallback(env: any, opts: {
   sub: string; email?: string | null; emailVerified?: boolean;
-  nonceOverride?: string; audOverride?: string; badSignature?: boolean;
+  nonceOverride?: string; audOverride?: string; badSignature?: boolean; iatOverride?: number;
 }) {
   const { state } = await startFlow(env, 'google');
   const payload = latestStatePayload(env);
@@ -316,7 +316,7 @@ async function runGoogleCallback(env: any, opts: {
     email_verified: opts.emailVerified ?? true,
     name: 'Google User',
     picture: 'https://lh3.googleusercontent/test.png',
-    exp: now + 3600, iat: now,
+    exp: now + 3600, iat: opts.iatOverride ?? now,
     nonce: opts.nonceOverride ?? payload.nonce,
   });
   if (opts.badSignature) idToken = idToken.slice(0, -3) + (idToken.endsWith('AAA') ? 'BBB' : 'AAA');
@@ -594,6 +594,14 @@ test('provider identity validation failures fail closed (signature / nonce / aud
   res = await runGoogleCallback(env, { sub: 'g-bad', audOverride: 'someone-elses-client-id' });
   assert.equal(cbParams(res).get('reason'), 'provider_validation');
   assert.equal(env.users.size, 0, 'no account created by any failed attempt');
+});
+
+test('Google id_token with a FUTURE iat (clock skew abuse) is rejected', async () => {
+  const env = fakeEnv();
+  // iat 10 minutes in the future — beyond the 5-minute skew tolerance.
+  const res = await runGoogleCallback(env, { sub: 'g-future-iat', email: 'future@example.com', iatOverride: Math.floor(Date.now() / 1000) + 600 });
+  assert.equal(cbParams(res).get('reason'), 'provider_validation');
+  assert.equal(env.users.size, 0, 'no account created');
 });
 
 test('open redirect attempts fail (only safe in-app paths are honoured)', async () => {

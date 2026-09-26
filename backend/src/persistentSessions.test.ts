@@ -209,6 +209,26 @@ test('login by email works and creates a persistent session', async () => {
   assert.ok(rows.every((r) => r.expires_at === null), 'all sessions persistent');
 });
 
+test('duplicate email registration is rejected (CONFLICT, existing account untouched)', async () => {
+  const { env } = await registerUser('Dup Email', 'dup@example.com');
+  const before = [...env.users.values()][0];
+  const dup = await authRoutes.register(jsonRequest('/auth/register', { name: 'Impostor', email: 'dup@example.com', password: 'Passw0rd!123' }), env);
+  assert.equal(dup.code, 'CONFLICT');
+  assert.match(dup.message, /already registered/i);
+  assert.equal(env.users.size, 1, 'no second account');
+  assert.equal([...env.users.values()][0].password_hash, before.password_hash, 'original untouched');
+});
+
+test('duplicate phone registration is rejected (CONFLICT)', async () => {
+  const { env } = await registerUser('Dup Phone', 'dupphone@example.com', '+233201112222');
+  const dup = await authRoutes.register(jsonRequest('/auth/register', {
+    name: 'Other', email: 'other@example.com', password: 'Passw0rd!123', phone: '+233201112222',
+  }), env);
+  assert.equal(dup.code, 'CONFLICT');
+  assert.match(dup.message, /Phone already registered/i);
+  assert.equal(env.users.size, 1);
+});
+
 test('login by phone works', async () => {
   const { env } = await registerUser('Yaa Asantewaa', 'yaa@example.com', '+233201112222');
   const res = await authRoutes.login(jsonRequest('/auth/login', { identifier: '+233201112222', password: 'Passw0rd!123' }), env);
