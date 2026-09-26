@@ -1,5 +1,5 @@
 import React, { useState, Suspense, lazy } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import {
   LayoutDashboard, Package, Users, BarChart3, DollarSign, Upload,
@@ -62,13 +62,35 @@ import AdminInboxPanel from '../components/admin/AdminInboxPanel';
 import AdminSettings from '../components/admin/AdminSettings';
 import RecycleBin from '../components/admin/RecycleBin';
 import { useAuth } from '../context/AuthContext';
+import { api, isApiConfigured } from '../services/api';
 
 export default function Admin() {
   const { apps, refresh } = useApps();
   const { user } = useAuth();
-  const [activeSection, setActiveSection] = useState('dashboard');
+  // URL-driven section (?section=inbox&msg=<id>): notification clicks land
+  // STRAIGHT on the right section with the right message open.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeSection, setActiveSection] = useState(() => searchParams.get('section') || 'dashboard');
+  const [inboxNew, setInboxNew] = useState(0);
   const [editingApp, setEditingApp] = useState<any>(null);
   const isAdmin = user?.role === 'admin';
+
+  /** Switch section AND sync the URL (deep links stay shareable). */
+  const goToSection = (id: string) => {
+    setActiveSection(id);
+    setSearchParams(id === 'dashboard' ? {} : { section: id }, { replace: true });
+  };
+
+  // Unread admin-inbox badge: refreshed on load, on entering the inbox, and
+  // every minute (matches the notification poll cadence).
+  React.useEffect(() => {
+    if (!isAdmin || !isApiConfigured()) return;
+    const load = () => api.inbox.list().then((l: any) => setInboxNew(l.counts?.new || 0)).catch(() => {});
+    load();
+    if (activeSection === 'inbox') load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, [isAdmin, activeSection]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- View 2: Live Website Builder state ----
   const [view, setView] = useState<'panel' | 'builder'>('panel');
@@ -319,11 +341,14 @@ export default function Admin() {
             </div>
             <nav className="space-y-1">
               {sidebarItems.map((item) => (
-                <button key={item.id} onClick={() => setActiveSection(item.id)}
+                <button key={item.id} onClick={() => goToSection(item.id)}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
                     activeSection === item.id ? 'bg-rx-yellow/10 text-rx-yellow' : 'text-rx-gray-medium hover:text-white hover:bg-white/5'
                   }`}>
                   <item.icon className="w-4 h-4" />{item.label}
+                  {item.id === 'inbox' && inboxNew > 0 && (
+                    <span className="ml-auto px-2 py-0.5 rounded-full text-[10px] font-bold bg-rx-yellow text-rx-dark">{inboxNew}</span>
+                  )}
                 </button>
               ))}
             </nav>
@@ -476,7 +501,7 @@ export default function Admin() {
 
           {activeSection === 'releases' && (<div className="animate-fade-in"><ReleasesManager /></div>)}
           {activeSection === 'users' && (<div className="animate-fade-in"><UserRoleEditor /></div>)}
-          {activeSection === 'inbox' && (<div className="animate-fade-in"><AdminInboxPanel /></div>)}
+          {activeSection === 'inbox' && (<div className="animate-fade-in"><AdminInboxPanel initialOpenId={searchParams.get('msg') || undefined} onInboxChanged={() => { api.inbox.list().then((l: any) => setInboxNew(l.counts?.new || 0)).catch(() => {}); }} /></div>)}
           {activeSection === 'icons' && (<div className="animate-fade-in"><IconManager /></div>)}
 
           {activeSection === 'community' && (

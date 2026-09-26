@@ -21,6 +21,11 @@ beforeEach(() => { globalThis.fetch = realFetch; });
 
 function fakeEnv(opts: { resend?: boolean } = {}) {
   const rows = new Map<string, any>();
+  const notifications: any[] = [];
+  const admins = [
+    { id: 'admin-1', role: 'admin' },
+    { id: 'admin-2', role: 'admin' },
+  ];
   const DB = {
     prepare(sql: string) {
       return {
@@ -30,6 +35,10 @@ function fakeEnv(opts: { resend?: boolean } = {}) {
           const a = this._b;
           const s = sql.replace(/\s+/g, ' ');
           if (s.includes('CREATE TABLE') || s.includes('CREATE INDEX')) return { meta: { changes: 0 } };
+          if (s.includes('INSERT INTO notifications')) {
+            notifications.push({ id: a[0], user_id: a[1], type: a[2], title: a[3], message: a[4], data: a[5], read: 0 });
+            return { meta: { changes: 1 } };
+          }
           if (s.includes('INSERT INTO admin_inbox')) {
             const [id, type, name, email, user_id, subject, message, payload] = a;
             rows.set(id, { id, type, name, email, user_id, subject, message, payload, status: 'new', admin_note: null, replied_at: null, reply_template: null, reply_delivery: null, notified_admin: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
@@ -66,6 +75,9 @@ function fakeEnv(opts: { resend?: boolean } = {}) {
           if (s.includes('FROM admin_inbox') && s.includes('ORDER BY created_at DESC')) {
             return { results: [...rows.values()].filter((r) => !s.includes('WHERE status=?') || r.status === a[0]) };
           }
+          if (s.includes("FROM users WHERE role='admin'")) {
+            return { results: admins };
+          }
           if (s.includes('GROUP BY status')) {
             const counts: Record<string, number> = {};
             for (const r of rows.values()) counts[r.status] = (counts[r.status] || 0) + 1;
@@ -80,6 +92,7 @@ function fakeEnv(opts: { resend?: boolean } = {}) {
   const env: any = { DB, ENVIRONMENT: 'production', JWT_SECRET: 'test-jwt' };
   if (opts.resend) { env.RESEND_API_KEY = 're_test'; env.FROM_EMAIL = 'noreply@rxstore.test'; }
   env.__rows = rows;
+  env.__notifications = notifications;
   return env;
 }
 
@@ -123,6 +136,24 @@ test('an ad booking lands in the admin inbox (portal delivery is email-independe
   // HONEST delivery state: the portal inbox got it; the email notification is unconfigured.
   assert.equal(out.adminNotified, 'unconfigured');
   assert.equal(out.senderAcknowledged, 'skipped', 'no sender copy requested');
+});
+
+test('submit triggers an in-app bell notification for EVERY admin, linking straight to the message', async () => {
+  const env = fakeEnv(); // even with NO email config — the bell always works
+  const out: any = await inboxRoutes.submit(postReq('/inbox/submit', {
+    type: 'ad_booking', name: 'Ama', email: 'ama@example.com',
+    subject: 'Welcome-screen ad slot booking', message: 'We want the slot for October.',
+  }), env);
+  assert.equal(env.__notifications.length, 2, 'one notification per admin');
+  for (const n of env.__notifications) {
+    assert.equal(n.type, 'message');
+    assert.equal(n.read, 0, 'starts unread (drives the bell + sidebar badges)');
+    assert.ok(n.title.includes('Ad booking'), `title carries the type: ${n.title}`);
+    assert.ok(n.message.includes('ama@example.com'), 'message identifies the sender');
+    const data = JSON.parse(n.data);
+    assert.equal(data.link, `/admin?section=inbox&msg=${out.id}`, 'links STRAIGHT to the message');
+    assert.equal(data.inboxId, out.id);
+  }
 });
 
 test('with email configured: the ADMIN is notified and (on request) the sender acknowledged — truthfully', async () => {

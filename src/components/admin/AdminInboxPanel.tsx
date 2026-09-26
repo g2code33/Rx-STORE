@@ -45,8 +45,17 @@ function Delivery({ state }: { state?: string | null }) {
   return <span className={`text-[10px] ${m.cls}`}>{m.label}</span>;
 }
 
-export default function AdminInboxPanel() {
+export default function AdminInboxPanel({
+  initialOpenId,
+  onInboxChanged,
+}: {
+  /** Deep-linked message id (from a bell notification: ?section=inbox&msg=…). */
+  initialOpenId?: string;
+  /** Parent refresh hook — keeps the sidebar unread badge in sync. */
+  onInboxChanged?: () => void;
+}) {
   const [filter, setFilter] = useState('');
+  const [initialOpened, setInitialOpened] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [templates, setTemplates] = useState<Array<{ id: string; label: string; subject: string }>>([]);
@@ -66,9 +75,18 @@ export default function AdminInboxPanel() {
       setMessages(l.messages || []);
       setCounts(l.counts || {});
       setTemplates(t.templates || []);
+      onInboxChanged?.();
     }).finally(() => setLoading(false));
   };
   useEffect(() => { load(); }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Deep link: open the linked message as soon as it is loaded (once).
+  useEffect(() => {
+    if (initialOpenId && !initialOpened && messages.length > 0) {
+      setOpenId(initialOpenId);
+      setInitialOpened(true);
+    }
+  }, [initialOpenId, initialOpened, messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const act = async (id: string, status: string) => {
     setBusy(id + status);

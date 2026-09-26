@@ -184,8 +184,12 @@ export default function Header() {
                           key={notif.id}
                           onClick={() => {
                             markNotificationRead(notif.id);
-                            const dest = (notif as any).link;
-                            if (dest) { setIsNotifOpen(false); navigate(dest); }
+                            // Every notification leads somewhere: its own
+                            // destination (inbox message, app page…) when it
+                            // has one, otherwise the notifications section.
+                            const dest = (notif as any).link || '/profile?tab=notifications';
+                            setIsNotifOpen(false);
+                            navigate(dest);
                           }}
                           className={`w-full text-left p-4 border-b border-white/5 hover:bg-white/5 transition-colors ${
                             !notif.read ? 'bg-rx-yellow/5' : ''
@@ -193,7 +197,7 @@ export default function Header() {
                         >
                           <div className="flex items-start gap-3">
                             <div className="w-8 h-8 rounded-lg bg-rx-dark-tertiary flex items-center justify-center text-sm">
-                              {notif.type === 'update' ? '🔄' : notif.type === 'download' ? '📥' : '📢'}
+                              {notif.type === 'update' ? '🔄' : notif.type === 'download' ? '📥' : notif.type === 'message' ? '📣' : '📢'}
                             </div>
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium text-white">{notif.title}</p>

@@ -94,6 +94,25 @@ export const inboxRoutes = {
        VALUES (?,?,?,?,?,?,?,?,'new',datetime('now'),datetime('now'))`
     ).bind(id, type, name, email, userId, subject, message, JSON.stringify(payload)).run();
 
+    // IN-APP notifications: every ADMIN gets a bell notification that links
+    // STRAIGHT to this message in the portal (Admin → Inbox, message open).
+    // This is the primary channel — it works regardless of email config.
+    try {
+      const admins: any = await env.DB.prepare(`SELECT id FROM users WHERE role='admin'`).all();
+      const typeIcon: Record<string, string> = { ad_booking: '📣', contact: '✉️', support: '🛠️', sponsor: '🤝' };
+      const typeLabel2: Record<string, string> = { ad_booking: 'Ad booking', contact: 'Contact', support: 'Support', sponsor: 'Sponsor' };
+      for (const admin of admins?.results || []) {
+        await env.DB.prepare(
+          `INSERT INTO notifications (id, user_id, type, title, message, data, read) VALUES (?,?,?,?,?,?,0)`
+        ).bind(
+          rid('notif'), admin.id, 'message',
+          `${typeIcon[type] || '✉️'} ${typeLabel2[type] || 'Message'}: ${subject.slice(0, 80)}`,
+          `From ${name} <${email}> — open your inbox to take action.`,
+          JSON.stringify({ link: `/admin?section=inbox&msg=${id}`, inboxId: id }),
+        ).run().catch(() => {});
+      }
+    } catch { /* notification is best-effort; the portal inbox is the source of truth */ }
+
     // Emails: notify the ADMIN (always attempted) + acknowledge the SENDER
     // (only when they asked for email correspondence). Honest outcomes only.
     const notify = await notifyAdminInboxMessage(env, { type, name, email, subject, message });
