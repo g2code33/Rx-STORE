@@ -750,8 +750,8 @@ export const adminRoutes = {
           `• ${b.filename} (${b.platform}): state=${b.state}, overall=${b.overall}` +
           (b.reasons && b.reasons.length ? ` — ${b.reasons.slice(0, 3).join(' | ')}` : ''));
         return {
-          error: `Security verification blocked publication. ${gate.blockers.length} package(s) not cleared:\n${lines.join('\n')}\n` +
-            `Fix the reported issues and re-upload, or override explicitly in Admin → Developers → Security with a reason (every override is audited).`,
+          error: `Security verification blocked publication. ${gate.blockers.length} package(s) not cleared (each was re-verified with the current pipeline just now):\n${lines.join('\n')}\n` +
+            `SCANNING means the scanner analysis is still running — wait a few minutes and publish again. UNAVAILABLE means a temporary scanner problem — retry shortly. For a definitive human decision use Admin → Developers → Security → Security Review workspace (hash-bound, audited), or re-upload fixed packages.`,
         };
       }
       await env.DB.prepare(`UPDATE packages SET security_state='PUBLISHED' WHERE release_id=?`).bind(relId).run().catch(() => {});

@@ -1116,15 +1116,17 @@ async function openPendingReviewIfNeeded(env: any, pkg: any, results: Partial<Re
     if (!env?.DB?.prepare) return;
     await ensureManualReviewTable(env);
     const malware = results.malware;
-    // Open a review only when the blocker is genuinely indeterminate:
-    // malware in the manual-review states (SCANNING/UNAVAILABLE/…) — a clean
-    // malware result with a NEEDS_REVIEW signature/certificate is ALSO a
-    // manual-review case (the classic Phase 13 chain-of-trust situation).
-    const malwareIndeterminate = malware ? manualReviewMalwareEligible(malware.status) : true;
-    if (!malwareIndeterminate) return;
-    const reason = malware
-      ? `${malware.result}${malware.details ? ` — ${malware.details}` : ''}`
-      : 'Automated verification could not conclude';
+    // Open a review whenever the run is INDETERMINATE overall — the blocker
+    // may be indeterminate malware (SCANNING/UNAVAILABLE/…) OR a clean scan
+    // with a NEEDS_REVIEW signature/certificate chain (the classic Phase 13
+    // chain-of-trust case) OR a duplicate warning. The reason names the first
+    // blocker so the reviewer knows exactly why automated verification could
+    // not conclude. (Definitive outcomes never reach here: PASSED needs no
+    // review and DETECTED is not manually reviewable.)
+    const blocker = (Object.values(results) as CheckResult[]).find((r) =>
+      r && ['SCANNING', 'UNAVAILABLE', 'NEEDS_REVIEW', 'WARNING', 'PENDING', 'UNKNOWN'].includes(r.status));
+    if (!blocker) return;
+    const reason = `${blocker.result}${blocker.details ? ` — ${blocker.details}` : ''}`;
     const existing: any = await env.DB.prepare(
       `SELECT id FROM package_manual_reviews WHERE package_id=? AND sha256=? AND status IN ('PENDING','APPROVED') AND invalidated_at IS NULL LIMIT 1`
     ).bind(pkg.id, String(pkg.sha256)).first().catch(() => null);
@@ -1178,13 +1180,14 @@ export async function validManualApproval(env: any, packageId: string, currentSh
  * invalidation is audited. Indeterminate outcomes (SCANNING/UNAVAILABLE/…)
  * never touch reviews — eligibility is maintained.
  */
-export async function invalidatePendingReviews(env: any, packageId: string, sha256: string, reason: string): Promise<number> {
+export async function invalidatePendingReviews(env: any, packageId: string, sha256: string, reason: string, statuses: string[] = ['PENDING']): Promise<number> {
   try {
     if (!env?.DB?.prepare) return 0;
     await ensureManualReviewTable(env);
+    const list = statuses.map((x) => `'${String(x).replace(/[^A-Z_]/gi, '')}'`).join(',');
     const res: any = await env.DB.prepare(
       `UPDATE package_manual_reviews SET invalidated_at=datetime('now')
-       WHERE package_id=? AND sha256=? AND status='PENDING' AND invalidated_at IS NULL`
+       WHERE package_id=? AND sha256=? AND status IN (${list}) AND invalidated_at IS NULL`
     ).bind(packageId, String(sha256)).run().catch(() => ({ meta: { changes: 0 } }));
     const n = Number(res?.meta?.changes || 0);
     if (n > 0) {
@@ -1346,9 +1349,12 @@ async function finish(env: any, packageId: string, state: PipelineStage, results
       // A definitive automated pass: outstanding PENDING reviews are moot.
       await invalidatePendingReviews(env, packageId, String(fresh.sha256), 'automated verification passed — manual review no longer needed');
     } else if (results.malware?.status === 'DETECTED') {
-      // A definitive detection: manual review is not permitted. (The gate and
-      // the decision route also refuse independently — this keeps the queue honest.)
-      await invalidatePendingReviews(env, packageId, String(fresh.sha256), 'definitive malware detection — manual review not permitted');
+      // A definitive detection: manual review is not permitted — outstanding
+      // PENDING reviews AND previously-granted APPROVALS (e.g. approved while
+      // the scanner was unavailable) are invalidated, so a later definitive
+      // verdict always outranks an old manual decision. (The gate and the
+      // decision route also refuse independently.)
+      await invalidatePendingReviews(env, packageId, String(fresh.sha256), 'definitive malware detection — manual review not permitted', ['PENDING', 'APPROVED']);
     }
   }
   return { state, overall, results };
@@ -1369,9 +1375,7 @@ export async function publicationSecurityGate(env: any, releaseId: string): Prom
   const authorizations: Array<{ packageId: string; platform: string; publicationAuthorization: 'AUTOMATED' | 'MANUAL_APPROVAL' | 'SECURITY_OVERRIDE' }> = [];
   for (const p of pkgs?.results || []) {
     if (p.deployment_url) continue; // URL-based web packages
-    const needsRun = !p.security_state || p.security_state === 'QUARANTINED';
-    if (needsRun) await runSecurityPipeline(env, p.id).catch(() => {});
-    const fresh: any = await env.DB.prepare('SELECT * FROM packages WHERE id=?').bind(p.id).first().catch(() => null);
+    let fresh: any = await env.DB.prepare('SELECT * FROM packages WHERE id=?').bind(p.id).first().catch(() => null);
     if (!fresh) continue;
 
     // Path 1 — the automated pipeline fully passed.
@@ -1388,6 +1392,24 @@ export async function publicationSecurityGate(env: any, releaseId: string): Prom
     ).bind(p.id).first().catch(() => null);
     if (override && (!override.sha256 || String(override.sha256).toLowerCase() === String(fresh.sha256).toLowerCase())) {
       authorizations.push({ packageId: p.id, platform: p.platform, publicationAuthorization: 'SECURITY_OVERRIDE' });
+      continue;
+    }
+
+    // RE-VERIFY WITH CURRENT CODE: recorded results may be stale — written by
+    // an older pipeline version, an earlier scanner outage, or superseded by a
+    // replacement upload. Publication must never replay old verdicts, so any
+    // package not yet authorized gets a FRESH pipeline run here. The pipeline
+    // is idempotent and scanner-resilient (bounded retries, SHA-256 scan
+    // cache, SCANNING resumption), so re-running is safe and quota-friendly.
+    // A definitive DETECTED from this run also invalidates outstanding manual
+    // approvals (see finish()).
+    await runSecurityPipeline(env, p.id).catch(() => {});
+    fresh = await env.DB.prepare('SELECT * FROM packages WHERE id=?').bind(p.id).first().catch(() => null);
+    if (!fresh) continue;
+    // The fresh run may have completed an in-flight analysis or cleared a
+    // transient outage — re-check the automated path before manual review.
+    if (fresh.overall_security === 'PASSED' && fresh.security_state === 'SECURITY_REVIEW_COMPLETE') {
+      authorizations.push({ packageId: p.id, platform: p.platform, publicationAuthorization: 'AUTOMATED' });
       continue;
     }
 

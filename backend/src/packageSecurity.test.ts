@@ -443,6 +443,13 @@ function makeEnv() {
           if (s.includes('FROM scanner_cache WHERE sha256=? AND provider=?')) {
             return db.scanner_cache.find((c: any) => c.sha256 === a[0] && c.provider === a[1]) || null;
           }
+          if (s.includes("status='APPROVED' AND invalidated_at IS NULL")) {
+            return db.package_manual_reviews.filter((r: any) => r.package_id === a[0] && r.status === 'APPROVED' && !r.invalidated_at)[0] || null;
+          }
+          if (s.includes('SELECT status FROM package_security_results WHERE package_id=? AND check_type=?')) {
+            const rows = db.package_security_results.filter((r: any) => r.package_id === a[0] && r.check_type === a[1]);
+            return rows.length ? rows[rows.length - 1] : null;
+          }
           if (s.includes('SELECT id FROM package_manual_reviews WHERE package_id=? AND sha256=?')) {
             return db.package_manual_reviews.find((r: any) => r.package_id === a[0] && String(r.sha256).toLowerCase() === String(a[1]).toLowerCase() && ['PENDING', 'APPROVED'].includes(r.status) && !r.invalidated_at) ? { id: 'x' } : null;
           }
@@ -510,9 +517,11 @@ function makeEnv() {
             return { meta: { changes: 1 } };
           }
           if (s.includes('UPDATE package_manual_reviews SET invalidated_at')) {
+            const inMatch = s.match(/status IN \(([^)]*)\)/);
+            const statuses = inMatch ? inMatch[1].split(',').map((x: string) => x.trim().replace(/'/g, '')) : ['PENDING'];
             let n = 0;
             for (const r of db.package_manual_reviews) {
-              if (r.package_id === a[0] && String(r.sha256).toLowerCase() === String(a[1]).toLowerCase() && r.status === 'PENDING' && !r.invalidated_at) { r.invalidated_at = 'now'; n++; }
+              if (r.package_id === a[0] && String(r.sha256).toLowerCase() === String(a[1]).toLowerCase() && statuses.includes(r.status) && !r.invalidated_at) { r.invalidated_at = 'now'; n++; }
             }
             return { meta: { changes: n } };
           }
@@ -791,4 +800,93 @@ test('invalidatePendingReviews: only touches PENDING reviews bound to the exact 
   assert.equal(byId.r2.invalidated_at, null, 'other-bytes review untouched');
   assert.equal(byId.r3.invalidated_at, null, 'decided review untouched');
   assert.ok(env.db.audit_logs.some((l: any) => l.action === 'manual_review_invalidated'));
+});
+
+// ---------------------------------------------------------------------------
+// Publication gate: publish RE-VERIFIES (never replays stale results)
+// ---------------------------------------------------------------------------
+
+test('gate: publication re-runs the pipeline — stale pre-streaming results cannot block forever (the clinical-rx scenario)', async () => {
+  const env = makeEnv();
+  const { sha256 } = await seedSignedApkPackage(env);
+  // Reproduce production exactly: results recorded by the OLD (pre-streaming)
+  // code, package stuck in MALWARE_SCAN — publish used to replay these forever.
+  env.db.package_security_results.push(
+    { package_id: 'pkg_apk_1', check_type: 'integrity', status: 'NEEDS_REVIEW', result: 'object too large for in-Worker full-hash verification', created_at: 't0' },
+    { package_id: 'pkg_apk_1', check_type: 'malware', status: 'FAILED', result: 'hash unknown to VirusTotal', created_at: 't0' },
+  );
+  env.db.packages[0].security_state = 'MALWARE_SCAN';
+  env.db.packages[0].overall_security = 'FAILED';
+  globalThis.fetch = (async () => new Response(JSON.stringify({ data: { attributes: { last_analysis_stats: { malicious: 0, suspicious: 0 } } } }), { status: 200 })) as any;
+  const scanEnv = { ...env, MALWARE_SCANNER: 'virustotal', VIRUSTOTAL_API_KEY: 'vt_test' };
+
+  const gate = await publicationSecurityGate(scanEnv, 'rel_1');
+  // Still blocked — the signature chain is honestly NEEDS_REVIEW — but with
+  // FRESH results, not the stale ones:
+  assert.equal(gate.ok, false);
+  const latest = new Map<string, any>();
+  for (const r of env.db.package_security_results) latest.set(r.check_type, r);
+  assert.equal(latest.get('integrity').status, 'PASSED', 'stale "object too large" replaced by streamed verification');
+  assert.equal(latest.get('malware').status, 'CLEAN', 'stale "hash unknown" replaced by a real scan verdict');
+  // A PENDING manual review opened automatically for the signature blocker.
+  assert.ok(env.db.package_manual_reviews.some((r: any) => r.status === 'PENDING' && r.sha256 === sha256));
+
+  // Admin approves in the workspace → the next publish attempt authorizes.
+  env.db.package_manual_reviews[0].status = 'APPROVED';
+  const gate2 = await publicationSecurityGate(scanEnv, 'rel_1');
+  assert.equal(gate2.ok, true);
+  assert.equal(gate2.authorizations[0].publicationAuthorization, 'MANUAL_APPROVAL');
+});
+
+test('gate: a definitive DETECTED at publish time revokes a manual approval granted earlier', async () => {
+  const env = makeEnv();
+  const { sha256 } = await seedSignedApkPackage(env);
+  // Manual approval was granted while the scanner was unavailable…
+  env.db.package_manual_reviews.push({ id: 'mrev-a', package_id: 'pkg_apk_1', sha256, status: 'APPROVED', admin_user_id: 'admin1', created_at: 't0', invalidated_at: null });
+  env.db.package_security_results.push(
+    { package_id: 'pkg_apk_1', check_type: 'integrity', status: 'PASSED', result: 'ok', created_at: 't0' },
+    { package_id: 'pkg_apk_1', check_type: 'malware', status: 'UNAVAILABLE', result: 'scanner unreachable', created_at: 't0' },
+  );
+  env.db.packages[0].security_state = 'MALWARE_SCAN';
+  env.db.packages[0].overall_security = 'NEEDS_REVIEW';
+  // …but the scanner now has a definitive verdict: DETECTED.
+  globalThis.fetch = (async () => new Response(JSON.stringify({ data: { attributes: { last_analysis_stats: { malicious: 3, suspicious: 1 } } } }), { status: 200 })) as any;
+  const scanEnv = { ...env, MALWARE_SCANNER: 'virustotal', VIRUSTOTAL_API_KEY: 'vt_test' };
+  const gate = await publicationSecurityGate(scanEnv, 'rel_1');
+  assert.equal(gate.ok, false, 'a later definitive detection outranks the old manual approval');
+  assert.equal(env.db.package_manual_reviews[0].invalidated_at, 'now', 'the APPROVED review is invalidated');
+  assert.ok(env.db.audit_logs.some((l: any) => l.action === 'manual_review_invalidated'));
+});
+
+test('gate: a temporary scanner outage at publish does NOT revoke a manual approval', async () => {
+  const env = makeEnv();
+  const { sha256 } = await seedSignedApkPackage(env);
+  env.db.package_manual_reviews.push({ id: 'mrev-a', package_id: 'pkg_apk_1', sha256, status: 'APPROVED', admin_user_id: 'admin1', created_at: 't0', invalidated_at: null });
+  env.db.package_security_results.push(
+    { package_id: 'pkg_apk_1', check_type: 'integrity', status: 'PASSED', result: 'ok', created_at: 't0' },
+    { package_id: 'pkg_apk_1', check_type: 'malware', status: 'UNAVAILABLE', result: 'scanner unreachable', created_at: 't0' },
+  );
+  env.db.packages[0].security_state = 'MALWARE_SCAN';
+  env.db.packages[0].overall_security = 'NEEDS_REVIEW';
+  globalThis.fetch = (async () => { throw new Error('scanner down right now'); }) as any;
+  const scanEnv = { ...env, MALWARE_SCANNER: 'virustotal', VIRUSTOTAL_API_KEY: 'vt_test' };
+  const gate = await publicationSecurityGate(scanEnv, 'rel_1');
+  assert.equal(gate.ok, true, 'UNAVAILABLE ≠ DETECTED — the approval stands through a temporary outage');
+  assert.equal(gate.authorizations[0].publicationAuthorization, 'MANUAL_APPROVAL');
+  assert.equal(env.db.package_manual_reviews[0].invalidated_at, null);
+});
+
+test('gate: an explicit override authorizes WITHOUT re-running the pipeline (audited escape hatch)', async () => {
+  const env = makeEnv();
+  const { sha256 } = await seedSignedApkPackage(env);
+  env.db.package_security_overrides.push({ id: 'ov-1', package_id: 'pkg_apk_1', admin_user_id: 'admin1', reason: 'legacy explicit override', sha256, created_at: 't0', invalidated_at: null });
+  env.db.packages[0].security_state = 'MALWARE_SCAN';
+  env.db.packages[0].overall_security = 'FAILED';
+  let fetchCalls = 0;
+  globalThis.fetch = (async () => { fetchCalls++; return new Response('{}', { status: 500 }); }) as any;
+  const gate = await publicationSecurityGate({ ...env, MALWARE_SCANNER: 'virustotal', VIRUSTOTAL_API_KEY: 'vt_test' }, 'rel_1');
+  assert.equal(gate.ok, true);
+  assert.equal(gate.authorizations[0].publicationAuthorization, 'SECURITY_OVERRIDE');
+  assert.equal(fetchCalls, 0, 'the override is honored without re-verification');
+  assert.equal(env.db.package_security_results.length, 0, 'no pipeline ran');
 });
