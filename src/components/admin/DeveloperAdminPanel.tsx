@@ -11,6 +11,7 @@ import { api } from '../../services/api';
 import { formatDate } from '../../utils/helpers';
 import toast from 'react-hot-toast';
 import SubmissionReviewWorkspace from './SubmissionReviewWorkspace';
+import SecurityReviewWorkspace from './SecurityReviewWorkspace';
 
 type Tab = 'applications' | 'organizations' | 'apps' | 'releases' | 'submissions' | 'security' | 'communications';
 
@@ -48,7 +49,7 @@ export default function DeveloperAdminPanel() {
   const [securityPackages, setSecurityPackages] = useState<any[]>([]);
   const [securityDetail, setSecurityDetail] = useState<any>(null);
   const [reviewQueue, setReviewQueue] = useState<any[]>([]);
-  const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
+  const [securityWorkspaceOpen, setSecurityWorkspaceOpen] = useState(false);
   const [submissions, setSubmissions] = useState<any[]>([]);
   const [activeSubmission, setActiveSubmission] = useState<string | null>(null);
   const [appDetail, setAppDetail] = useState<any>(null);
@@ -139,7 +140,7 @@ export default function DeveloperAdminPanel() {
       {/* Tabs */}
       <div className="flex gap-1 bg-rx-dark-secondary rounded-xl p-1 w-fit">
         {([['applications', `Applications (${applications.length})`], ['apps', `Apps (${devApps.length})`], ['releases', `Releases (${devReleases.filter((r) => ['submitted', 'under_review', 'changes_requested'].includes(r.status)).length} in review)`], ['submissions', `Submissions (${submissions.filter((x) => ['SUBMITTED', 'SECURITY_REVIEW', 'ADMIN_REVIEW'].includes(x.status)).length} in review)`], ['security', `Security (${securityPackages.filter((p) => p.overall_security !== 'PASSED').length} blocked)`], ['organizations', `Organizations (${developers.length})`], ['communications', `Messages (${threads.filter((t) => Number(t.unread) > 0).length} new)`]] as [Tab, string][]).map(([id, label]) => (
-          <button key={id} onClick={() => { setTab(id); setDetail(null); setOrgDetail(null); setThread(null); setAppDetail(null); setReleaseDetail(null); setSecurityDetail(null); setActiveSubmission(null); }}
+          <button key={id} onClick={() => { setTab(id); setDetail(null); setOrgDetail(null); setThread(null); setAppDetail(null); setReleaseDetail(null); setSecurityDetail(null); setActiveSubmission(null); setSecurityWorkspaceOpen(false); }}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${tab === id ? 'bg-rx-yellow text-rx-dark' : 'text-rx-gray-medium hover:text-white'}`}>
             {label}
           </button>
@@ -172,60 +173,23 @@ export default function DeveloperAdminPanel() {
             {/* Reason box for reject / changes */}
             {['SUBMITTED', 'UNDER_REVIEW'].includes(detail.status) && (
               <>
-                {/* Manual security review — the controlled fallback */}
-            {['UNAVAILABLE', 'SCANNING', 'UNKNOWN', 'NEEDS_REVIEW', 'FAILED', 'PENDING', 'pending'].includes(String(securityDetail.package.malwareStatus)) && (
+                {/* Manual security review — the controlled fallback (full workspace) */}
+            {['UNAVAILABLE', 'SCANNING', 'UNKNOWN', 'NEEDS_REVIEW', 'FAILED', 'PENDING', 'pending'].includes(String(securityDetail.package.malwareStatus)) && (() => {
+              const pendingNow = (securityDetail.manualReviews || []).find((m: any) => m.status === 'PENDING' && !m.invalidatedAt && m.bindsCurrentBytes);
+              return (
               <div className="rounded-xl bg-blue-500/5 border border-blue-400/20 p-4 space-y-3">
                 <p className="text-sm font-semibold text-white flex items-center gap-2"><UserCheck className="w-4 h-4 text-blue-300" /> Manual security review</p>
-                {(securityDetail.manualReviews || []).length > 0 && (
-                  <div className="space-y-2">
-                    {(securityDetail.manualReviews || []).map((m: any) => (
-                      <div key={m.id} className={`p-3 rounded-lg border text-xs ${m.status === 'APPROVED' ? 'bg-green-400/10 border-green-400/20' : m.status === 'REJECTED' ? 'bg-red-400/10 border-red-400/20' : m.invalidatedAt ? 'bg-white/5 border-white/10' : 'bg-amber-500/10 border-amber-500/20'}`}>
-                        <p className="font-semibold text-white">
-                          {m.status}{m.invalidatedAt ? ' (INVALIDATED — package bytes changed)' : ''}{!m.bindsCurrentBytes && !m.invalidatedAt ? ' (bound to older bytes)' : ''}
-                          <span className="text-rx-gray-medium font-normal"> · {m.adminName || 'pending decision'} · {m.reviewedAt ? formatDate(m.reviewedAt) : `opened ${formatDate(m.openedAt)}`}</span>
-                        </p>
-                        <p className="text-rx-gray-medium mt-1">Reason: {m.reason}</p>
-                        {m.adminNotes && <p className="text-rx-gray-medium">Notes: {m.adminNotes}</p>}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {(() => {
-                  const pending = (securityDetail.manualReviews || []).find((m: any) => m.status === 'PENDING' && !m.invalidatedAt && m.bindsCurrentBytes);
-                  if (!pending) return <p className="text-xs text-rx-gray-medium">No pending review for the current bytes — re-run the security pipeline to open one when verification cannot conclude.</p>;
-                  return (
-                    <div className="space-y-2">
-                      <textarea rows={2} value={reviewNotes[pending.id] || ''} onChange={(e) => setReviewNotes({ ...reviewNotes, [pending.id]: e.target.value })}
-                        className="w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white"
-                        placeholder="Review decision notes (REQUIRED, min 10 characters — what you checked and why this decision is safe)…" />
-                      <div className="flex flex-wrap gap-2">
-                        <button onClick={async () => {
-                          try {
-                            const res = await (api as any).developers.security.manualReview(securityDetail.package.id, 'APPROVE', reviewNotes[pending.id] || '');
-                            toast.success(res.publicationAuthorization === 'MANUAL_APPROVAL' ? 'Manual review APPROVED — publication authorized for these exact bytes' : 'Approved');
-                            setSecurityDetail(await (api as any).developers.security.package(securityDetail.package.id)); load();
-                          } catch (e: any) { toast.error(e?.message || 'Approval failed'); }
-                        }} disabled={busy || (reviewNotes[pending.id] || '').trim().length < 10}
-                          className="text-sm flex items-center gap-2 px-4 py-2 rounded-xl bg-green-500/10 text-green-300 border border-green-500/20 hover:bg-green-500/20 disabled:opacity-40">
-                          <ShieldCheck className="w-4 h-4" /> Approve (authorizes this SHA-256)
-                        </button>
-                        <button onClick={async () => {
-                          try {
-                            await (api as any).developers.security.manualReview(securityDetail.package.id, 'REJECT', reviewNotes[pending.id] || '');
-                            toast.success('Manual review REJECTED — publication stays blocked');
-                            setSecurityDetail(await (api as any).developers.security.package(securityDetail.package.id)); load();
-                          } catch (e: any) { toast.error(e?.message || 'Rejection failed'); }
-                        }} disabled={busy || (reviewNotes[pending.id] || '').trim().length < 10}
-                          className="text-sm flex items-center gap-2 px-4 py-2 rounded-xl bg-red-500/10 text-red-300 border border-red-500/20 hover:bg-red-500/20 disabled:opacity-40">
-                          <Ban className="w-4 h-4" /> Reject
-                        </button>
-                      </div>
-                      <p className="text-[11px] text-rx-gray-medium">Approval authorizes publication for exactly the reviewed bytes (SHA-256 bound). Detected malware can never be approved. The automated verdict stays on record.</p>
-                    </div>
-                  );
-                })()}
+                <p className="text-xs text-rx-gray-medium">
+                  {pendingNow
+                    ? 'This package has a pending manual review. Open the Security Review workspace for the full evidence, the hash-bound approval flow and the audit history.'
+                    : 'Automated verification could not conclude. Open the Security Review workspace to review the evidence and decide.'}
+                </p>
+                <button onClick={() => { setSecurityWorkspaceOpen(true); setSecurityDetail(null); }} className="btn-primary text-sm flex items-center gap-2 w-fit">
+                  <UserCheck className="w-4 h-4" /> Review in the workspace
+                </button>
               </div>
-            )}
+              );
+            })()}
 
             <div className="flex flex-wrap gap-2 border-t border-white/5 pt-4">
                   <button onClick={() => act(() => api.developers.admin.startReview(detail.id), 'Review started')} disabled={busy || detail.status !== 'SUBMITTED'}
@@ -510,7 +474,9 @@ export default function DeveloperAdminPanel() {
           </div>
         )
       ) : tab === 'security' ? (
-        securityDetail ? (
+        securityWorkspaceOpen ? (
+          <div className="animate-fade-in"><SecurityReviewWorkspace onBack={() => setSecurityWorkspaceOpen(false)} /></div>
+        ) : securityDetail ? (
           <div className="card p-6 space-y-5">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -598,9 +564,14 @@ export default function DeveloperAdminPanel() {
           <div className="space-y-6">
           {reviewQueue.filter((q) => q.manualReview?.status === 'PENDING' && q.manualReviewEligible).length > 0 && (
             <div className="card p-5 border-blue-400/20">
-              <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
-                <UserCheck className="w-4 h-4 text-blue-300" /> Manual review queue ({reviewQueue.filter((q) => q.manualReview?.status === 'PENDING' && q.manualReviewEligible).length})
-              </h3>
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                  <UserCheck className="w-4 h-4 text-blue-300" /> Manual review queue ({reviewQueue.filter((q) => q.manualReview?.status === 'PENDING' && q.manualReviewEligible).length})
+                </h3>
+                <button onClick={() => setSecurityWorkspaceOpen(true)} className="btn-primary text-xs !py-2 flex items-center gap-1.5">
+                  <UserCheck className="w-3.5 h-3.5" /> Open Security Review workspace
+                </button>
+              </div>
               <p className="text-xs text-rx-gray-medium mt-1 mb-3">Automated verification could not produce a definitive verdict for these packages. Open a package below to approve or reject with audited notes — approvals authorize exactly the reviewed SHA-256.</p>
               <div className="space-y-2">
                 {reviewQueue.filter((q) => q.manualReview?.status === 'PENDING' && q.manualReviewEligible).map((q) => (

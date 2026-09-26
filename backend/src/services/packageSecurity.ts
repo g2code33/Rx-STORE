@@ -1422,7 +1422,7 @@ export async function latestChecksForPackages(env: any, packageIds: string[]): P
   const out: Record<string, any[]> = {};
   for (const id of packageIds) {
     const rows: any = await env.DB.prepare(
-      `SELECT check_type, status, classification, provider, provider_version, result, details, fingerprint, error, completed_at FROM package_security_results
+      `SELECT check_type, status, classification, provider, provider_version, result, details, fingerprint, error, completed_at, started_at, scanner_analysis_id, scanner_verdict, scanner_raw_summary, scanner_started_at, scanner_completed_at FROM package_security_results
        WHERE id IN (SELECT MAX(id) FROM package_security_results WHERE package_id=? GROUP BY check_type)
        ORDER BY check_type`
     ).bind(id).all().catch(() => ({ results: [] }));

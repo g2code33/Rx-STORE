@@ -165,7 +165,7 @@ export const securityAdminRoutes = {
    */
   async reviewQueue(request: Request, env: any) {
     const rows: any = await env.DB.prepare(
-      `SELECT p.id AS package_id, p.platform, p.architecture, p.filename, p.file_size, p.sha256,
+      `SELECT p.id AS package_id, p.platform, p.architecture, p.filename, p.file_size, p.sha256, p.created_at AS uploaded_at,
               p.security_state, p.overall_security, p.security_scan_status, p.signature_status, p.status AS package_status,
               r.id AS release_id, r.version, r.status AS release_status,
               a.name AS app_name, a.slug AS app_slug, d.id AS developer_id, pr.publisher_name,
@@ -198,6 +198,7 @@ export const securityAdminRoutes = {
           openedAt: p.review_created_at,
           automatedSnapshot: { integrity: p.automated_integrity, malware: p.automated_malware, overall: p.automated_overall },
         } : null,
+        createdDate: p.uploaded_at,
         manualReviewEligible: manualReviewMalwareEligible(p.security_scan_status) || p.overall_security === 'NEEDS_REVIEW',
         publicationState: p.package_status === 'published' ? 'PUBLISHED' : 'BLOCKED',
         priority: PRIORITY[String(p.security_scan_status || '').toUpperCase()] ?? 6,
