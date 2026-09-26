@@ -77,11 +77,18 @@ function jsonRaw(data: any, status = 200, origin = '', env?: any, requestId?: st
 }
 
 // Decode the JWT payload and require the admin role (same decode pattern as /users/me)
-async function isAdminRequest(request: Request, env: Env): Promise<boolean> {
+/** Verify the admin JWT and RETURN its payload (null when not admin). */
+async function adminIdentity(request: Request, env: Env): Promise<any | null> {
   const auth = request.headers.get('Authorization') || '';
-  if (!auth.startsWith('Bearer ')) return false;
-  try { return (await verifyAccessToken(auth.slice(7), env.JWT_SECRET || '')).role === 'admin'; }
-  catch { return false; }
+  if (!auth.startsWith('Bearer ')) return null;
+  try {
+    const payload = await verifyAccessToken(auth.slice(7), env.JWT_SECRET || '');
+    return payload?.role === 'admin' ? payload : null;
+  } catch { return null; }
+}
+
+async function isAdminRequest(request: Request, env: Env): Promise<boolean> {
+  return (await adminIdentity(request, env)) !== null;
 }
 
 
@@ -163,7 +170,13 @@ export default {
     // Every /admin/* endpoint requires a valid admin JWT (production hardening —
     // previously PUT/DELETE apps, releases, uploads etc. were open to any request)
     if (path.startsWith('/admin')) {
-      if (!await isAdminRequest(request, env)) return respond({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+      const adminUser = await adminIdentity(request, env);
+      if (!adminUser) return respond({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin token required' } }, 401, origin);
+      // Attach the verified admin identity so downstream handlers can record
+      // WHO acted (security overrides, manual review decisions, audits).
+      // Without this, overridePackage/manualReview saw no identity and
+      // rejected every request with 'Admin identity required'.
+      (normalizedRequest as any).user = { userId: adminUser.userId, role: adminUser.role };
     }
 
     if ((path === '/updates/check' || path === '/update/check' || path === '/api/updates/check' || path === '/api/update/check') && request.method === 'GET') {
@@ -1192,7 +1205,8 @@ export default {
         else if (path.match(/^\/admin\/security\/packages\/[^\/]+\/manual-review$/) && request.method === 'POST') data = await securityAdminRoutes.manualReview(normalizedRequest as any, env);
         else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown security route' } }, 404, origin);
         if (data?.error) {
-          const code: ErrorCode = data.code === 'NOT_FOUND' ? 'NOT_FOUND' : data.code === 'FORBIDDEN' ? 'FORBIDDEN' : 'VALIDATION_ERROR';
+          const code: ErrorCode = data.code === 'NOT_FOUND' ? 'NOT_FOUND' : data.code === 'FORBIDDEN' ? 'FORBIDDEN'
+            : data.code === 'UNAUTHORIZED' ? 'AUTH_REQUIRED' : data.code === 'CONFLICT' ? 'CONFLICT' : 'VALIDATION_ERROR';
           return fail(code, String(data.error));
         }
         return respond({ success: true, data }, 200, origin);

@@ -84,6 +84,11 @@ function publishEnv(seed: { releases?: any[]; packages?: any[] } = {}) {
           const a = self._b;
           if (s.includes('INSERT INTO audit_logs') || s.includes('INSERT INTO notifications')) return { meta: { changes: 1 } };
           if (s.includes('INSERT INTO package_security_results')) { db.package_security_results.push({ package_id: a[1], check_type: a[5], status: a[6] }); return { meta: { changes: 1 } }; }
+          if (s.includes('UPDATE package_manual_reviews SET status=?')) {
+            const r = db.package_manual_reviews.find((x: any) => x.id === a[4]);
+            if (r) { r.status = a[0]; r.admin_user_id = a[1]; r.reviewed_at = 'now'; }
+            return { meta: { changes: r ? 1 : 0 } };
+          }
           if (s.includes('UPDATE packages')) {
             for (const p of db.packages) {
               const m = s.match(/security_state='([A-Z_]+)'/); if (m) p.security_state = m[1];
@@ -258,4 +263,119 @@ test('/health exposes service, environment and securityPipelineVersion', async (
   assert.equal(j.environment, 'production');
   assert.match(j.securityPipelineVersion, /^\d{4}-\d{2}-\d{2}\./);
   assert.ok(!JSON.stringify(j).includes('JWT'), 'no secrets in health output');
+});
+
+// ---------------------------------------------------------------------------
+// Admin identity attachment: /admin/security handlers must SEE the admin
+// (the 'Admin identity required' production bug on override/manual-review)
+// ---------------------------------------------------------------------------
+
+function overrideEnv(pkgOver: Record<string, any> = {}) {
+  const db: any = {
+    packages: [{
+      id: 'pkg-1', application_id: 'app-1', release_id: 'rel-1', platform: 'linux_deb', architecture: 'x64',
+      filename: 'x.deb', storage_key: 'k', quarantine_key: 'k', file_size: 8, sha256: 'a'.repeat(64),
+      security_state: 'MALWARE_SCAN', overall_security: 'NEEDS_REVIEW', security_scan_status: 'UNAVAILABLE',
+      signature_status: 'pending', developer_id: null, deployment_url: null, status: 'stored',
+      ...pkgOver,
+    }],
+    package_security_overrides: [], package_manual_reviews: [], package_security_results: [],
+    audit_logs: [], developer_audit_logs: [], notifications: [], users: [], developer_members: [],
+  };
+  const DB = {
+    prepare(sql: string) {
+      const self: any = {
+        _b: [] as any[],
+        bind(...a: any[]) { self._b = a; return self; },
+        async first() {
+          const s = sql.replace(/\s+/g, ' ');
+          const a = self._b;
+          if (s.includes('SELECT * FROM packages WHERE id=?')) return db.packages.find((p: any) => p.id === a[0]) || null;
+          if (s.includes('SELECT id, role FROM users WHERE id=?')) return db.users.find((u: any) => u.id === a[0]) || null;
+          if (s.includes("SELECT * FROM package_manual_reviews WHERE package_id=? AND status='PENDING'")) {
+            return db.package_manual_reviews.filter((r: any) => r.package_id === a[0] && r.status === 'PENDING' && !r.invalidated_at)[0] || null;
+          }
+          if (s.includes('SELECT status FROM package_security_results WHERE package_id=? AND check_type=?')) {
+            const rows = db.package_security_results.filter((r: any) => r.package_id === a[0] && r.check_type === a[1]);
+            return rows.length ? { status: rows[rows.length - 1].status } : null;
+          }
+          return null;
+        },
+        async all() { return { results: [] }; },
+        async run() {
+          const s = sql.replace(/\s+/g, ' ');
+          const a = self._b;
+          if (s.includes('INSERT INTO package_security_overrides')) { db.package_security_overrides.push({ id: a[0], package_id: a[1], admin_user_id: a[2], reason: a[3], sha256: a[6] }); return { meta: { changes: 1 } }; }
+          if (s.includes('INSERT INTO audit_logs')) { db.audit_logs.push({ id: a[0], action: a[1], resource_id: a[3], details: a[4] }); return { meta: { changes: 1 } }; }
+          if (s.includes('UPDATE packages')) {
+            const p = db.packages[0];
+            const m = s.match(/security_state='([A-Z_]+)'/); if (m) p.security_state = m[1];
+            const m2 = s.match(/overall_security='([A-Z_]+)'/); if (m2) p.overall_security = m2[1];
+            return { meta: { changes: 1 } };
+          }
+          return { meta: { changes: 0 } };
+        },
+      };
+      return self;
+    },
+  };
+  return {
+    DB, __db: db,
+    STORAGE: { async get() { return null; }, async head() { return { size: 8 }; } },
+    CACHE: { async get() { return null; }, async put() {} },
+    JWT_SECRET: JWT, ENVIRONMENT: 'production', CORS_ALLOWED_ORIGINS: 'https://rx-store-web.pages.dev',
+  };
+}
+
+test('override: a VALID admin token now reaches the handler — the override succeeds and is audited with the admin id', async () => {
+  const env = overrideEnv();
+  const r = new Request('https://rx-store-api.calcitoninpay.workers.dev/v1/admin/security/packages/pkg-1/override', {
+    method: 'POST',
+    headers: { Origin: ORIGIN, Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: 'Manual review: verified against the vendor checksum.' }),
+  });
+  const res = await worker.fetch(r as any, env as any);
+  const text = await res.text();
+  assert.equal(res.status, 200, `override must succeed — got ${res.status}: ${text}`);
+  assert.equal(res.headers.get('Access-Control-Allow-Origin'), ORIGIN);
+  const j: any = JSON.parse(text);
+  assert.equal(j.success, true);
+  // The override row records WHO decided (the attached admin identity).
+  assert.equal(env.__db.package_security_overrides.length, 1);
+  assert.equal(env.__db.package_security_overrides[0].admin_user_id, 'admin-1');
+  assert.equal(env.__db.audit_logs[0].action, 'security_override');
+});
+
+test('override: a NON-admin token is refused at the /admin gate (401, before the handler)', async () => {
+  const userToken = await generateToken({ userId: 'user-9', role: 'user' }, JWT);
+  const env = overrideEnv();
+  const r = new Request('https://rx-store-api.calcitoninpay.workers.dev/v1/admin/security/packages/pkg-1/override', {
+    method: 'POST',
+    headers: { Origin: ORIGIN, Authorization: `Bearer ${userToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: 'trust me, I am admin' }),
+  });
+  const res = await worker.fetch(r as any, env as any);
+  assert.equal(res.status, 401);
+  assert.equal(env.__db.package_security_overrides.length, 0, 'no override written');
+});
+
+test('manual-review decision: the admin identity is attached (worker-level identity path)', async () => {
+  const env = overrideEnv();
+  env.__db.users.push({ id: 'admin-1', role: 'admin' });
+  env.__db.package_manual_reviews.push({ id: 'mrev-1', package_id: 'pkg-1', sha256: 'a'.repeat(64), platform: 'linux_deb', reason: 'scanner unavailable', status: 'PENDING', created_at: 'now', invalidated_at: null });
+  env.__db.package_security_results.push(
+    { package_id: 'pkg-1', check_type: 'integrity', status: 'PASSED', created_at: 'now' },
+    { package_id: 'pkg-1', check_type: 'malware', status: 'UNAVAILABLE', created_at: 'now' },
+  );
+  const r = new Request('https://rx-store-api.calcitoninpay.workers.dev/v1/admin/security/packages/pkg-1/manual-review', {
+    method: 'POST',
+    headers: { Origin: ORIGIN, Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decision: 'APPROVE', notes: 'Independently verified against the vendor release.' }),
+  });
+  const res = await worker.fetch(r as any, env as any);
+  const text = await res.text();
+  assert.equal(res.status, 200, `manual review must succeed — got ${res.status}: ${text}`);
+  const j: any = JSON.parse(text);
+  assert.equal(j.data.manualReviewStatus, 'APPROVED');
+  assert.equal(j.data.publicationAuthorization, 'MANUAL_APPROVAL');
 });
