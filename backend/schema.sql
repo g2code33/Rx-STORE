@@ -141,6 +141,29 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
 CREATE INDEX IF NOT EXISTS idx_oauth_tokens_hash ON oauth_tokens(token_hash);
 CREATE INDEX IF NOT EXISTS idx_oauth_tokens_expiry ON oauth_tokens(expires_at);
 
+-- ==================== ADMIN INBOX (direct-to-admin messages) ====================
+CREATE TABLE IF NOT EXISTS admin_inbox (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL CHECK (type IN ('ad_booking','contact','support','sponsor')),
+  name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  subject TEXT NOT NULL,
+  message TEXT NOT NULL,
+  payload TEXT DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','in_review','actioned','archived')),
+  admin_note TEXT,
+  replied_at TEXT,
+  reply_template TEXT,
+  reply_delivery TEXT,
+  notified_admin TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_admin_inbox_status ON admin_inbox(status);
+CREATE INDEX IF NOT EXISTS idx_admin_inbox_created ON admin_inbox(created_at);
+CREATE INDEX IF NOT EXISTS idx_admin_inbox_user ON admin_inbox(user_id);
+
 -- ==================== DOWNLOADS ====================
 CREATE TABLE IF NOT EXISTS downloads (
   id TEXT PRIMARY KEY,

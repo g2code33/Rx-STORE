@@ -8,6 +8,7 @@ import { corsMiddleware, corsHeaders } from './middleware/cors';
 
 import { authRoutes } from './routes/auth';
 import { oauthRoutes } from './routes/oauth';
+import { inboxRoutes } from './routes/inbox';
 import { appsRoutes } from './routes/apps';
 import { usersRoutes } from './routes/users';
 
@@ -757,6 +758,21 @@ export default {
         }
       } catch (e: any) { console.error(`[${requestId}] error:`, redact(String(e?.message||e))); return fail('INTERNAL', 'Something went wrong. Please try again.'); }
     }
+    // ---- Admin inbox (public submit — direct-to-admin messaging) ----
+    if (path === '/inbox/submit' && request.method === 'POST') {
+      try {
+        const data = await inboxRoutes.submit(normalizedRequest as any, env);
+        if (data?.code) {
+          const status = data.code === 'VALIDATION_ERROR' ? 400 : 400;
+          return respond({ success: false, error: { code: data.code, message: data.message } }, status, origin);
+        }
+        return respond({ success: true, data }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] inbox submit:`, redact(String(e?.message || e)));
+        return fail('VALIDATION_ERROR', 'Could not send your message. Please try again.');
+      }
+    }
+
     // ---- OAuth (secondary auth: Google/GitHub) — GET redirects + provider list ----
     if (request.method === 'GET' && (path.startsWith('/auth/oauth/') || path === '/auth/methods')) {
       try {
@@ -1336,6 +1352,26 @@ export default {
     }
 
     // ---- Admin: payments (Phase 18; admin JWT enforced for /admin/*) ----
+    // ---- Admin inbox (ad bookings / contact / support) ----
+    if (path.startsWith('/admin/inbox')) {
+      try {
+        let d: any;
+        if (path === '/admin/inbox' && request.method === 'GET') d = await inboxRoutes.list(normalizedRequest as any, env);
+        else if (path === '/admin/inbox/templates' && request.method === 'GET') d = await inboxRoutes.templates(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/inbox\/[^\/]+\/status$/) && request.method === 'POST') d = await inboxRoutes.setStatus(normalizedRequest as any, env);
+        else if (path.match(/^\/admin\/inbox\/[^\/]+\/reply$/) && request.method === 'POST') d = await inboxRoutes.reply(normalizedRequest as any, env);
+        else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown inbox route' } }, 404, origin);
+        if (d?.error || d?.code) {
+          const code: ErrorCode = d.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'VALIDATION_ERROR';
+          return fail(code, String(d.message || d.error));
+        }
+        return respond({ success: true, data: d }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] admin inbox:`, redact(String(e?.message || e)));
+        return fail('INTERNAL', 'Inbox operation failed.');
+      }
+    }
+
     if (path.startsWith('/admin/payments')) {
       try {
         let d: any;

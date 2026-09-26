@@ -3,6 +3,7 @@ import { Eye, Crown, BarChart3, ArrowRight } from 'lucide-react';
 import { useContent } from '../context/ContentContext';
 import { getPublicSettings } from '../services/api';
 import Editable from '../components/edit/Editable';
+import ContactAdminForm from '../components/support/ContactAdminForm';
 import PageBlocks from '../components/edit/PageBlocks';
 import { Link } from 'react-router-dom';
 
@@ -19,6 +20,21 @@ export default function Advertise() {
   React.useEffect(() => { getPublicSettings().then((s) => { if (s.support_email) setEmail(s.support_email); }).catch(() => {}); }, []);
 
   const cta = getJSON('advertise.cta', { label: 'Book the intro slot', to: `mailto:${email}?subject=${encodeURIComponent('Intro Ad — RX Store')}` });
+
+  // The directly-to-admin booking template (senders can edit before sending).
+  const BOOKING_TEMPLATE = [
+    'Hi RX Store team,',
+    '',
+    "I'd like to book the welcome-screen ad slot. Here's my campaign:",
+    '',
+    '• Product / brand: (what are you advertising?)',
+    '• Headline idea: (the one line every visitor will see)',
+    '• Target link: (where the card should send people)',
+    '• Preferred dates: (e.g. two weeks from…)',
+    '• Anything else: (artwork, questions, budget…)',
+    '',
+    '— Sent from the Advertise page',
+  ].join('\n');
 
   const CARDS = [
     {
@@ -116,6 +132,34 @@ export default function Advertise() {
               </PitchLink>
             </Editable>
           </div>
+        </div>
+      </section>
+
+      {/* Booking form — goes DIRECTLY to the admin's portal inbox */}
+      <section className="section-container pb-20">
+        <div className="max-w-2xl mx-auto">
+          <h2 className="text-2xl sm:text-3xl font-bold text-white mb-2">
+            <Editable id="advertise.form.title" label="Form heading">{get('advertise.form.title', 'Book the slot — directly to the admin')}</Editable>
+          </h2>
+          <p className="text-sm text-rx-gray-medium mb-6">
+            <Editable id="advertise.form.sub" type="textarea" label="Form subtitle">
+              {get('advertise.form.sub', 'Fill this in and it lands straight in the RX Store admin inbox — no email app needed. The team reviews every booking in the portal and replies to you (usually within a business day).')}
+            </Editable>
+          </p>
+          <ContactAdminForm
+            type="ad_booking"
+            defaultSubject="Welcome-screen ad slot booking"
+            template={BOOKING_TEMPLATE}
+            fields={[
+              { key: 'company', label: 'Company / brand', placeholder: 'Acme Health Ltd' },
+              { key: 'headline', label: 'Headline idea', placeholder: 'One line every visitor sees' },
+              { key: 'targetUrl', label: 'Target link', placeholder: 'https://…' },
+              { key: 'dates', label: 'Preferred dates', placeholder: 'e.g. 1–14 October' },
+            ]}
+          />
+          <p className="text-xs text-rx-gray-medium mt-4 text-center">
+            Prefer email? <a className="text-rx-yellow hover:underline" href={`mailto:${email}?subject=${encodeURIComponent('Intro Ad — RX Store')}`}>{email}</a>
+          </p>
         </div>
       </section>
 

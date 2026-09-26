@@ -125,6 +125,7 @@ columns), so back up before applying it.
 0017_developer_community.sql         Developer community (categories/discussions/replies/reports) + scoped API tokens
 0018_persistent_sessions.sql         PERSISTENT auth sessions: auth_sessions.expires_at becomes NULLABLE (NULL = until revoked)
 0019_auth_identities.sql              OAuth identities (google/github) + hashed single-use OAuth tokens (state/code/link/intent)
+0020_admin_inbox.sql                  Admin inbox — direct-to-admin messages (ad bookings, contact, support) + admin actions/replies
 ```
 
 ### 0018 — persistent sessions (auth hardening)

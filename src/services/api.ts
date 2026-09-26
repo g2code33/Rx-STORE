@@ -678,6 +678,40 @@ export const api = {
   },
 
   // Admin payments (Phase 18)
+  // ---- Admin inbox (direct-to-admin messaging) ----
+  inbox: {
+    /** Public: send a message straight to the admin portal inbox. */
+    async submit(input: {
+      type: 'ad_booking' | 'contact' | 'support' | 'sponsor';
+      name: string; email: string; subject: string; message: string;
+      payload?: Record<string, string>; notifySender?: boolean;
+    }) {
+      return request<{ id: string; adminNotified: string; senderAcknowledged: string; message: string }>('/inbox/submit', {
+        method: 'POST',
+        body: JSON.stringify(input),
+        auth: false,
+      });
+    },
+    list(status?: string) {
+      return request<{ messages: any[]; counts: Record<string, number> }>(`/admin/inbox${status ? `?status=${encodeURIComponent(status)}` : ''}`, { method: 'GET' });
+    },
+    templates() {
+      return request<{ templates: Array<{ id: string; label: string; subject: string }> }>('/admin/inbox/templates', { method: 'GET' });
+    },
+    setStatus(id: string, status: string, note?: string) {
+      return request<{ success: boolean }>(`/admin/inbox/${encodeURIComponent(id)}/status`, {
+        method: 'POST',
+        body: JSON.stringify({ status, note }),
+      });
+    },
+    reply(id: string, template: string, custom: string) {
+      return request<{ success: boolean; delivery: string; note: string }>(`/admin/inbox/${encodeURIComponent(id)}/reply`, {
+        method: 'POST',
+        body: JSON.stringify({ template, custom }),
+      });
+    },
+  },
+
   adminPayments: {
     /** LIVE payment configuration state (booleans + counters, never secrets). */
     async status() {

@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 import {
   LayoutDashboard, Package, Users, BarChart3, DollarSign, Upload,
   Download, Star, Settings, Shield, Plus, Edit, Trash2, Activity, Database, Cloud, Bot, Key, Globe, FileText, Bell, Megaphone,
-  Monitor, Eye, Paintbrush, Loader2, Rocket, MousePointerClick, Tablet, Smartphone, PanelRight, Shapes, Store, CreditCard} from 'lucide-react';
+  Monitor, Eye, Paintbrush, Loader2, Rocket, MousePointerClick, Tablet, Smartphone, PanelRight, Shapes, Store, CreditCard, Inbox} from 'lucide-react';
 import { useApps } from '../context/AppContext';
 import { useCategories } from '../hooks/useCategories';
 import { formatDownloadCount } from '../utils/helpers';
@@ -58,6 +58,7 @@ import StorefrontAdminPanel from '../components/admin/StorefrontAdminPanel';
 import ReviewModerationPanel from '../components/admin/ReviewModerationPanel';
 import PaymentsAdminPanel from '../components/admin/PaymentsAdminPanel';
 import CommunityModerationPanel from '../components/admin/CommunityModerationPanel';
+import AdminInboxPanel from '../components/admin/AdminInboxPanel';
 import AdminSettings from '../components/admin/AdminSettings';
 import RecycleBin from '../components/admin/RecycleBin';
 import { useAuth } from '../context/AuthContext';
@@ -163,6 +164,7 @@ export default function Admin() {
     { id: 'applications', label: 'Applications', icon: Package },
     { id: 'releases', label: 'Releases', icon: Upload },
     { id: 'users', label: 'Users', icon: Users },
+    { id: 'inbox', label: 'Inbox', icon: Inbox },
     { id: 'icons', label: 'Icons', icon: Shapes },
     { id: 'payments', label: 'Payments', icon: CreditCard },
     { id: 'community', label: 'Community', icon: Users },
@@ -474,6 +476,7 @@ export default function Admin() {
 
           {activeSection === 'releases' && (<div className="animate-fade-in"><ReleasesManager /></div>)}
           {activeSection === 'users' && (<div className="animate-fade-in"><UserRoleEditor /></div>)}
+          {activeSection === 'inbox' && (<div className="animate-fade-in"><AdminInboxPanel /></div>)}
           {activeSection === 'icons' && (<div className="animate-fade-in"><IconManager /></div>)}
 
           {activeSection === 'community' && (
