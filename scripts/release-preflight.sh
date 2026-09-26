@@ -70,6 +70,31 @@ grep -q '^MALWARE_SCANNER' backend/wrangler.toml \
   && row ok "MALWARE_SCANNER" "scanner selection present" 0 || row fail "MALWARE_SCANNER" "missing from [vars] (must live INSIDE the [vars] table)" 0
 echo
 
+# ---- D1 schema (migrations actually applied?) ------------------------------
+# Uses wrangler with stdin closed + a timeout so an auth prompt fails fast
+# instead of hanging. Any wrangler failure degrades to WARN (verify manually).
+echo "D1 database (rx-store-db):"
+D1_CHECK="$(timeout 60 npx wrangler d1 execute rx-store-db --remote --json -y \
+  --command "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('admin_inbox','auth_identities','oauth_tokens','scanner_cache','package_manual_reviews','package_security_results')" < /dev/null 2>/dev/null || true)"
+if echo "$D1_CHECK" | grep -q '"admin_inbox"'; then
+  MISSING_TB=""
+  for t in auth_identities oauth_tokens scanner_cache package_manual_reviews package_security_results; do
+    echo "$D1_CHECK" | grep -q "\"$t\"" || MISSING_TB="$MISSING_TB $t"
+  done
+  [ -z "$MISSING_TB" ] && row ok "Tables (0016b-0022)" "all pipeline tables present" 1 || row fail "Tables (0016b-0022)" "missing:$MISSING_TB — apply the pending migrations (see docs/DATABASE.md)" 1
+  # Column-level check for the 0021 scanner workflow columns.
+  D1_COLS="$(timeout 60 npx wrangler d1 execute rx-store-db --remote --json -y \
+    --command "SELECT name FROM pragma_table_info('package_security_results') WHERE name IN ('scanner_analysis_id','scanner_verdict','scanner_raw_summary')" < /dev/null 2>/dev/null || true)"
+  if echo "$D1_COLS" | grep -q scanner_analysis_id; then
+    row ok "Scanner workflow cols" "0021 columns present" 1
+  else
+    row fail "Scanner workflow cols" "0021 NOT applied — scan results would not persist: npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0021_scanner_workflow.sql" 1
+  fi
+else
+  row warn "D1 schema" "could not verify (wrangler auth/unavailable) — run: npx wrangler d1 execute rx-store-db --remote --command \"SELECT name FROM sqlite_master WHERE type='table' AND name IN ('scanner_cache','package_manual_reviews')\"" 1
+fi
+echo
+
 # ---- Frontend ---------------------------------------------------------------
 echo "Frontend:"
 API_URL="$(grep -E '^VITE_API_URL' .env.production 2>/dev/null | cut -d= -f2)"
