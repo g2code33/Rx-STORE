@@ -38,6 +38,8 @@ export const CHECK_ORDER = [
 ] as const;
 export type CheckType = (typeof CHECK_ORDER)[number];
 
+import { sha256R2Object, streamToMultipart } from './streaming.ts';
+
 /** Malware scan statuses (spec §5). */
 export type MalwareStatus = 'PENDING' | 'SCANNING' | 'CLEAN' | 'DETECTED' | 'FAILED' | 'UNAVAILABLE';
 /** Generic check statuses (spec §8). */
@@ -52,6 +54,9 @@ export interface CheckResult {
   providerVersion?: string;
   fingerprint?: string;
   error?: string;
+  /** Scanner workflow metadata (VirusTotal upload fallback). */
+  analysisId?: string;
+  scannerStats?: { malicious?: number; suspicious?: number; harmless?: number; undetected?: number };
 }
 
 export function rid(prefix: string): string {
@@ -496,7 +501,7 @@ export function classifyDuplicate(input: {
 // CHECK 4 — malware scan (pluggable providers, fail-closed)
 // ---------------------------------------------------------------------------
 
-const SCAN_TIMEOUT_MS = 15000;
+const SCAN_TIMEOUT_MS = 20000;
 
 /** Resolve the scanner provider config from env. */
 export function scannerProvider(env: any): { kind: 'virustotal' | 'custom' } | null {
@@ -506,8 +511,200 @@ export function scannerProvider(env: any): { kind: 'virustotal' | 'custom' } | n
   return null;
 }
 
+// --- VirusTotal upload-fallback configuration (env-overridable for tests) ---
+const VT_NORMAL_UPLOAD_LIMIT = 32 * 1024 * 1024; // VT's documented small-upload threshold
+function vtPollConfig(env: any): { maxPolls: number; firstIntervalMs: number; growth: number; maxIntervalMs: number } {
+  return {
+    maxPolls: Number(env?.VT_SCAN_MAX_POLLS) || 8,
+    firstIntervalMs: Number(env?.VT_SCAN_POLL_INTERVAL_MS) || 4000,
+    growth: Number(env?.VT_SCAN_POLL_GROWTH) || 1.5,
+    maxIntervalMs: Number(env?.VT_SCAN_POLL_MAX_INTERVAL_MS) || 12000,
+  };
+}
+function scanMaxAgeHours(env: any): number {
+  const v = Number(env?.VT_SCAN_MAX_AGE_HOURS);
+  return Number.isFinite(v) && v >= 1 ? v : 720; // 30 days default
+}
+
+interface VtStats { malicious: number; suspicious: number; harmless: number; undetected: number }
+
+function statsOf(j: any): VtStats {
+  const st = j?.data?.attributes?.last_analysis_stats || j?.data?.attributes?.stats || {};
+  return {
+    malicious: Number(st.malicious || 0),
+    suspicious: Number(st.suspicious || 0),
+    harmless: Number(st.harmless || 0),
+    undetected: Number(st.undetected || 0),
+  };
+}
+
+function verdictFromStats(stats: VtStats): 'CLEAN' | 'DETECTED' {
+  return (stats.malicious + stats.suspicious) > 0 ? 'DETECTED' : 'CLEAN';
+}
+
+/** Normalize a VT stats object into a short summary string (no giant payloads persisted). */
+function summaryOf(stats: Partial<VtStats>): string {
+  return `malicious=${stats.malicious ?? 0} suspicious=${stats.suspicious ?? 0} harmless=${stats.harmless ?? 0} undetected=${stats.undetected ?? 0}`;
+}
+
+async function ensureScannerCache(env: any): Promise<void> {
+  if (!env?.DB?.prepare) return; // cache is an optimization — scan proceeds without it
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS scanner_cache (
+       sha256 TEXT PRIMARY KEY,
+       provider TEXT NOT NULL,
+       verdict TEXT NOT NULL CHECK (verdict IN ('CLEAN','DETECTED','SCANNING')),
+       analysis_id TEXT,
+       malicious INTEGER DEFAULT 0,
+       suspicious INTEGER DEFAULT 0,
+       harmless INTEGER DEFAULT 0,
+       undetected INTEGER DEFAULT 0,
+       scanned_at TEXT NOT NULL,
+       created_at TEXT DEFAULT (datetime('now'))
+     )`
+  ).run().catch(() => {});
+}
+
+async function readScannerCache(env: any, sha256: string): Promise<any | null> {
+  try {
+    await ensureScannerCache(env);
+    if (!env?.DB?.prepare) return null;
+    const row: any = await env.DB.prepare(`SELECT * FROM scanner_cache WHERE sha256=?`).bind(sha256).first().catch(() => null);
+    if (!row) return null;
+  const ageH = (Date.now() - new Date(String(row.scanned_at).replace(' ', 'T') + (String(row.scanned_at).includes('Z') ? '' : 'Z')).getTime()) / 3_600_000;
+    if (Number.isFinite(ageH) && ageH > scanMaxAgeHours(env)) return null; // stale → rescan
+    return row;
+  } catch {
+    return null; // cache unavailable — proceed with a live scan
+  }
+}
+
+async function writeScannerCache(env: any, input: {
+  sha256: string; provider: string; verdict: 'CLEAN' | 'DETECTED' | 'SCANNING';
+  analysisId?: string | null; stats?: VtStats;
+}): Promise<void> {
+  if (!env?.DB?.prepare) return; // cache write failure must never fail a scan
+  await ensureScannerCache(env);
+  await env.DB.prepare(
+    `INSERT INTO scanner_cache (sha256, provider, verdict, analysis_id, malicious, suspicious, harmless, undetected, scanned_at)
+     VALUES (?,?,?,?,?,?,?,?,datetime('now'))
+     ON CONFLICT(sha256) DO UPDATE SET provider=excluded.provider, verdict=excluded.verdict,
+       analysis_id=excluded.analysis_id, malicious=excluded.malicious, suspicious=excluded.suspicious,
+       harmless=excluded.harmless, undetected=excluded.undetected, scanned_at=datetime('now')`
+  ).bind(input.sha256, input.provider, input.verdict, input.analysisId ?? null,
+    input.stats?.malicious ?? 0, input.stats?.suspicious ?? 0, input.stats?.harmless ?? 0, input.stats?.undetected ?? 0
+  ).run().catch(() => {});
+}
+
+/**
+ * Poll a VirusTotal analysis until completion, within a bounded budget.
+ * Returns the final verdict, or null when the budget expires (still scanning).
+ * NEVER converts an unfinished scan into CLEAN.
+ */
+async function pollVtAnalysis(env: any, analysisId: string): Promise<{ verdict: 'CLEAN' | 'DETECTED'; stats: VtStats } | null> {
+  const cfg = vtPollConfig(env);
+  let interval = cfg.firstIntervalMs;
+  for (let attempt = 0; attempt < cfg.maxPolls; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(`https://www.virustotal.com/api/v3/analyses/${encodeURIComponent(analysisId)}`, {
+        headers: { 'x-apikey': String(env.VIRUSTOTAL_API_KEY) },
+        signal: AbortSignal.timeout(SCAN_TIMEOUT_MS),
+      });
+    } catch {
+      return null; // transient poll failure → treat as still-scanning (never CLEAN)
+    }
+    if (res.status === 429) { await sleep(Math.min(interval, cfg.maxIntervalMs)); interval = Math.min(interval * cfg.growth, cfg.maxIntervalMs); continue; }
+    if (!res.ok) return null;
+    const j: any = await res.json().catch(() => null);
+    const status = String(j?.data?.attributes?.status || '');
+    if (status === 'completed') {
+      const stats = statsOf(j);
+      return { verdict: verdictFromStats(stats), stats };
+    }
+    if (status === 'queued' || status === 'running' || status === '') {
+      await sleep(Math.min(interval, cfg.maxIntervalMs));
+      interval = Math.min(interval * cfg.growth, cfg.maxIntervalMs);
+      continue;
+    }
+    return null; // unexpected status → honest non-final
+  }
+  return null; // budget exhausted → SCANNING
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Stream-upload the ACTUAL R2 object bytes to VirusTotal.
+ *   size < 32MB → POST /api/v3/files
+ *   size ≥ 32MB → GET /api/v3/files/upload_url, then POST to that one-time URL
+ * The request body is a streaming multipart encoder (prefix + R2 stream +
+ * suffix) with an exact Content-Length — the file is never buffered whole.
+ * Returns the analysis id, or an error string.
+ */
+async function vtUploadObject(env: any, input: {
+  storageKey: string; filename: string; size: number; sha256: string;
+}): Promise<{ analysisId: string } | { error: string; status?: number }> {
+  let obj: any;
+  try {
+    obj = await env.STORAGE.get(input.storageKey);
+  } catch {
+    return { error: 'stored object could not be read for scanning' };
+  }
+  if (!obj || typeof obj.body?.getReader !== 'function') return { error: 'stored object missing — cannot scan' };
+  if (Number(obj.size ?? 0) !== input.size) return { error: `stored object size (${obj.size}) differs from the recorded size (${input.size})` };
+
+  const mp = streamToMultipart(obj.body as ReadableStream<Uint8Array>, {
+    filename: input.filename, fileSize: input.size,
+  });
+
+  let uploadUrl = 'https://www.virustotal.com/api/v3/files';
+  if (input.size >= VT_NORMAL_UPLOAD_LIMIT) {
+    // Large-file path: obtain a ONE-TIME upload URL (never hardcoded, never cached).
+    let urlRes: Response;
+    try {
+      urlRes = await fetch('https://www.virustotal.com/api/v3/files/upload_url', {
+        headers: { 'x-apikey': String(env.VIRUSTOTAL_API_KEY) },
+        signal: AbortSignal.timeout(SCAN_TIMEOUT_MS),
+      });
+    } catch (e: any) {
+      return { error: `upload_url request failed: ${String(e?.message || e).slice(0, 120)}` };
+    }
+    if (urlRes.status === 429) return { error: 'rate limited while requesting the large-file upload URL', status: 429 };
+    if (!urlRes.ok) return { error: `upload_url responded ${urlRes.status}`, status: urlRes.status };
+    const uj: any = await urlRes.json().catch(() => null);
+    const oneTime = String(uj?.data || '');
+    if (!/^https:\/\//.test(oneTime)) return { error: 'scanner returned an invalid upload URL' };
+    uploadUrl = oneTime;
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: {
+        'x-apikey': String(env.VIRUSTOTAL_API_KEY),
+        'Content-Type': mp.contentType,
+        'Content-Length': String(mp.contentLength),
+      },
+      body: mp.body as unknown as BodyInit,
+      signal: AbortSignal.timeout(120_000),
+    });
+  } catch (e: any) {
+    return { error: `upload request failed: ${String(e?.message || e).slice(0, 120)}` };
+  }
+  if (res.status === 429) return { error: 'scanner rate limited the upload', status: 429 };
+  if (!res.ok) return { error: `upload responded ${res.status}`, status: res.status };
+  const j: any = await res.json().catch(() => null);
+  const analysisId = j?.data?.id;
+  if (!analysisId) return { error: 'scanner accepted the upload but returned no analysis id' };
+  return { analysisId: String(analysisId) };
+}
+
 export async function runMalwareScan(env: any, input: {
-  sha256: string; filename: string; size: number; platform: string;
+  sha256: string; filename: string; size: number; platform: string; storageKey?: string;
 }): Promise<CheckResult> {
   const provider = scannerProvider(env);
   if (!provider) {
@@ -518,27 +715,100 @@ export async function runMalwareScan(env: any, input: {
       details: `Malware scanning is not configured (MALWARE_SCANNER=${JSON.stringify(key)}). The package stays blocked from publication until a scanner is configured (MALWARE_SCANNER=virustotal + VIRUSTOTAL_API_KEY, or MALWARE_SCANNER=custom + MALWARE_SCANNER_URL) or an admin explicitly overrides with a reason.`,
     };
   }
-  try {
-    if (provider.kind === 'virustotal') {
-      const res = await fetch(`https://www.virustotal.com/api/v3/files/${input.sha256}`, {
-        headers: { 'x-apikey': String(env.VIRUSTOTAL_API_KEY) },
+
+  const sha = String(input.sha256 || '').toLowerCase();
+  if (provider.kind === 'virustotal') {
+    const apiKey = String(env.VIRUSTOTAL_API_KEY);
+    const startedAt = Date.now();
+
+    // 0) Fresh scan-cache for this exact byte hash (upload avoidance; NOT a
+    //    permanent trust — scanner_cache rows expire by scan_max_age).
+    const cached = await readScannerCache(env, sha).catch(() => null);
+    if (cached && cached.verdict === 'DETECTED') {
+      return { status: 'DETECTED', provider: 'virustotal', providerVersion: 'api-v3',
+        result: `${Number(cached.malicious) + Number(cached.suspicious)} engine detection(s) (cached scan)`,
+        details: summaryOf({ malicious: Number(cached.malicious), suspicious: Number(cached.suspicious), harmless: Number(cached.harmless), undetected: Number(cached.undetected) }) };
+    }
+    if (cached && cached.verdict === 'CLEAN') {
+      return { status: 'CLEAN', provider: 'virustotal', providerVersion: 'api-v3',
+        result: 'no engine detections (cached scan)', details: summaryOf({ malicious: Number(cached.malicious), suspicious: Number(cached.suspicious), harmless: Number(cached.harmless), undetected: Number(cached.undetected) }) };
+    }
+    // A cached SCANNING entry means a previous run uploaded and the analysis
+    // is in flight — resume polling THAT analysis instead of re-uploading.
+    if (cached && cached.verdict === 'SCANNING' && cached.analysis_id) {
+      const done = await pollVtAnalysis(env, String(cached.analysis_id));
+      if (done) {
+        await writeScannerCache(env, { sha256: sha, provider: 'virustotal', verdict: done.verdict, analysisId: cached.analysis_id, stats: done.stats });
+        return {
+          status: done.verdict, provider: 'virustotal', providerVersion: 'api-v3',
+          result: done.verdict === 'DETECTED' ? `${done.stats.malicious + done.stats.suspicious} engine detection(s)` : 'no engine detections',
+          details: summaryOf(done.stats), analysisId: String(cached.analysis_id),
+          scannerStats: done.stats,
+        };
+      }
+      return { status: 'SCANNING', provider: 'virustotal', providerVersion: 'api-v3',
+        result: 'VirusTotal analysis still in progress', details: `analysis ${cached.analysis_id} has not completed within the polling budget — publication stays blocked until the scan finishes (re-run the security pipeline)`, analysisId: String(cached.analysis_id) };
+    }
+
+    // 1) Hash lookup — a completed report for these exact bytes?
+    let res: Response;
+    try {
+      res = await fetch(`https://www.virustotal.com/api/v3/files/${sha}`, {
+        headers: { 'x-apikey': apiKey },
         signal: AbortSignal.timeout(SCAN_TIMEOUT_MS),
       });
-      if (res.status === 404) {
-        return { status: 'FAILED', provider: 'virustotal', result: 'hash unknown to VirusTotal', details: 'The file hash has never been scanned by VirusTotal, so it cannot be cleared by lookup. Configure an upload-capable custom scanner (MALWARE_SCANNER=custom) or override explicitly after manual review.' };
-      }
-      if (!res.ok) {
-        return { status: 'FAILED', provider: 'virustotal', result: `scanner responded ${res.status}`, error: `HTTP ${res.status}` };
-      }
-      const j: any = await res.json();
-      const stats = j?.data?.attributes?.last_analysis_stats || {};
-      const malicious = Number(stats.malicious || 0) + Number(stats.suspicious || 0);
-      if (malicious > 0) {
-        return { status: 'DETECTED', provider: 'virustotal', result: `${malicious} engine detection(s)`, details: `malicious=${stats.malicious} suspicious=${stats.suspicious}` };
-      }
-      return { status: 'CLEAN', provider: 'virustotal', providerVersion: 'api-v3', result: 'no engine detections', details: `harmless=${stats.harmless || 0} undetected=${stats.undetected || 0}` };
+    } catch {
+      return { status: 'UNAVAILABLE', provider: 'virustotal', result: 'scanner unreachable (network)', details: 'The VirusTotal lookup could not be completed. The package stays blocked; re-run the pipeline when the scanner is reachable.' };
     }
-    // custom REST scanner
+    if (res.status === 429) {
+      return { status: 'UNAVAILABLE', provider: 'virustotal', result: 'scanner rate limited', details: 'VirusTotal responded 429. The package stays blocked; the next pipeline run retries (cached scan results are reused when fresh).' };
+    }
+    if (res.status === 404) {
+      // 2) Unknown hash is NOT malware — upload the ACTUAL package bytes.
+      if (!input.storageKey) {
+        return { status: 'FAILED', provider: 'virustotal', result: 'unknown hash and no stored object to scan',
+          details: 'The hash is not known to VirusTotal and no storage key was supplied, so the file cannot be uploaded for scanning.' };
+      }
+      const uploaded = await vtUploadObject(env, { storageKey: input.storageKey, filename: input.filename, size: input.size, sha256: sha });
+      if ('error' in uploaded) {
+        const rateLimited = uploaded.status === 429;
+        return rateLimited
+          ? { status: 'UNAVAILABLE', provider: 'virustotal', result: 'scanner rate limited during upload', details: `${uploaded.error}. The package stays blocked; retry shortly.` }
+          : { status: 'FAILED', provider: 'virustotal', result: 'scanner upload failed', error: uploaded.error, details: `${uploaded.error}. The package stays blocked from publication.` };
+      }
+      await writeScannerCache(env, { sha256: sha, provider: 'virustotal', verdict: 'SCANNING', analysisId: uploaded.analysisId });
+      // 3) Bounded poll for the analysis verdict (never CLEAN on "200 OK").
+      const done = await pollVtAnalysis(env, uploaded.analysisId);
+      if (!done) {
+        return { status: 'SCANNING', provider: 'virustotal', providerVersion: 'api-v3',
+          result: 'VirusTotal analysis in progress',
+          details: `The package was uploaded to VirusTotal (analysis ${uploaded.analysisId}); the analysis has not completed within the polling budget. Publication stays blocked — re-run the security pipeline to poll for the final verdict.`,
+          analysisId: uploaded.analysisId };
+      }
+      await writeScannerCache(env, { sha256: sha, provider: 'virustotal', verdict: done.verdict, analysisId: uploaded.analysisId, stats: done.stats });
+      return {
+        status: done.verdict, provider: 'virustotal', providerVersion: 'api-v3',
+        result: done.verdict === 'DETECTED' ? `${done.stats.malicious + done.stats.suspicious} engine detection(s)` : 'no engine detections',
+        details: summaryOf(done.stats), analysisId: uploaded.analysisId, scannerStats: done.stats,
+      };
+    }
+    if (!res.ok) {
+      return { status: 'FAILED', provider: 'virustotal', result: `scanner responded ${res.status}`, error: `HTTP ${res.status}` };
+    }
+    const j: any = await res.json().catch(() => null);
+    const stats = statsOf(j);
+    const verdict = verdictFromStats(stats);
+    await writeScannerCache(env, { sha256: sha, provider: 'virustotal', verdict, stats });
+    void startedAt;
+    return {
+      status: verdict, provider: 'virustotal', providerVersion: 'api-v3',
+      result: verdict === 'DETECTED' ? `${stats.malicious + stats.suspicious} engine detection(s)` : 'no engine detections',
+      details: summaryOf(stats), scannerStats: stats,
+    };
+  }
+
+  // custom REST scanner (contract preserved — hash-based external scanner)
+  try {
     const res = await fetch(String(env.MALWARE_SCANNER_URL), {
       method: 'POST',
       headers: {
@@ -549,7 +819,7 @@ export async function runMalwareScan(env: any, input: {
       signal: AbortSignal.timeout(SCAN_TIMEOUT_MS),
     });
     if (!res.ok) return { status: 'FAILED', provider: 'custom', result: `scanner responded ${res.status}`, error: `HTTP ${res.status}` };
-    const j: any = await res.json();
+    const j: any = await res.json().catch(() => null);
     const status = String(j?.status || '').toUpperCase();
     if (status === 'CLEAN') return { status: 'CLEAN', provider: j?.provider || 'custom', providerVersion: j?.version, result: j?.result || 'no detections', details: j?.details };
     if (status === 'DETECTED') return { status: 'DETECTED', provider: j?.provider || 'custom', providerVersion: j?.version, result: j?.result || 'detections reported', details: j?.details || JSON.stringify(j?.detections || '').slice(0, 300) };
@@ -725,32 +995,48 @@ const STAGE_FOR_CHECK: Record<CheckType, PipelineStage> = {
   dependency: 'DEPENDENCY_SECURITY_CHECK', native_identity: 'NATIVE_IDENTITY_CHECK',
 };
 
-/** Recompute sha256 from the stored object and compare with the recorded hash. */
+/**
+ * Integrity = STREAMED SHA-256 of the exact stored R2 object vs the recorded
+ * package hash, plus streamed byte count vs packages.file_size. Arbitrary
+ * object sizes are supported (crypto.DigestStream in Workers — the object is
+ * never buffered whole). The hash ALWAYS comes from the stored bytes, never
+ * from a filename, MIME type or client-supplied checksum.
+ */
 async function checkIntegrity(env: any, pkg: any, bytes: PackageBytes | null): Promise<CheckResult> {
   if (!bytes) return { status: 'FAILED', result: 'stored object missing', details: 'The package file could not be read from storage — re-upload it.' };
   if (pkg.file_size && bytes.size !== Number(pkg.file_size)) {
     return { status: 'FAILED', result: 'size mismatch', details: `The recorded size is ${pkg.file_size} bytes but storage holds ${bytes.size}.` };
   }
-  if (bytes.full) {
-    const actual = await sha256Hex(bytes.full);
-    if (actual !== String(pkg.sha256).toLowerCase()) {
-      return { status: 'FAILED', result: 'hash mismatch', details: `Recorded SHA-256 ${pkg.sha256} does not match the stored bytes (${actual}). The file may have been corrupted or tampered with.` };
-    }
-    return { status: 'PASSED', result: 'stored bytes match the recorded SHA-256' };
+  const streamed = await sha256R2Object(env, pkg.quarantine_key || pkg.storage_key);
+  if (!streamed || !streamed.sha256) {
+    return { status: 'FAILED', result: 'stored object could not be read for hashing', details: 'The Worker could not stream the object from storage to verify its integrity — re-upload the package.' };
   }
-  // Large packages: hash verification of the full object is not feasible in
-  // the Worker (no streaming SHA-256) — say so instead of pretending.
-  return { status: 'NEEDS_REVIEW', result: 'object too large for in-Worker full-hash verification', details: `Size ${(bytes.size / 1024 / 1024).toFixed(1)} MB exceeds the in-memory verification limit; the recorded hash was computed at upload time. Re-verify externally if required.` };
+  if (streamed.size !== Number(pkg.file_size || streamed.size)) {
+    return { status: 'FAILED', result: 'size mismatch', details: `The recorded size is ${pkg.file_size} bytes but the stored object holds ${streamed.size}.` };
+  }
+  if (streamed.sha256 !== String(pkg.sha256).toLowerCase()) {
+    return { status: 'FAILED', result: 'hash mismatch', details: `Recorded SHA-256 ${pkg.sha256} does not match the stored bytes (${streamed.sha256}). The file may have been corrupted or tampered with.` };
+  }
+  return { status: 'PASSED', result: 'stored bytes match the recorded SHA-256 (streamed verification)', details: `Verified ${streamed.size} bytes by streaming SHA-256.` };
 }
 
 async function recordResult(env: any, pkg: any, check: CheckType, res: CheckResult, startedAt: number) {
+  // Scanner workflow metadata (analysis id, verdict, normalized summary) is
+  // persisted on the result row; the raw provider payload is NOT stored.
+  const rawSummary = res.scannerStats ? summaryOf(res.scannerStats) : null;
   await env.DB.prepare(
-    `INSERT INTO package_security_results (id, package_id, release_id, app_id, developer_id, check_type, status, classification, provider, provider_version, result, details, fingerprint, error, started_at, completed_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO package_security_results (id, package_id, release_id, app_id, developer_id, check_type, status, classification, provider, provider_version, result, details, fingerprint, error, started_at, completed_at, scanner_analysis_id, scanner_started_at, scanner_completed_at, scanner_last_checked_at, scanner_verdict, scanner_raw_summary)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(rid('psr'), pkg.id, pkg.release_id, pkg.application_id, pkg.developer_id ?? null, check, res.status,
     res.classification ?? null, res.provider ?? null, res.providerVersion ?? null, res.result,
     res.details ?? null, res.fingerprint ?? null, res.error ?? null,
-    new Date(startedAt).toISOString(), new Date().toISOString()).run().catch(() => {});
+    new Date(startedAt).toISOString(), new Date().toISOString(),
+    res.analysisId ?? null,
+    check === 'malware' ? new Date(startedAt).toISOString() : null,
+    check === 'malware' && res.status !== 'SCANNING' ? new Date().toISOString() : null,
+    check === 'malware' ? new Date().toISOString() : null,
+    check === 'malware' ? res.status : null,
+    rawSummary).run().catch(() => {});
 }
 
 /** Map per-check statuses to the overall verdict. Fail-closed everywhere. */
@@ -822,6 +1108,7 @@ export async function runSecurityPipeline(env: any, packageId: string): Promise<
   // 4. malware
   const malware = await run('malware', () => runMalwareScan(env, {
     sha256: pkg.sha256, filename: pkg.filename, size: Number(pkg.file_size) || 0, platform: pkg.platform,
+    storageKey: pkg.quarantine_key || pkg.storage_key,
   }));
   if (malware.status === 'DETECTED' || malware.status === 'FAILED') return finish(env, packageId, lastStage, results, 'FAILED');
 

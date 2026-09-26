@@ -8,6 +8,7 @@ import { hashPassword, verifyPassword, verifyToken } from '../services/auth.ts';
 import { normalizeArchitecture, normalizeChannel, validatePackageIntegrity, CHANNELS } from '../services/releases.ts';
 import { notifyStableReleaseEmails } from '../services/email.ts';
 import { runSecurityPipeline, publicationSecurityGate } from '../services/packageSecurity.ts';
+import { sha256R2Object } from '../services/streaming.ts';
 import { revokeAllSessions } from '../services/sessions.ts';
 
 async function validAdminPassword(request: Request, env: any, password: unknown): Promise<boolean> {
@@ -553,7 +554,14 @@ export const adminRoutes = {
     } catch (e: any) { return { error: `Part ${partNumber} failed: ${String(e?.message || e).slice(0,200)}` }; }
   },
 
-  // POST /admin/releases/:id/upload/complete {uploadId, key, platform, filename, size, mimeType, sha256, parts:[{partNumber, etag}]}
+  // POST /admin/releases/:id/upload/complete {uploadId, key, platform, filename, size, mimeType, sha256?, parts:[{partNumber, etag}]}
+  //
+  // TRUST MODEL (production security fix): the browser-supplied sha256 is
+  // OPTIONAL METADATA ONLY. After the multipart upload completes, the Worker
+  // independently stream-hashes the completed R2 object; the Worker-computed
+  // hash + size are the CANONICAL package values. A client hash that
+  // disagrees with the actual bytes rejects the package (the object is
+  // deleted, nothing is published, the mismatch is audited).
   async uploadPackageComplete(request: Request, env: any) {
     const rel = await loadRelease(env, relIdFrom(request));
     if ((rel as any)?.error) return rel;
@@ -562,22 +570,48 @@ export const adminRoutes = {
     if (typeof platform !== 'string') return platform; // invalid platform -> { error }
     const { uploadId, key, filename, size, mimeType, sha256, parts } = body || {};
     if (!uploadId || !key || !Array.isArray(parts) || !parts.length) return { error: 'uploadId, key, parts required' };
-    if (!/^[a-f0-9]{64}$/i.test(String(sha256 || ''))) return { error: 'sha256 (64 hex chars) required — computed in the browser before upload' };
+    const architecture = normalizeArchitecture(body.architecture);
+    if (!architecture) return { error: `Invalid architecture '${String(body.architecture || '')}'. Use one of: x64, arm64, x86, arm, universal.` };
+    const clientSha256 = String(sha256 || '').toLowerCase();
+    if (clientSha256 && !/^[a-f0-9]{64}$/.test(clientSha256)) return { error: 'sha256, when provided, must be 64 hex chars' };
     try {
       const mpu = env.STORAGE.resumeMultipartUpload(key, uploadId);
       await mpu.complete(parts);
     } catch (e: any) { return { error: `Complete failed: ${String(e?.message || e).slice(0,200)}` }; }
-    const architecture = normalizeArchitecture(body.architecture);
-    if (!architecture) return { error: `Invalid architecture '${String(body.architecture || '')}'. Use one of: x64, arm64, x86, arm, universal.` };
+
+    // ---- The Worker is the root of trust: hash the ACTUAL completed object ----
+    const actual = await sha256R2Object(env, key);
+    if (!actual || !actual.sha256) {
+      await env.STORAGE.delete(key).catch(() => {});
+      await env.DB.prepare(`INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?,?,?)`)
+        .bind(`log_${Date.now()}`, 'package_upload_rejected', 'package', key,
+          JSON.stringify({ reason: 'unreadable_completed_object', platform, clientSize: size ?? null })).run().catch(() => {});
+      return { error: 'The completed upload could not be read from storage for verification — the package was rejected. Re-upload it.' };
+    }
+    if (size && Number(size) !== actual.size) {
+      await env.STORAGE.delete(key).catch(() => {});
+      await env.DB.prepare(`INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?,?,?)`)
+        .bind(`log_${Date.now()}`, 'package_upload_rejected', 'package', key,
+          JSON.stringify({ reason: 'size_mismatch', clientSize: Number(size), actualSize: actual.size })).run().catch(() => {});
+      return { error: `Size mismatch: the upload declared ${size} bytes but storage holds ${actual.size}. The package was rejected.` };
+    }
+    if (clientSha256 && clientSha256 !== actual.sha256) {
+      await env.STORAGE.delete(key).catch(() => {});
+      await env.DB.prepare(`INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?,?,?)`)
+        .bind(`log_${Date.now()}`, 'package_upload_rejected', 'package', key,
+          JSON.stringify({ reason: 'client_hash_mismatch', clientSha256, actualSha256: actual.sha256, size: actual.size })).run().catch(() => {});
+      return { error: `Checksum mismatch: the uploaded file's actual SHA-256 (${actual.sha256.slice(0, 16)}…) does not match the declared hash. The package was rejected — the file may be corrupted or was modified in transit.` };
+    }
+
     const saved = await writePackageRow(env, rel, platform, {
       filename: sanitizeName(filename || key.split('/').pop() || 'package.bin'), storageKey: key,
-      size: size || 0, mime: mimeType || 'application/octet-stream', sha256: String(sha256).toLowerCase(),
+      size: actual.size, mime: mimeType || 'application/octet-stream', sha256: actual.sha256, // canonical: Worker-computed
       architecture, minOsVersion: body.minOsVersion, minAndroidSdk: body.minAndroidSdk,
     });
     if ((saved as any)?.error) return saved;
-    // PHASE 13: chunked packages are quarantined too; the pipeline runs with
-    // the admin-client hash (full in-Worker re-hash of >50MB objects is not
-    // feasible — the integrity check records that honestly).
+    // PHASE 13 + replacement invalidation: a (re-)uploaded package is ALWAYS
+    // quarantined with a fresh security state — old verdicts never survive a
+    // replacement, and security is bound to the exact bytes (sha256).
     await env.DB.prepare(
       `UPDATE packages SET quarantine_key=?, security_state='QUARANTINED', overall_security='PENDING',
          security_scan_status='pending', signature_status='pending', scan_at=NULL, verified_at=NULL
@@ -595,10 +629,14 @@ export const adminRoutes = {
       await mergeAppPlatforms(env, rel.application_id);
       await syncLegacyAppVersion(env, rel.application_id, rel, origin);
     }
-    return { success: true, package: { ...saved, url: `${origin}/r2/${key}`, version: rel.version }, security };
+    return {
+      success: true,
+      package: { ...saved, url: `${origin}/r2/${key}`, version: rel.version, sha256: actual.sha256, size: actual.size },
+      security,
+      integrity: { verifiedBy: 'worker-streaming-sha256', clientHashAccepted: !clientSha256 || clientSha256 === actual.sha256 },
+    };
   },
 
-  // POST /admin/releases/:id/upload/abort {uploadId, key}
   async uploadPackageAbort(request: Request, env: any) {
     const body: any = await request.json().catch(()=>({}));
     try { if (body.uploadId && body.key) await env.STORAGE.resumeMultipartUpload(body.key, body.uploadId).abort(); } catch {}

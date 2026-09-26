@@ -506,12 +506,34 @@ CREATE TABLE IF NOT EXISTS package_security_results (
   details TEXT,
   fingerprint TEXT,
   error TEXT,
+  scanner_analysis_id TEXT,
+  scanner_started_at TEXT,
+  scanner_completed_at TEXT,
+  scanner_last_checked_at TEXT,
+  scanner_verdict TEXT,
+  scanner_raw_summary TEXT,
   started_at TEXT,
   completed_at TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_psr_package ON package_security_results(package_id);
 CREATE INDEX IF NOT EXISTS idx_psr_check ON package_security_results(package_id, check_type);
+-- Scan cache: one row per exact byte hash so identical packages are not
+-- re-uploaded to the scanner; rows expire by the scan-freshness policy.
+CREATE TABLE IF NOT EXISTS scanner_cache (
+  sha256 TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  verdict TEXT NOT NULL CHECK (verdict IN ('CLEAN','DETECTED','SCANNING')),
+  analysis_id TEXT,
+  malicious INTEGER DEFAULT 0,
+  suspicious INTEGER DEFAULT 0,
+  harmless INTEGER DEFAULT 0,
+  undetected INTEGER DEFAULT 0,
+  scanned_at TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_scanner_cache_scanned ON scanner_cache(scanned_at);
+
 CREATE TABLE IF NOT EXISTS package_security_overrides (
   id TEXT PRIMARY KEY,
   package_id TEXT NOT NULL REFERENCES packages(id) ON DELETE CASCADE,

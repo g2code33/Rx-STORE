@@ -284,13 +284,15 @@ test('malware: VirusTotal clean / detected / unknown-hash behaviors', async () =
   assert.ok(detected.result.includes('4 engine'));
 
   globalThis.fetch = (async () => new Response('{}', { status: 404 })) as any;
+  // Unknown hash is NOT malware — but scanning the actual bytes requires the
+  // stored object; without a storage key the scan fails closed (no fake clean).
   const unknown = await runMalwareScan(env, { sha256: 'c'.repeat(64), filename: 'x.exe', size: 10, platform: 'windows' });
   assert.equal(unknown.status, 'FAILED');
-  assert.ok(unknown.details.includes('never been scanned'));
+  assert.ok(unknown.details.includes('no storage key was supplied'));
 
   globalThis.fetch = (async () => { throw new Error('network down'); }) as any;
   const unreachable = await runMalwareScan(env, { sha256: sha, filename: 'x.exe', size: 10, platform: 'windows' });
-  assert.equal(unreachable.status, 'FAILED');
+  assert.equal(unreachable.status, 'UNAVAILABLE');
 });
 
 test('malware: custom REST scanner contract', async () => {
@@ -510,7 +512,8 @@ function makeEnv() {
         bytes = v.subarray(offset, length != null ? offset + length : undefined);
         size = v.length; // R2 .size is the whole object size
       }
-      return { size, arrayBuffer: async () => bytes.slice().buffer, body: null, httpMetadata: {} };
+      const copy = bytes.slice();
+      return { size, arrayBuffer: async () => copy.buffer, body: new Response(copy).body, httpMetadata: {} };
     },
     async head(key: string) { const v = storage.get(key); return v ? { size: v.length } : null; },
   };
