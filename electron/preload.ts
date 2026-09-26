@@ -18,7 +18,7 @@ contextBridge.exposeInMainWorld('rxDesktop', {
   invalidateDetect: (appId?: string) => ipcRenderer.invoke('native:invalidate-detect', appId),
   downloadApp: (input: { url: string; fileName?: string; id?: string }) => ipcRenderer.invoke('native:download', input),
   hashFile: (filePath: string) => ipcRenderer.invoke('native:hash-file', filePath),
-  installApp: (filePath: string) => ipcRenderer.invoke('native:install', filePath),
+  installApp: (filePath: string, opts?: { replacePath?: string }) => ipcRenderer.invoke('native:install', filePath, opts),
   openApp: (target: string) => ipcRenderer.invoke('native:open', target),
   uninstallApp: (input?: { appSlug?: string; target?: string; quietTarget?: string; appImagePath?: string; platform?: 'windows' | 'linux' | 'android' | 'web' }) => ipcRenderer.invoke('native:uninstall', input),
   showNotification: (input: { title: string; body?: string }) => ipcRenderer.invoke('native:notify', input),

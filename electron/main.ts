@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, protocol, net, shell, session, Notification } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { chmod, access } from 'node:fs/promises';
+import { chmod, access, copyFile } from 'node:fs/promises';
 import { accessSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -212,6 +212,37 @@ function safeFileName(value: string) {
 }
 
 /** Download through Electron so the renderer stays responsive and can offer a real Install step. */
+/**
+ * Install a .deb package on Linux. Order of preference:
+ *   1. pkexec apt-get install  — standard GUI password prompt (polkit),
+ *      installs/upgrades for real, and the install transaction's native
+ *      detection confirms the new version afterwards.
+ *   2. shell.openPath          — the software center (old behaviour), ONLY
+ *      when pkexec does not exist on this system.
+ * A cancelled password prompt is a HONEST failure (INSTALL_FAILED, retryable)
+ * — never a fake success.
+ */
+async function installDebPackage(filePath: string): Promise<{ launched: boolean; installed?: boolean; method: string }> {
+  try {
+    await execFileAsync('pkexec', ['apt-get', 'install', '--reinstall', '--yes', filePath], { timeout: 15 * 60_000 });
+    return { launched: false, installed: true, method: 'apt' };
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    if (/ENOENT/i.test(msg)) {
+      // pkexec is not installed on this system — last-resort fallback to the
+      // distribution's software installer (the pre-fix behaviour).
+      const error = await shell.openPath(filePath);
+      if (error) throw new Error(error);
+      return { launched: true, method: 'software-center' };
+    }
+    // Cancelled password prompt / apt failure: surface the real reason.
+    if (/126|not authorized|cancelled|canceled/i.test(msg)) {
+      throw new Error('Installation was cancelled — approve the password prompt to update the application.');
+    }
+    throw new Error(`Package installation failed: ${msg.slice(0, 200)}`);
+  }
+}
+
 function downloadNative(url: string, fileName: string, id: string) {
   if (!mainWindow || mainWindow.isDestroyed()) throw new Error('RX Store window is unavailable');
   const parsed = new URL(url);
@@ -679,12 +710,40 @@ function initIpc() {
   ipcMain.handle('native:download', async (_event, input: { url: string; fileName?: string; id?: string }) =>
     downloadNative(input.url, input.fileName || 'download', input.id || 'download')
   );
-  ipcMain.handle('native:install', async (_event, filePath: string) => {
+  ipcMain.handle('native:install', async (_event, filePath: string, opts?: { replacePath?: string }) => {
     await access(filePath);
-    if (/\.appimage$/i.test(filePath)) await chmod(filePath, 0o755);
+    // --- Linux .deb: NEVER shell.openPath — xdg-open on a .deb launches GNOME
+    // Software / "Ubuntu Store" and the update stalls there (the reported
+    // production bug). Install through apt instead: pkexec shows the standard
+    // polkit password prompt and apt installs/upgrades the package. The
+    // software center remains only as a last-resort fallback (and the caller
+    // is told which method was used).
+    if (/\.deb$/i.test(filePath)) {
+      return installDebPackage(filePath);
+    }
+    // --- AppImage: an UPDATE means replacing the previously-installed image
+    // (same path the OS launcher/detection points at). chmod + launch only
+    // happens for a genuinely fresh install.
+    if (/\.appimage$/i.test(filePath)) {
+      await chmod(filePath, 0o755);
+      const replacePath = String(opts?.replacePath || '').trim();
+      if (replacePath && replacePath !== filePath) {
+        try {
+          await access(replacePath);
+          await copyFile(filePath, replacePath);
+          await chmod(replacePath, 0o755);
+          return { launched: false, installed: true, method: 'appimage-replaced' };
+        } catch { /* previous path missing — fall through to launch */ }
+      }
+      const error = await shell.openPath(filePath);
+      if (error) throw new Error(error);
+      return { launched: true, method: 'appimage-launched' };
+    }
+    // --- Windows .exe/.msi (and anything else): the OS installer flow with
+    // its normal UAC prompt. This is correct on Windows.
     const error = await shell.openPath(filePath);
     if (error) throw new Error(error);
-    return { launched: true };
+    return { launched: true, method: 'os-installer' };
   });
   // Compute SHA-256 + size of a downloaded artifact in the MAIN process so the
   // renderer never needs arbitrary file-read privileges, and checksum

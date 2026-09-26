@@ -24,6 +24,9 @@ export interface PackageMetadata {
   channel?: string;
   /** True when the package is a web/PWA (no artifact to verify). */
   isPwa?: boolean;
+  /** Previously-installed artifact path (e.g. an AppImage) that this update
+   *  should REPLACE — lets the installer overwrite the old version in place. */
+  replacePath?: string;
 }
 
 /** Result of verifying a downloaded artifact before installation. */

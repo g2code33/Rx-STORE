@@ -82,3 +82,48 @@ test('transaction store notifies subscribers on set and keeps latest', () => {
   assert.equal(store.get().state, 'DOWNLOADING');
   unsub();
 });
+
+// ---------------------------------------------------------------------------
+// Update replace-path threading: an AppImage update must REPLACE the previous
+// artifact instead of launching a second copy (fixes the "update opens the
+// old app / software store" class of bug at the coordinator level).
+// ---------------------------------------------------------------------------
+
+test('desktop launchInstall receives the previous AppImage path as replacePath', async () => {
+  const calls: any[] = [];
+  const fakeDesktop = {
+    isDesktop: true,
+    canDetect: () => true,
+    refresh: async () => undefined,
+    // Runtime interface: detect(app) returns an InstalledApp when present.
+    detect: async () => ({ installed: true, version: '2.0.0', source: 'appimage' }),
+    resolve: async () => ({ state: 'INSTALLED', otherDevices: 0 }),
+    downloadApp: async () => ({ path: '/downloads/new.AppImage', fileName: 'new.AppImage', size: 10 }),
+    hashFile: async () => ({ sha256: 'a'.repeat(64), size: 10 }),
+    installApp: async (filePath: string, opts?: any) => { calls.push({ filePath, opts }); return { launched: false, installed: true, method: 'appimage-replaced' }; },
+    openApp: async () => true,
+    uninstallApp: async () => true,
+    showNotification: async () => true,
+  };
+  const savedDesktop = (globalThis as any).window?.rxDesktop;
+  try {
+    (globalThis as any).window = { ...(globalThis as any).window, rxDesktop: fakeDesktop };
+    const { InstallCoordinator } = await import('./installCoordinator.ts');
+    const coord = new InstallCoordinator(fakeDesktop as any);
+    const result = await coord.run({
+      app: { id: 'app1', slug: 'demo', name: 'Demo' } as any,
+      packageMeta: {
+        platform: 'linux_appimage', url: 'https://example.test/x.AppImage', fileName: 'x.AppImage',
+        version: '2.0.0', size: 10, sha256: 'a'.repeat(64), replacePath: '/opt/old.AppImage',
+      },
+      previousVersion: '1.0.0', isUpdate: true,
+    });
+    assert.equal(result.state, 'INSTALLED', `transaction completed: ${result.state} ${result.message || ''}`);
+    assert.equal(calls.length, 1, 'installApp called exactly once');
+    assert.equal(calls[0].filePath, '/downloads/new.AppImage');
+    assert.equal(calls[0].opts?.replacePath, '/opt/old.AppImage', 'the previous artifact path was forwarded for replacement');
+  } finally {
+    if (savedDesktop !== undefined) (globalThis as any).window.rxDesktop = savedDesktop;
+    else if ((globalThis as any).window) delete (globalThis as any).window.rxDesktop;
+  }
+});

@@ -302,6 +302,9 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
       // Build authoritative package metadata (url, size, sha256, version, platform).
       const pkg: PackageResolution = {
         platform: resolvePlatformForDevice(getRuntimePlatform(), data.platform || platform),
+        // An update that replaces a previously-detected artifact (AppImage)
+        // should overwrite the old file rather than launching alongside it.
+        replacePath: (systemInstalled as any)?.appImagePath || undefined,
         url: data.url,
         fileName: data.fileName || `${app.slug}-${data.version || app.version}${platform === 'windows' ? '.exe' : platform.includes('appimage') ? '.AppImage' : platform.includes('linux') || platform === 'linux_deb' || platform === 'linux_appimage' ? '.deb' : '.apk'}`,
         version: data.version || app.version,
@@ -324,6 +327,8 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
         toast.error(result.message || 'Checksum verification failed — the download was discarded.');
       } else if (result.state === 'DOWNLOAD_FAILED') {
         toast.error('Download failed — check your connection and try again.');
+      } else if (result.state === 'INSTALLATION_PENDING') {
+        toast('The package downloaded and was handed to your system — approve the install prompt (or finish it in your software installer) and RX Store will confirm it.', { icon: '⏳', duration: 8000 });
       } else if (result.state === 'INSTALLATION_NOT_DETECTED') {
         toast.error('Installation was not detected. If it succeeded, tap the Install button again to re-check.', { duration: 6000 });
       } else if (result.state === 'INSTALL_FAILED') {

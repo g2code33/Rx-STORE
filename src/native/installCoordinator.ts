@@ -39,6 +39,8 @@ export interface PackageResolution {
   size?: number;
   sha256?: string;
   isPwa?: boolean;
+  /** Previously-installed artifact path (AppImage) this update replaces. */
+  replacePath?: string;
 }
 
 export const INSTALL_VERIFY_WINDOW_MS = 60_000;
@@ -125,7 +127,9 @@ async function defaultDownload(
 /** Default install launcher: opens the installer for desktop, triggers download on web. */
 async function defaultLaunchInstall(app: App, data: ArrayBuffer, meta: PackageMetadata, path?: string): Promise<void> {
   if (isDesktopShell()) {
-    if (path) await (window as any).rxDesktop.installApp(path);
+    // replacePath = the previously-installed artifact (AppImage) this update
+    // should overwrite in place; the main process performs the replacement.
+    if (path) await (window as any).rxDesktop.installApp(path, meta.replacePath ? { replacePath: meta.replacePath } : undefined);
     return;
   }
   // Web/PWA: hand to the browser download UI (install is manual in a browser).
