@@ -513,6 +513,16 @@ export function scannerProvider(env: any): { kind: 'virustotal' | 'custom' } | n
 
 // --- VirusTotal upload-fallback configuration (env-overridable for tests) ---
 const VT_NORMAL_UPLOAD_LIMIT = 32 * 1024 * 1024; // VT's documented small-upload threshold
+/** Bounded in-run retry for rate-limited scanner calls (no tight hammering). */
+function vtRetryConfig(env: any): { maxRetries: number; delayMs: number } {
+  const maxRetries = Number(env?.VT_SCAN_MAX_RETRIES);
+  const delayMs = Number(env?.VT_SCAN_RETRY_DELAY_MS);
+  return {
+    maxRetries: Number.isFinite(maxRetries) && maxRetries >= 0 ? Math.min(maxRetries, 5) : 2,
+    delayMs: Number.isFinite(delayMs) && delayMs >= 0 ? Math.min(delayMs, 30_000) : 1500,
+  };
+}
+
 function vtPollConfig(env: any): { maxPolls: number; firstIntervalMs: number; growth: number; maxIntervalMs: number } {
   return {
     maxPolls: Number(env?.VT_SCAN_MAX_POLLS) || 8,
@@ -565,11 +575,16 @@ async function ensureScannerCache(env: any): Promise<void> {
   ).run().catch(() => {});
 }
 
-async function readScannerCache(env: any, sha256: string): Promise<any | null> {
+/**
+ * Cache reads are keyed by SHA-256 **+ provider**: a result cached under
+ * VirusTotal is never reused when the deployment switches to a custom
+ * scanner (different trust root → fresh scan required).
+ */
+async function readScannerCache(env: any, sha256: string, provider: string): Promise<any | null> {
   try {
     await ensureScannerCache(env);
     if (!env?.DB?.prepare) return null;
-    const row: any = await env.DB.prepare(`SELECT * FROM scanner_cache WHERE sha256=?`).bind(sha256).first().catch(() => null);
+    const row: any = await env.DB.prepare(`SELECT * FROM scanner_cache WHERE sha256=? AND provider=?`).bind(sha256, provider).first().catch(() => null);
     if (!row) return null;
   const ageH = (Date.now() - new Date(String(row.scanned_at).replace(' ', 'T') + (String(row.scanned_at).includes('Z') ? '' : 'Z')).getTime()) / 3_600_000;
     if (Number.isFinite(ageH) && ageH > scanMaxAgeHours(env)) return null; // stale → rescan
@@ -723,7 +738,7 @@ export async function runMalwareScan(env: any, input: {
 
     // 0) Fresh scan-cache for this exact byte hash (upload avoidance; NOT a
     //    permanent trust — scanner_cache rows expire by scan_max_age).
-    const cached = await readScannerCache(env, sha).catch(() => null);
+    const cached = await readScannerCache(env, sha, 'virustotal').catch(() => null);
     if (cached && cached.verdict === 'DETECTED') {
       return { status: 'DETECTED', provider: 'virustotal', providerVersion: 'api-v3',
         result: `${Number(cached.malicious) + Number(cached.suspicious)} engine detection(s) (cached scan)`,
@@ -751,17 +766,31 @@ export async function runMalwareScan(env: any, input: {
     }
 
     // 1) Hash lookup — a completed report for these exact bytes?
-    let res: Response;
-    try {
-      res = await fetch(`https://www.virustotal.com/api/v3/files/${sha}`, {
-        headers: { 'x-apikey': apiKey },
-        signal: AbortSignal.timeout(SCAN_TIMEOUT_MS),
-      });
-    } catch {
-      return { status: 'UNAVAILABLE', provider: 'virustotal', result: 'scanner unreachable (network)', details: 'The VirusTotal lookup could not be completed. The package stays blocked; re-run the pipeline when the scanner is reachable.' };
+    //    Rate limits get a BOUNDED in-run retry (default 2 retries with a
+    //    short backoff), then an honest UNAVAILABLE that defers to the next
+    //    pipeline run. The provider is never hammered in a tight loop.
+    const retry = vtRetryConfig(env);
+    let res: Response | null = null;
+    let rateLimited = false;
+    for (let attempt = 0; attempt <= retry.maxRetries; attempt++) {
+      try {
+        res = await fetch(`https://www.virustotal.com/api/v3/files/${sha}`, {
+          headers: { 'x-apikey': apiKey },
+          signal: AbortSignal.timeout(SCAN_TIMEOUT_MS),
+        });
+      } catch {
+        return { status: 'UNAVAILABLE', provider: 'virustotal', result: 'scanner unreachable (network)', details: 'The VirusTotal lookup could not be completed. The package stays blocked; re-run the pipeline when the scanner is reachable.' };
+      }
+      if (res.status !== 429) break;
+      rateLimited = true;
+      if (attempt < retry.maxRetries) await sleep(retry.delayMs);
+    }
+    void rateLimited;
+    if (!res) {
+      return { status: 'UNAVAILABLE', provider: 'virustotal', result: 'scanner did not respond', details: 'The lookup could not be completed. The package stays blocked; re-run the pipeline.' };
     }
     if (res.status === 429) {
-      return { status: 'UNAVAILABLE', provider: 'virustotal', result: 'scanner rate limited', details: 'VirusTotal responded 429. The package stays blocked; the next pipeline run retries (cached scan results are reused when fresh).' };
+      return { status: 'UNAVAILABLE', provider: 'virustotal', result: `scanner rate limited (${retry.maxRetries + 1} attempts, backing off)`, details: 'VirusTotal kept responding 429. The package stays blocked; the next pipeline run retries (cached scan results are reused when fresh).' };
     }
     if (res.status === 404) {
       // 2) Unknown hash is NOT malware — upload the ACTUAL package bytes.
@@ -1141,6 +1170,65 @@ export async function validManualApproval(env: any, packageId: string, currentSh
 }
 
 /**
+ * Invalidate outstanding PENDING manual reviews for a package+hash when a
+ * DEFINITIVE automated outcome makes them moot:
+ *   - overall PASSED        → the review is no longer needed (automated path)
+ *   - malware DETECTED      → manual review is not permitted for detections
+ * History is preserved (rows stay, only invalidated_at is set) and each
+ * invalidation is audited. Indeterminate outcomes (SCANNING/UNAVAILABLE/…)
+ * never touch reviews — eligibility is maintained.
+ */
+export async function invalidatePendingReviews(env: any, packageId: string, sha256: string, reason: string): Promise<number> {
+  try {
+    if (!env?.DB?.prepare) return 0;
+    await ensureManualReviewTable(env);
+    const res: any = await env.DB.prepare(
+      `UPDATE package_manual_reviews SET invalidated_at=datetime('now')
+       WHERE package_id=? AND sha256=? AND status='PENDING' AND invalidated_at IS NULL`
+    ).bind(packageId, String(sha256)).run().catch(() => ({ meta: { changes: 0 } }));
+    const n = Number(res?.meta?.changes || 0);
+    if (n > 0) {
+      await env.DB.prepare(
+        'INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?,?,?)'
+      ).bind(rid('log'), 'manual_review_invalidated', 'package', packageId,
+        JSON.stringify({ sha256: String(sha256), reason, invalidated: n })).run().catch(() => {});
+    }
+    return n;
+  } catch {
+    return 0; // best-effort: the gate independently re-derives eligibility
+  }
+}
+
+/**
+ * Audit a package security STATE TRANSITION (requirement: previous state,
+ * new state, provider, reason, timestamp, package SHA-256). One bounded row
+ * per pipeline run, only when the state actually changed.
+ */
+async function recordStateTransition(env: any, pkg: any, prevState: string, prevOverall: string, nextState: string, nextOverall: string, results: Partial<Record<CheckType, CheckResult>>): Promise<void> {
+  try {
+    if (!env?.DB?.prepare) return;
+    if (prevState === nextState && prevOverall === nextOverall) return; // no transition
+    const reason = (() => {
+      const failed = (Object.values(results) as CheckResult[]).find((r) => r && ['FAILED', 'DETECTED'].includes(r.status));
+      if (failed) return `${failed.result}`.slice(0, 300);
+      const blocker = (Object.values(results) as CheckResult[]).find((r) => r && ['SCANNING', 'UNAVAILABLE', 'NEEDS_REVIEW', 'WARNING', 'PENDING'].includes(r.status));
+      if (blocker) return `${blocker.result}`.slice(0, 300);
+      return 'all required checks passed';
+    })();
+    await env.DB.prepare(
+      'INSERT INTO audit_logs (id, action, resource_type, resource_id, details) VALUES (?,?,?,?,?)'
+    ).bind(rid('log'), 'security_state_transition', 'package', pkg.id, JSON.stringify({
+      sha256: String(pkg.sha256),
+      provider: results.malware?.provider || null,
+      previous: { state: prevState, overall: prevOverall },
+      next: { state: nextState, overall: nextOverall },
+      reason,
+      at: new Date().toISOString(),
+    })).run().catch(() => {});
+  } catch { /* audit is best-effort; verdicts live in package_security_results */ }
+}
+
+/**
  * Run the full pipeline for one package. Idempotent: re-running replaces the
  * verdicts with fresh rows (history is preserved in package_security_results).
  * Stops at the first FAILED stage (later stages are not run — the state
@@ -1151,6 +1239,13 @@ export async function runSecurityPipeline(env: any, packageId: string): Promise<
 }> {
   const pkg: any = await env.DB.prepare('SELECT * FROM packages WHERE id=?').bind(packageId).first().catch(() => null);
   if (!pkg) return { state: 'QUARANTINED', overall: 'FAILED', results: {} };
+  // Snapshot the PRE-Run security state as plain strings: per-check updates
+  // (and aliased objects in tests) must never rewrite history — the audit
+  // records the true previous → new transition.
+  const prevSecurity = {
+    security_state: String(pkg.security_state || 'QUARANTINED'),
+    overall_security: String(pkg.overall_security || 'PENDING'),
+  };
 
   // URL-based packages (web deployment) have no binary to verify.
   if (pkg.deployment_url) {
@@ -1183,10 +1278,10 @@ export async function runSecurityPipeline(env: any, packageId: string): Promise<
   // 1. structure
   if ((await run('structure', () => checkStructure({
     platform: pkg.platform, architecture: pkg.architecture || 'x64', filename: pkg.filename, bytes: bytes ?? { size: 0, head: new Uint8Array(0), headOffset: 0, tail: new Uint8Array(0), tailOffset: 0, full: new Uint8Array(0) },
-  }))).status === 'FAILED') return finish(env, packageId, lastStage, results, 'FAILED');
+  }))).status === 'FAILED') return finish(env, packageId, lastStage, results, 'FAILED', prevSecurity);
 
   // 2. integrity
-  if ((await run('integrity', () => checkIntegrity(env, pkg, bytes))).status === 'FAILED') return finish(env, packageId, lastStage, results, 'FAILED');
+  if ((await run('integrity', () => checkIntegrity(env, pkg, bytes))).status === 'FAILED') return finish(env, packageId, lastStage, results, 'FAILED', prevSecurity);
 
   // 3. duplicate
   const dupRows: any = await env.DB.prepare(
@@ -1204,7 +1299,7 @@ export async function runSecurityPipeline(env: any, packageId: string): Promise<
     sha256: pkg.sha256, filename: pkg.filename, size: Number(pkg.file_size) || 0, platform: pkg.platform,
     storageKey: pkg.quarantine_key || pkg.storage_key,
   }));
-  if (malware.status === 'DETECTED' || malware.status === 'FAILED') return finish(env, packageId, lastStage, results, 'FAILED');
+  if (malware.status === 'DETECTED' || malware.status === 'FAILED') return finish(env, packageId, lastStage, results, 'FAILED', prevSecurity);
 
   // 5. signature (+ extract PKCS#7 for the certificate check)
   let pkcs7: Uint8Array | null = null;
@@ -1229,18 +1324,32 @@ export async function runSecurityPipeline(env: any, packageId: string): Promise<
     },
   }));
 
-  return finish(env, packageId, 'SECURITY_REVIEW_COMPLETE', results, overallFromResults(Object.values(results) as CheckResult[]));
+  return finish(env, packageId, 'SECURITY_REVIEW_COMPLETE', results, overallFromResults(Object.values(results) as CheckResult[]), prevSecurity);
 }
 
-async function finish(env: any, packageId: string, state: PipelineStage, results: Partial<Record<CheckType, CheckResult>>, overall: 'PASSED' | 'FAILED' | 'NEEDS_REVIEW') {
+async function finish(env: any, packageId: string, state: PipelineStage, results: Partial<Record<CheckType, CheckResult>>, overall: 'PASSED' | 'FAILED' | 'NEEDS_REVIEW', prev?: { security_state?: string; overall_security?: string }) {
+  const fresh: any = await env.DB.prepare('SELECT * FROM packages WHERE id=?').bind(packageId).first().catch(() => null);
   await env.DB.prepare(
     `UPDATE packages SET security_state=?, overall_security=?, verified_at=datetime('now') WHERE id=?`
   ).bind(state, overall, packageId).run().catch(() => {});
-  // Indeterminate outcome → the manual-review queue gets a PENDING record
-  // (SHA-256 bound). Automated statuses are NOT modified by this.
-  if (overall === 'NEEDS_REVIEW') {
-    const pkg: any = await env.DB.prepare('SELECT * FROM packages WHERE id=?').bind(packageId).first().catch(() => null);
-    if (pkg) await openPendingReviewIfNeeded(env, pkg, results);
+  if (fresh) {
+    // Auditable state transition (previous → new, provider, reason, sha256).
+    await recordStateTransition(env, fresh,
+      String(prev?.security_state || fresh.security_state || 'QUARANTINED'),
+      String(prev?.overall_security || fresh.overall_security || 'PENDING'),
+      state, overall, results);
+    if (overall === 'NEEDS_REVIEW') {
+      // Indeterminate outcome → the manual-review queue gets a PENDING record
+      // (SHA-256 bound). Automated statuses are NOT modified by this.
+      await openPendingReviewIfNeeded(env, fresh, results);
+    } else if (overall === 'PASSED') {
+      // A definitive automated pass: outstanding PENDING reviews are moot.
+      await invalidatePendingReviews(env, packageId, String(fresh.sha256), 'automated verification passed — manual review no longer needed');
+    } else if (results.malware?.status === 'DETECTED') {
+      // A definitive detection: manual review is not permitted. (The gate and
+      // the decision route also refuse independently — this keeps the queue honest.)
+      await invalidatePendingReviews(env, packageId, String(fresh.sha256), 'definitive malware detection — manual review not permitted');
+    }
   }
   return { state, overall, results };
 }

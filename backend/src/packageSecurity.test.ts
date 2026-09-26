@@ -16,8 +16,7 @@ import {
   runSecurityPipeline, publicationSecurityGate, r2KeyIsPubliclyServed,
   classifyDuplicate, runMalwareScan, checkStructure, checkSignature, checkCertificate,
   checkNativeIdentity, parseZipCentralDirectory, parseAr, extractCertificateFromPkcs7,
-  loadPackageBytes,
-} from './services/packageSecurity.ts';
+  loadPackageBytes, invalidatePendingReviews } from './services/packageSecurity.ts';
 import { securityAdminRoutes } from './routes/securityAdmin.ts';
 import { adminRoutes } from './routes/admin.ts';
 
@@ -412,6 +411,8 @@ function makeEnv() {
     developer_audit_logs: [] as any[],
     audit_logs: [] as any[],
     notifications: [] as any[],
+    package_manual_reviews: [] as any[],
+    scanner_cache: [] as any[],
   };
   const storage = new Map<string, Uint8Array>();
   const DB = {
@@ -439,6 +440,12 @@ function makeEnv() {
             return rel ? { ...rel, app_slug: db.applications.find((x: any) => x.id === rel.application_id)?.slug } : null;
           }
           if (s.includes('SELECT * FROM releases WHERE id=?')) return db.releases.find((x: any) => x.id === a[0]) || null;
+          if (s.includes('FROM scanner_cache WHERE sha256=? AND provider=?')) {
+            return db.scanner_cache.find((c: any) => c.sha256 === a[0] && c.provider === a[1]) || null;
+          }
+          if (s.includes('SELECT id FROM package_manual_reviews WHERE package_id=? AND sha256=?')) {
+            return db.package_manual_reviews.find((r: any) => r.package_id === a[0] && String(r.sha256).toLowerCase() === String(a[1]).toLowerCase() && ['PENDING', 'APPROVED'].includes(r.status) && !r.invalidated_at) ? { id: 'x' } : null;
+          }
           if (s.includes('WHERE p.sha256 = ? AND p.id != ?')) return null; // (first() form unused)
           return null;
         },
@@ -491,7 +498,24 @@ function makeEnv() {
             }
             return { meta: { changes: 1 } };
           }
-          if (s.includes('INSERT INTO audit_logs')) { db.audit_logs.push({ id: a[0], action: a[1], resource_id: a[3] }); return { meta: { changes: 1 } }; }
+          if (s.includes('INSERT INTO audit_logs')) { db.audit_logs.push({ id: a[0], action: a[1], resource_id: a[3], details: a[4] }); return { meta: { changes: 1 } }; }
+          if (s.includes('INSERT INTO scanner_cache') || s.includes('ON CONFLICT(sha256) DO UPDATE')) {
+            const i = db.scanner_cache.findIndex((c: any) => c.sha256 === a[0]);
+            const row = { sha256: a[0], provider: a[1], verdict: a[2], analysis_id: a[3], malicious: a[4], suspicious: a[5], harmless: a[6], undetected: a[7], scanned_at: 'now' };
+            if (i >= 0) db.scanner_cache[i] = row; else db.scanner_cache.push(row);
+            return { meta: { changes: 1 } };
+          }
+          if (s.includes('INSERT INTO package_manual_reviews')) {
+            db.package_manual_reviews.push({ id: a[0], package_id: a[1], sha256: a[3], platform: a[4], automated_integrity: a[5], automated_malware: a[6], automated_overall: a[7], reason: a[8], status: 'PENDING', created_at: 'now', invalidated_at: null });
+            return { meta: { changes: 1 } };
+          }
+          if (s.includes('UPDATE package_manual_reviews SET invalidated_at')) {
+            let n = 0;
+            for (const r of db.package_manual_reviews) {
+              if (r.package_id === a[0] && String(r.sha256).toLowerCase() === String(a[1]).toLowerCase() && r.status === 'PENDING' && !r.invalidated_at) { r.invalidated_at = 'now'; n++; }
+            }
+            return { meta: { changes: n } };
+          }
           if (s.includes('INSERT INTO developer_audit_logs')) { db.developer_audit_logs.push({ id: a[0], action: a[3] }); return { meta: { changes: 1 } }; }
           if (s.includes('INSERT INTO notifications')) { db.notifications.push({ id: a[0], user_id: a[1] }); return { meta: { changes: 1 } }; }
           return { meta: { changes: 0 } };
@@ -675,4 +699,96 @@ test('loadPackageBytes: small objects load fully; ranges slice correctly', async
   assert.equal(loaded!.size, bytes.length);
   const members = parseAr(loaded!);
   assert.ok(members?.some((m) => m.name === 'debian-binary'));
+});
+
+// ---------------------------------------------------------------------------
+// Scanner resilience + manual-review transitions at the PIPELINE level
+// ---------------------------------------------------------------------------
+
+test('pipeline: scanner UNAVAILABLE opens a PENDING manual review and audits the state transition', async () => {
+  const env = makeEnv();
+  const { sha256 } = await seedSignedApkPackage(env);
+  // Scanner outage: network failure → honest UNAVAILABLE (never DETECTED/CLEAN).
+  globalThis.fetch = (async () => { throw new Error('provider down'); }) as any;
+  const scanEnv = { ...env, MALWARE_SCANNER: 'virustotal', VIRUSTOTAL_API_KEY: 'vt_test' };
+  const out = await runSecurityPipeline(scanEnv, 'pkg_apk_1');
+  assert.equal(out.overall, 'NEEDS_REVIEW');
+  const pkg = env.db.packages[0];
+  assert.equal(pkg.security_scan_status, 'UNAVAILABLE');
+  // The manual review queue received a PENDING record bound to the exact hash.
+  assert.equal(env.db.package_manual_reviews.length, 1);
+  const review = env.db.package_manual_reviews[0];
+  assert.equal(review.status, 'PENDING');
+  assert.equal(review.sha256, sha256);
+  assert.equal(review.automated_malware, 'UNAVAILABLE');
+  // The state transition is audited with previous/new state + hash.
+  const transition = env.db.audit_logs.find((l: any) => l.action === 'security_state_transition');
+  assert.ok(transition, 'transition audit row written');
+  const details = JSON.parse(String(transition.details));
+  assert.equal(details.sha256, sha256);
+  assert.equal(details.previous.state, 'QUARANTINED');
+  assert.equal(details.next.overall, 'NEEDS_REVIEW');
+});
+
+test('pipeline: scanner becomes available later → the queued scan resumes, results update, review eligibility maintained', async () => {
+  const env = makeEnv();
+  await seedSignedApkPackage(env);
+  // Run 1: outage → UNAVAILABLE + PENDING review.
+  globalThis.fetch = (async () => { throw new Error('provider down'); }) as any;
+  const scanEnv = { ...env, MALWARE_SCANNER: 'virustotal', VIRUSTOTAL_API_KEY: 'vt_test' };
+  await runSecurityPipeline(scanEnv, 'pkg_apk_1');
+  assert.equal(env.db.package_manual_reviews.filter((r: any) => r.status === 'PENDING').length, 1);
+  // Run 2: provider recovered → definitive CLEAN recorded as a NEW result row
+  // (history preserved), the automated status updates, and — because the
+  // remaining blocker is the signature chain (NEEDS_REVIEW overall) — the
+  // PENDING review eligibility is MAINTAINED (not invalidated, not published).
+  globalThis.fetch = (async () => new Response(JSON.stringify({ data: { attributes: { last_analysis_stats: { malicious: 0, suspicious: 0, harmless: 60, undetected: 5 } } } }), { status: 200 })) as any;
+  const out2 = await runSecurityPipeline(scanEnv, 'pkg_apk_1');
+  assert.equal(out2.results.malware?.status, 'CLEAN', 'definitive verdict obtained on retry');
+  const malwareRows = env.db.package_security_results.filter((r: any) => r.check_type === 'malware');
+  assert.equal(malwareRows.length, 2, 'each run records its own result row');
+  assert.equal(env.db.packages[0].security_scan_status, 'CLEAN');
+  assert.equal(env.db.package_manual_reviews.filter((r: any) => r.status === 'PENDING' && !r.invalidated_at).length, 1, 'review stays pending for the signature blocker');
+  const gate = await publicationSecurityGate(scanEnv, 'rel_1');
+  assert.equal(gate.ok, false, 'no automatic publication while a blocker remains');
+});
+
+test('pipeline: definitive DETECTED invalidates PENDING reviews and fails closed', async () => {
+  const env = makeEnv();
+  const { sha256 } = await seedSignedApkPackage(env);
+  // Run 1: outage → PENDING review exists.
+  globalThis.fetch = (async () => { throw new Error('provider down'); }) as any;
+  const scanEnv = { ...env, MALWARE_SCANNER: 'virustotal', VIRUSTOTAL_API_KEY: 'vt_test' };
+  await runSecurityPipeline(scanEnv, 'pkg_apk_1');
+  assert.equal(env.db.package_manual_reviews.filter((r: any) => r.status === 'PENDING').length, 1);
+  // Run 2: the provider returns a definitive detection.
+  globalThis.fetch = (async () => new Response(JSON.stringify({ data: { attributes: { last_analysis_stats: { malicious: 4, suspicious: 1 } } } }), { status: 200 })) as any;
+  const out = await runSecurityPipeline(scanEnv, 'pkg_apk_1');
+  assert.equal(out.overall, 'FAILED');
+  assert.equal(out.results.malware?.status, 'DETECTED');
+  // The PENDING review is invalidated (detected malware is not manually reviewable)…
+  const review = env.db.package_manual_reviews[0];
+  assert.equal(review.invalidated_at, 'now');
+  assert.ok(env.db.audit_logs.some((l: any) => l.action === 'manual_review_invalidated' && String(l.details).includes('detection')));
+  // …the transition is audited, and the gate stays closed.
+  assert.ok(env.db.audit_logs.some((l: any) => l.action === 'security_state_transition' && String(l.details).includes(sha256)));
+  const gate = await publicationSecurityGate(scanEnv, 'rel_1');
+  assert.equal(gate.ok, false);
+});
+
+test('invalidatePendingReviews: only touches PENDING reviews bound to the exact hash', async () => {
+  const env = makeEnv();
+  await seedSignedApkPackage(env, { sha256: 'f'.repeat(64) });
+  env.db.package_manual_reviews.push(
+    { id: 'r1', package_id: 'pkg_apk_1', sha256: 'f'.repeat(64), status: 'PENDING', invalidated_at: null },
+    { id: 'r2', package_id: 'pkg_apk_1', sha256: 'b'.repeat(64), status: 'PENDING', invalidated_at: null }, // different bytes
+    { id: 'r3', package_id: 'pkg_apk_1', sha256: 'f'.repeat(64), status: 'APPROVED', invalidated_at: null },  // already decided
+  );
+  const n = await invalidatePendingReviews(env, 'pkg_apk_1', 'f'.repeat(64), 'automated verification passed — manual review no longer needed');
+  assert.equal(n, 1, 'exactly the matching PENDING review');
+  const byId = Object.fromEntries(env.db.package_manual_reviews.map((r: any) => [r.id, r]));
+  assert.equal(byId.r1.invalidated_at, 'now');
+  assert.equal(byId.r2.invalidated_at, null, 'other-bytes review untouched');
+  assert.equal(byId.r3.invalidated_at, null, 'decided review untouched');
+  assert.ok(env.db.audit_logs.some((l: any) => l.action === 'manual_review_invalidated'));
 });
