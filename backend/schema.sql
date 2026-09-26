@@ -543,7 +543,7 @@ CREATE TABLE IF NOT EXISTS package_security_overrides (
   prior_overall TEXT,
   sha256 TEXT,
   invalidated_at TEXT,
-  created_at TEXT DEFAULT (datetime('now')
+  created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_pso_package ON package_security_overrides(package_id);
 

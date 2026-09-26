@@ -141,6 +141,20 @@ export async function writePackageRow(
     // manual review or override bound to DIFFERENT bytes is invalidated — a
     // replaced package can never ride an old approval.
     try {
+      // Ensure the review/override tables + byte-binding columns exist (lazy,
+      // idempotent — no-ops once migration 0022 has run).
+      await env.DB.prepare(
+        `CREATE TABLE IF NOT EXISTS package_manual_reviews (
+           id TEXT PRIMARY KEY, package_id TEXT NOT NULL REFERENCES packages(id) ON DELETE CASCADE,
+           release_id TEXT, sha256 TEXT NOT NULL, platform TEXT NOT NULL,
+           automated_integrity TEXT, automated_malware TEXT, automated_overall TEXT,
+           reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','APPROVED','REJECTED')),
+           admin_user_id TEXT, admin_notes TEXT, audit_event_id TEXT,
+           created_at TEXT DEFAULT (datetime('now')), reviewed_at TEXT, invalidated_at TEXT
+         )`
+      ).run().catch(() => {});
+      await env.DB.prepare('ALTER TABLE package_security_overrides ADD COLUMN sha256 TEXT').run().catch(() => {});
+      await env.DB.prepare('ALTER TABLE package_security_overrides ADD COLUMN invalidated_at TEXT').run().catch(() => {});
       const rowId: any = await env.DB.prepare(
         'SELECT id, sha256 FROM packages WHERE release_id=? AND platform=? AND architecture=?'
       ).bind(rel.id, platform, architecture).first();

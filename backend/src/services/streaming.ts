@@ -26,7 +26,13 @@ export async function sha256OfStream(stream: ReadableStream<Uint8Array>): Promis
   if (typeof DS === 'function') {
     const ds = new DS('SHA-256');
     await stream.pipeTo(ds as unknown as WritableStream<Uint8Array>);
-    return hex(new Uint8Array(ds.digest as ArrayBuffer));
+    // CRITICAL: in the Cloudflare Workers runtime, `digest` is a PROMISE that
+    // fulfills with the ArrayBuffer once the stream closes — it MUST be
+    // awaited. Casting it directly to ArrayBuffer yields a Promise object,
+    // `new Uint8Array(promise)` is EMPTY, and the hash would silently become
+    // '' (every integrity check would then fail closed in production).
+    const digest = await (ds.digest as unknown as Promise<ArrayBuffer>);
+    return hex(new Uint8Array(digest));
   }
   // Node/test path: node:crypto createHash (streaming, chunked).
   const { createHash } = await import('node:crypto');

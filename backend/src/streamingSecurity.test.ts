@@ -673,3 +673,87 @@ test('streamToMultipart rejects filename injection into headers', async () => {
   const header = bytes.subarray(0, bytes.indexOf('\r\n\r\n')).toString();
   assert.ok(!header.includes('evil"') && !header.includes('\\'), 'quotes/backslashes stripped from the filename header');
 });
+
+// ---------------------------------------------------------------------------
+// Workers-runtime DigestStream path (would have caught the critical
+// un-awaited-digest bug: Workers' `digest` is a PROMISE, not an ArrayBuffer)
+// ---------------------------------------------------------------------------
+
+test('Workers path: sha256OfStream awaits the DigestStream digest PROMISE correctly', async () => {
+  const { createHash } = await import('node:crypto');
+
+  /**
+   * Faithful polyfill of the Workers crypto.DigestStream contract:
+   *  - extends WritableStream
+   *  - `digest` is a PROMISE that fulfills with the digest ArrayBuffer only
+   *    when the stream CLOSES (asynchronously, like the real runtime)
+   */
+  class FakeDigestStream extends WritableStream<Uint8Array> {
+    digest: Promise<ArrayBuffer>;
+    constructor(algorithm: string) {
+      assert.equal(algorithm, 'SHA-256');
+      const hash = createHash('sha256');
+      let resolveDigest!: (b: ArrayBuffer) => void;
+      const digest = new Promise<ArrayBuffer>((resolve) => { resolveDigest = resolve; });
+      super({
+        write(chunk) { hash.update(chunk); },
+        close() {
+          // Resolve on a LATER macrotask: an implementation that fails to
+          // await `digest` sees a pending Promise, not bytes.
+          setTimeout(() => resolveDigest(hash.digest().buffer as ArrayBuffer), 5);
+        },
+      });
+      this.digest = digest;
+    }
+  }
+
+  const cryptoObj = (globalThis as any).crypto;
+  const hadOriginal = 'DigestStream' in cryptoObj;
+  const original = cryptoObj.DigestStream;
+  cryptoObj.DigestStream = FakeDigestStream;
+  try {
+    const file = patternChunk(99, 512 * 1024 + 7);
+    const expected = createHash('sha256').update(file).digest('hex');
+    // sha256OfStream must take the DigestStream branch now and STILL await
+    // the async promise — producing the real hash, not ''.
+    const got = await sha256OfStream(new Response(file).body as unknown as ReadableStream<Uint8Array>);
+    assert.equal(got, expected, 'the Workers DigestStream path produces the correct hash');
+    assert.notEqual(got, '', 'an un-awaited digest would have produced an empty hash');
+  } finally {
+    if (hadOriginal) cryptoObj.DigestStream = original;
+    else delete cryptoObj.DigestStream;
+  }
+
+  // And the Node fallback path still matches after restoration.
+  const file2 = patternChunk(101, 3 * 1024 * 1024 + 3);
+  const expected2 = createHash('sha256').update(file2).digest('hex');
+  assert.equal(await sha256OfStream(new Response(file2).body as unknown as ReadableStream<Uint8Array>), expected2);
+});
+
+test('Workers path: sha256R2Object works end-to-end with a promise-based DigestStream', async () => {
+  const { createHash } = await import('node:crypto');
+  class FakeDS extends WritableStream<Uint8Array> {
+    digest: Promise<ArrayBuffer>;
+    constructor(algorithm: string) {
+      const hash = createHash('sha256');
+      let resolveDigest!: (b: ArrayBuffer) => void;
+      const digest = new Promise<ArrayBuffer>((resolve) => { resolveDigest = resolve; });
+      super({ write(c) { hash.update(c); }, close() { setTimeout(() => resolveDigest(hash.digest().buffer as ArrayBuffer), 3); } });
+      this.digest = digest;
+    }
+  }
+  const cryptoObj = (globalThis as any).crypto;
+  const had = 'DigestStream' in cryptoObj;
+  const orig = cryptoObj.DigestStream;
+  cryptoObj.DigestStream = FakeDS;
+  try {
+    const r2 = fakeR2();
+    const ref = await referenceHash(generatedStream(9 * MB + 11));
+    r2.putObject('quarantine/k', () => generatedStream(9 * MB + 11), ref.size);
+    const env = { ...fakeD1(), STORAGE: r2.STORAGE };
+    const out = await sha256R2Object(env, 'quarantine/k');
+    assert.deepEqual(out, { size: ref.size, sha256: ref.sha256 });
+  } finally {
+    if (had) cryptoObj.DigestStream = orig; else delete cryptoObj.DigestStream;
+  }
+});
