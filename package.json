@@ -16,7 +16,7 @@
     "build": "tsc && vite build",
     "build:web": "vite build",
     "build:electron": "node scripts/build-electron.mjs",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p sdk/tsconfig.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p backend/tsconfig.json && tsc --noEmit -p sdk/tsconfig.json",
     "preview": "vite preview --host 0.0.0.0 --port 5173",
     "lint": "eslint . --ext ts,tsx --max-warnings 0",
     "dist": "npm run build:web && npm run build:electron && electron-builder --win --linux",
