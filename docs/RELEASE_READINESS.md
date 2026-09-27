@@ -220,7 +220,8 @@ connectivity-loss field testing on devices is BLOCKED here.
 
 ## 14. Security acceptance — PASS
 
-* Passwords: PBKDF2-HMAC-SHA256, 600k iterations, per-user salt — never
+* Passwords: PBKDF2-HMAC-SHA256, 100k iterations (the Workers runtime hard
+  ceiling — see the incident note in `docs/SECURITY.md`), per-user salt — never
   plaintext (legacy SHA-256 hashes still verify + upgrade, no lockout).
 * Refresh tokens: server-side sessions, hashed at rest, single-use rotation,
   replay rejected, revocation per-device and all-devices; access/refresh token
@@ -236,8 +237,11 @@ connectivity-loss field testing on devices is BLOCKED here.
   correlated client↔server; logs never contain passwords/tokens (redaction
   tested).
 
-Caveat (documented in `docs/SECURITY.md`): 600k PBKDF2 iterations can exceed
-the Workers free-plan 10 ms CPU budget — paid plan recommended.
+Caveat (documented in `docs/SECURITY.md`): the Workers runtime hard-caps PBKDF2
+at 100k iterations (workerd policy — 600k, the OWASP figure, 500s every
+register/reset in production while passing all local tests). 100k costs
+~10–30 ms CPU per hash; on the free plan's 10 ms CPU cap monitor for
+CPU-limit errors.
 
 ## 15. Package acceptance — PASS (with one documented FAIL: unsigned URLs)
 
@@ -356,8 +360,9 @@ runtime honesty, no secrets in bundles (§20) · full test matrix (§21).
 3. 2FA, account lockout, email verification (malware scanning of uploads HAS since been implemented — see SECURITY.md),
    signed update manifests — none present; all documented in
    `docs/SECURITY.md`.
-4. PBKDF2 600k iterations vs Workers free-plan CPU budget — paid plan or a
-   tuned constant.
+4. PBKDF2 is capped at 100k iterations by the Workers runtime (workerd) —
+   stronger costs (OWASP 600k) cannot be deployed there; hashes are
+   self-describing and upgrade automatically if the cap is ever raised.
 5. Legacy `versions`/`app_versions` dual-write for old clients — remove after
    old client versions age out.
 6. Tauri/Flutter legacy trees retained — archive or delete once desktop is

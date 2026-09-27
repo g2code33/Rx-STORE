@@ -53,7 +53,7 @@ Rules enforced (and unit-tested in `backend/src/oauth.test.ts`):
 
 | Control | Status | Notes |
 | --- | --- | --- |
-| Password hashing (password-specific KDF) | **IMPLEMENTED** | PBKDF2-HMAC-SHA256, 600,000 iterations, 16-byte per-user random salt, versioned format `pbkdf2$sha256$iter$salt$hash`. See "Password hashing note" below. |
+| Password hashing (password-specific KDF) | **IMPLEMENTED** | PBKDF2-HMAC-SHA256, **100,000 iterations (the Workers runtime hard ceiling — see the note below)**, 16-byte per-user random salt, versioned format `pbkdf2$sha256$iter$salt$hash`. |
 | Legacy hash migration | **IMPLEMENTED** | Old static-salt SHA-256 hashes still verify; they are transparently re-hashed to PBKDF2 on the next successful login. No user lockout. |
 | Constant-time hash comparison | **IMPLEMENTED** | Prevents early-exit timing leaks. |
 | Access tokens (JWT) | **IMPLEMENTED** | HS256 only; `alg` is verified (a forged `alg:none` token is rejected). `iss`/`aud`/`exp`/`iat`/`jti` are set and validated. |
@@ -79,14 +79,33 @@ lists as acceptable. The stored format is versioned so an Argon2id/WASM
 implementation can be added later and migrated on login (same mechanism used for
 the legacy SHA-256 → PBKDF2 upgrade).
 
-**CPU budget caveat (operational):** 600,000 PBKDF2-SHA256 iterations is the
-OWASP recommendation, but it costs roughly 100–300 ms of CPU per hash. That fits
-the Workers **paid** CPU budget, but will exceed the **free** plan's 10 ms limit
-and cause login to fail with a CPU-limit error. If you deploy on the free plan,
-either raise the plan or lower `PBKDF2_ITERATIONS` in
-`backend/src/services/password.ts` (the iteration count is embedded in the stored
-hash, and `needsRehash` will transparently upgrade hashes on the next login after
-you raise it again).
+**Runtime iteration cap (production incident, 2026-09-27 — fixed):** the
+Cloudflare Workers runtime (workerd) **hard-caps PBKDF2 at 100,000 iterations per
+`crypto.subtle.deriveBits()` call** and throws
+`NotSupportedError: Pbkdf2 failed: iteration counts above 100000 are not
+supported` above it. This module originally requested the OWASP-recommended
+600,000 iterations; in production that made **every sign-up, password reset and
+set-password request return 500** while the whole test suite stayed green —
+because Node and `wrangler dev` do not enforce the cap (it is platform policy,
+not API surface). The module now:
+
+- requests **100,000 iterations** (the strongest cost deployable on Workers),
+- clamps any configured cost to the ceiling and, if a future runtime lowers the
+  ceiling further, halves and retries instead of 500ing (the count actually used
+  is recorded in the self-describing stored hash),
+- fails **closed** ("wrong password") on a stored hash whose cost exceeds the
+  ceiling, instead of letting `deriveBits` throw a 500,
+- pins the ceiling in `backend/src/passwordPolicy.test.ts` with a faithful
+  simulation of the capped runtime, and
+- is verified against production by `scripts/probe-live-signup.mjs`
+  (`.github/workflows/probe-signup.yml`).
+
+If workerd ever raises the cap, raise `PBKDF2_ITERATIONS` with it: the stored
+format embeds the per-hash count, `verifyPassword` replays the stored count, and
+`needsRehash` transparently upgrades existing hashes on the next successful
+login. 100,000 PBKDF2-SHA256 iterations costs roughly 10–30 ms of CPU per hash —
+within the paid-plan budget; on the free plan's 10 ms cap monitor for
+CPU-limit errors (the live probe makes this visible).
 
 ### JWT secret rotation (seamless by design)
 
