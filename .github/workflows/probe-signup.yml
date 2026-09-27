@@ -9,16 +9,24 @@ name: Live signup probe
 # (ci-signup-probe+<timestamp>@rx-store.invalid) — safe to delete:
 #   DELETE FROM users WHERE email LIKE 'ci-signup-probe+%';
 #
-# Triggers: manual dispatch, or a push to the session working branch.
+# The probe output is committed to probe-output/latest.txt so it can be read
+# without Actions log access. Those commits carry [skip ci] so they never
+# re-trigger any workflow (no loops).
 
 on:
   workflow_dispatch:
   push:
     branches: [arena/**]
+    paths:
+      - 'scripts/probe-live-signup.mjs'
+      - '.github/workflows/probe-signup.yml'
 
 concurrency:
   group: probe-signup-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: write
 
 jobs:
   probe:
@@ -33,4 +41,19 @@ jobs:
           node-version: 22
 
       - name: Run live signup probe
-        run: node scripts/probe-live-signup.mjs
+        run: |
+          mkdir -p probe-output
+          node scripts/probe-live-signup.mjs 2>&1 | tee probe-output/latest.txt
+
+      - name: Publish probe results to the branch (readable via git)
+        if: always() && github.event_name == 'push'
+        run: |
+          git config user.name "probe-bot"
+          git config user.email "probe@users.noreply.github.com"
+          git add probe-output/latest.txt
+          if git diff --cached --quiet; then
+            echo "nothing new to commit"
+          else
+            git commit -m "chore(diag): live signup probe results (run ${{ github.run_number }}) [skip ci]"
+            git push
+          fi
