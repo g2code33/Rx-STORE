@@ -6,6 +6,7 @@ import { getPublicSettings } from '../../services/api';
 import { useContent } from '../../context/ContentContext';
 import Editable from '../edit/Editable';
 import SearchBox from '../search/SearchBox';
+import UserAvatar from '../common/UserAvatar';
 import { DEFAULT_NAV, mergeNavLinks } from './nav';
 import { replayWelcomeIntro } from '../home/WelcomeIntro';
 import { useSiteIcon } from '../../icons/PlatformIcon';
@@ -226,9 +227,12 @@ export default function Header() {
                   onClick={() => { setIsProfileOpen(!isProfileOpen); setIsNotifOpen(false); }}
                   className="flex items-center gap-2 p-1.5 pr-3 rounded-xl hover:bg-white/5 transition-all"
                 >
-                  <div className="w-8 h-8 rounded-lg bg-rx-dark-tertiary flex items-center justify-center text-lg">
-                    {user.avatar}
-                  </div>
+                  <UserAvatar
+                    avatar={user.avatar}
+                    name={user.name}
+                    className="w-8 h-8 rounded-lg bg-rx-dark-tertiary"
+                    textClassName="text-lg"
+                  />
                   <span className="hidden sm:block text-sm font-medium text-white">{user.name.split(' ')[0]}</span>
                   <ChevronDown className="w-3.5 h-3.5 text-rx-gray-medium hidden sm:block" />
                 </button>

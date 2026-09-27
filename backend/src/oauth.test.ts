@@ -127,6 +127,17 @@ function fakeEnv() {
             const u = users.get(a[0]); if (u) u.last_login_at = new Date().toISOString();
             return { meta: { changes: 1 } };
           }
+          if (sql.includes('UPDATE users SET avatar_url=? WHERE id=? AND (avatar_url IS NULL')) {
+            // Backfill-only avatar sync (linking): set only when the account has no picture.
+            const u = users.get(a[1]);
+            if (u && (u.avatar_url === null || u.avatar_url === undefined || u.avatar_url === '')) u.avatar_url = a[0];
+            return { meta: { changes: 1 } };
+          }
+          if (sql.includes('UPDATE users SET avatar_url=? WHERE id=?')) {
+            // Sign-in avatar sync (provider is authoritative).
+            const u = users.get(a[1]); if (u) u.avatar_url = a[0];
+            return { meta: { changes: 1 } };
+          }
           if (sql.includes('UPDATE users SET password_hash=?, updated_at')) {
             const u = users.get(a[1]); if (u) u.password_hash = a[0];
             return { meta: { changes: 1 } };
@@ -445,6 +456,59 @@ test('second GitHub login resolves to the same account; username changes do not 
   const done = await completeWith(env, cbParams(res).get('code')!);
   assert.equal(done.user.id, first.id);
   assert.equal(env.identities.size, 1);
+});
+
+test('GitHub sign-up stores the provider picture; the session response carries it as the avatar', async () => {
+  const env = fakeEnv();
+  const res = await runGithubCallback(env, { id: '98765', emails: [{ email: 'octo@example.com', primary: true, verified: true }] });
+  const done = await completeWith(env, cbParams(res).get('code')!);
+  const user = [...env.users.values()].find((x) => x.email === 'octo@example.com')!;
+  assert.equal(user.avatar_url, 'https://avatars.test/gh.png', 'the GitHub picture is stored on the account at creation');
+  assert.equal(done.user.avatar, 'https://avatars.test/gh.png', 'the session response carries the picture (the UI renders it as an <img>)');
+});
+
+test('a CHANGED GitHub picture is refreshed on the next GitHub sign-in', async () => {
+  const env = fakeEnv();
+  await runGithubCallback(env, { id: '98765', emails: [{ email: 'octo@example.com', primary: true, verified: true }] });
+  const user = [...env.users.values()].find((x) => x.email === 'octo@example.com')!;
+  assert.equal(user.avatar_url, 'https://avatars.test/gh.png');
+  // The user changed their GitHub avatar → the next sign-in adopts it.
+  const res = await runGithubCallback(env, {
+    id: '98765',
+    user: { id: 98765, login: 'octocat', name: 'Octo Cat', avatar_url: 'https://avatars.test/octo-v2.png', email: null },
+    emails: [{ email: 'octo@example.com', primary: true, verified: true }],
+  });
+  const done = await completeWith(env, cbParams(res).get('code')!);
+  assert.equal(user.avatar_url, 'https://avatars.test/octo-v2.png', 'stored picture refreshed from the provider');
+  assert.equal(done.user.avatar, 'https://avatars.test/octo-v2.png', 'the refreshed picture is what the client receives');
+});
+
+test('connecting GitHub to a password account BACKFILLS the picture only when it has none', async () => {
+  const env = fakeEnv();
+  const u = await seedPasswordUser(env); // avatar_url: null
+  const login = await authRoutes.login(postReq('/auth/login', { identifier: 'existing@example.com', password: 'Passw0rd!123' }), env);
+  const start = await oauthRoutes.linkStart(postReq('/auth/oauth/link-start', { provider: 'github' }, login.token), env);
+  const started: any = await oauthRoutes.start(getReq(start.url), env, 'github');
+  const rawState = new URL(started.headers.get('Location')!).searchParams.get('state')!;
+  const stubs = installFetchStubs(undefined, {
+    user: { id: 424242, login: 'octo', name: 'Octo Cat', avatar_url: 'https://avatars.test/backfill.png', email: null },
+    emails: [{ email: 'octo@example.com', primary: true, verified: true }],
+  });
+  try {
+    const res = await oauthRoutes.callback(getReq(`/auth/oauth/github/callback?code=valid&state=${encodeURIComponent(rawState)}`), env, 'github');
+    assert.equal(cbParams(res).get('status'), 'linked');
+  } finally { stubs.restore(); }
+  assert.equal(u.avatar_url, 'https://avatars.test/backfill.png', 'the password account adopts the GitHub picture (it had none)');
+
+  // An ESTABLISHED picture is never replaced — not even by the same-email
+  // link-confirm flow with a different provider.
+  u.avatar_url = 'https://example.com/custom.png';
+  const res2 = await runGoogleCallback(env, { sub: 'google-sub-avatar', email: 'existing@example.com', emailVerified: true });
+  const linkToken = new URL((res2 as Response).headers.get('Location')!).searchParams.get('token')!;
+  const good = await oauthRoutes.linkConfirm(postReq('/auth/oauth/link/confirm', { token: linkToken, password: 'Passw0rd!123' }), env);
+  assert.ok(!good.code, good.message);
+  assert.equal(u.avatar_url, 'https://example.com/custom.png', 'an existing picture is preserved when linking a second provider');
+  assert.equal(good.user.avatar, 'https://example.com/custom.png', 'the session response keeps the established picture');
 });
 
 test('GitHub account with NO verified email is handled safely', async () => {

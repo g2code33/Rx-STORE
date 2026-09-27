@@ -11,6 +11,7 @@ import { deviceActivity, mapDetectionToInstall } from '../platform/detect';
 import { installStateStatus } from '../native/installUi';
 import { formatDate } from '../utils/helpers';
 import AppLogo from '../components/apps/AppLogo';
+import UserAvatar from '../components/common/UserAvatar';
 import { useUpdateStatus, describeStatus, checkNow, installNow, isDesktopApp, applyUpdatePolicy, watchConnectionForUpdatePolicy } from '../desktop/updater';
 import { normalizeProfileTab, type ProfileTab } from '../utils/profileTabs';
 import toast from 'react-hot-toast';
@@ -219,7 +220,12 @@ export default function Profile() {
     <div className="section-container py-8 lg:py-12">
       <div className="card p-6 sm:p-8 mb-8">
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-6">
-          <div className="w-20 h-20 rounded-2xl bg-rx-yellow/20 flex items-center justify-center text-4xl">{user.avatar}</div>
+          <UserAvatar
+            avatar={user.avatar}
+            name={user.name}
+            className="w-20 h-20 rounded-2xl bg-rx-yellow/20"
+            textClassName="text-4xl"
+          />
           <div className="flex-1">
             <h1 className="text-2xl font-bold text-white">{user.name}</h1>
             <p className="text-rx-gray-medium">{user.email}</p>

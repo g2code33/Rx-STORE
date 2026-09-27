@@ -96,6 +96,34 @@ type CallbackStatus =
   | 'login' | 'new' | 'linked' | 'already_linked'
   | 'link_required' | 'cancelled' | 'error';
 
+/**
+ * Keep the account picture in sync with the provider.
+ *
+ * WHY (production bug, 2026-09-27): a social account's picture was written
+ * ONCE at creation, so (a) a provider picture change never propagated and
+ * (b) a password account that later connected Google/GitHub kept the '👤'
+ * placeholder forever. RX Store has no custom avatar upload (users/me PATCH
+ * is never sent an avatar by any client), so the provider picture is the
+ * freshest source of truth:
+ *   - sign-in  → always refresh (the provider picture may have changed)
+ *   - linking  → backfill ONLY when the account has no picture yet (never
+ *                replace an established picture just because a second
+ *                provider was connected)
+ * Best-effort by design: a sync failure must never fail an auth flow.
+ */
+async function syncProviderAvatar(env: any, userId: string, avatar: string | null | undefined, opts: { onlyIfMissing?: boolean } = {}): Promise<void> {
+  const url = typeof avatar === 'string' ? avatar.trim().slice(0, 500) : '';
+  if (!url) return;
+  try {
+    if (opts.onlyIfMissing) {
+      await env.DB.prepare(`UPDATE users SET avatar_url=? WHERE id=? AND (avatar_url IS NULL OR avatar_url='')`).bind(url, userId).run();
+    } else {
+      await env.DB.prepare(`UPDATE users SET avatar_url=? WHERE id=?`).bind(url, userId).run();
+    }
+  } catch { /* cosmetic — never block auth */ }
+}
+
+
 function callbackRedirect(env: any, status: CallbackStatus, params: Record<string, string> = {}): Response {
   const q = new URLSearchParams({ status, ...params });
   return redirectResponse(`${webCallbackBase(env)}/oauth/callback?${q.toString()}`);
@@ -206,6 +234,9 @@ export const oauthRoutes = {
       if (existing && existing.user_id === user.id) return callbackRedirect(env, 'already_linked');
       if (existing) return callbackRedirect(env, 'error', { reason: 'provider_linked_elsewhere' });
       await linkIdentity(env, { userId: user.id, provider, subject, email, emailVerified, name, avatarUrl: avatar });
+      // Backfill the account picture only if the account has none (the user
+      // may already have a picture from another provider or a prior session).
+      await syncProviderAvatar(env, user.id, avatar, { onlyIfMissing: true });
       return callbackRedirect(env, 'linked');
     }
 
@@ -216,6 +247,9 @@ export const oauthRoutes = {
       const user: any = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(identity.user_id).first().catch(() => null);
       if (!user) return callbackRedirect(env, 'error', { reason: 'account_missing' });
       await touchIdentityLogin(env, user.id, provider);
+      // Refresh the account picture from the provider on every social sign-in
+      // (there is no custom avatar upload, so the provider is authoritative).
+      await syncProviderAvatar(env, user.id, avatar);
       await env.DB.prepare(`UPDATE users SET last_login_at = datetime('now') WHERE id = ?`).bind(user.id).run().catch(() => {});
       const completion = await issueOneTimeToken(env, 'code', { userId: user.id, redirect: safeRedirectPath, status: 'login' });
       return callbackRedirect(env, 'login', { code: completion });
@@ -302,6 +336,10 @@ export const oauthRoutes = {
       name: payload.name || null, avatarUrl: payload.avatarUrl || null,
     });
     if (!ok) return { code: 'CONFLICT', message: 'This provider account is already connected to another RX Store account.' };
+    // The account just proved ownership of the provider identity — adopt its
+    // picture, but only if the account has none of its own yet.
+    await syncProviderAvatar(env, user.id, payload.avatarUrl || null, { onlyIfMissing: true });
+    if (!user.avatar_url && payload.avatarUrl) user.avatar_url = String(payload.avatarUrl).slice(0, 500);
     await env.DB.prepare(`UPDATE users SET last_login_at = datetime('now') WHERE id = ?`).bind(user.id).run().catch(() => {});
     const data = await sessionResponse(env, request, user, { deviceId: deviceId || null });
     return { ...data, status: 'linked', redirect: safeInAppRedirect(payload.redirect) || '/' };
