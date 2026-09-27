@@ -1,0 +1,36 @@
+name: Live signup probe
+
+# DIAGNOSTIC ONLY — never publishes artifacts and never touches secrets.
+# Reproduces the reported "sign up not working" against the LIVE production
+# API from a CI runner (the dev sandbox's egress is TLS-blocked, so the live
+# Worker cannot be reached from there).
+#
+# Creates at most ONE clearly-labelled probe user row
+# (ci-signup-probe+<timestamp>@rx-store.invalid) — safe to delete:
+#   DELETE FROM users WHERE email LIKE 'ci-signup-probe+%';
+#
+# Triggers: manual dispatch, or a push to the session working branch.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [arena/**]
+
+concurrency:
+  group: probe-signup-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: Probe live /auth/register
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Run live signup probe
+        run: node scripts/probe-live-signup.mjs
