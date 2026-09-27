@@ -109,4 +109,4 @@ try {
   log(`--- D: local PBKDF2 reference failed: ${e?.message || e}`);
 }
 
-<!-- probe v2: results also committed to branch -->
+// probe v2: results also committed to the branch
