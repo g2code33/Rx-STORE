@@ -1,16 +1,14 @@
-file:///home/runner/work/Rx-STORE/Rx-STORE/scripts/probe-live-signup.mjs:112
-<!-- probe v2: results also committed to branch -->
-   ^
-
-SyntaxError: HTML comments are not allowed in modules
-    at compileSourceTextModule (node:internal/modules/esm/utils:346:16)
-    at ModuleLoader.moduleStrategy (node:internal/modules/esm/translators:110:18)
-    at #translate (node:internal/modules/esm/loader:559:20)
-    at afterLoad (node:internal/modules/esm/loader:612:29)
-    at ModuleLoader.loadAndTranslate (node:internal/modules/esm/loader:617:12)
-    at #createModuleJob (node:internal/modules/esm/loader:640:36)
-    at #getJobFromResolveResult (node:internal/modules/esm/loader:353:34)
-    at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:321:41)
-    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:680:25)
-
-Node.js v22.23.2
+[probe] API=https://rx-store-api.calcitoninpay.workers.dev/v1 origin=https://rx-store-web.pages.dev probe-email=ci-signup-probe+1790510387043@rx-store.invalid
+[probe] --- A: register INVALID password (expect 400 VALIDATION_ERROR)
+[probe]     HTTP 400 in 582ms
+[probe]     cf-ray=a41a582008f2616a-ORD allow-origin=https://rx-store-web.pages.dev
+[probe]     body: {"success":false,"error":{"requestId":"a41a582008f2616a","code":"VALIDATION_ERROR","message":"At least 8 characters, including a letter and a number or symbol (or a 12+ character passphrase)."}}
+[probe] --- B: register VALID new account (expect 200)
+[probe]     HTTP 500 in 458ms
+[probe]     cf-ray=a41a5822ee771cd6-ORD allow-origin=https://rx-store-web.pages.dev
+[probe]     body: {"success":false,"error":{"requestId":"a41a5822ee771cd6","code":"INTERNAL","message":"Something went wrong. Please try again."}}
+[probe] --- C: control — login with unknown creds (expect 401)
+[probe]     HTTP 401 in 172ms
+[probe]     cf-ray=a41a58259b2f616a-ORD allow-origin=https://rx-store-web.pages.dev
+[probe]     body: {"success":false,"error":{"requestId":"a41a58259b2f616a","code":"AUTH_REQUIRED","message":"Invalid email/phone or password. Please check and try again."}}
+[probe] --- D: local PBKDF2-600000 took 71ms of CPU (Workers FREE plan caps a request at 10ms)
