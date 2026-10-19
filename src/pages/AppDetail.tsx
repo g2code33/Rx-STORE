@@ -23,6 +23,8 @@ import { isDetectionAvailable } from '../platform/nativeDetection';
 import { resolvePlatformForDevice } from '../native/installCoordinator';
 import type { PackageResolution } from '../native/installCoordinator';
 import { mapDetectionToInstall } from '../platform/detect';
+import { resolveOneTapPlatform } from '../platform/oneTapInstall';
+import { detectDevice } from '../hooks/useDeviceDetect';
 import { useDevices } from '../context/DeviceContext';
 
 /** Friendly label for a stored package platform id. */
@@ -125,6 +127,9 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   // visible in the progress bar; the system-prompt phases would otherwise be
   // silent while the OS asks for the password).
   const lastTxStateRef = useRef<string>('IDLE');
+  // The platform of the most recent download attempt — RETRY re-runs exactly
+  // what the user last chose (never silently switches package type).
+  const lastPlatformRef = useRef<string | null>(null);
   React.useEffect(() => {
     const state = installTx.state;
     if (state === lastTxStateRef.current) return;
@@ -306,9 +311,17 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
     if (appIsPaidApp) { void handlePurchase(); return; }
     if (!user) { toast.error('Please sign in to install applications'); return; }
     if (isInstalled && !nativeUpdateAvailable) return;
+    // ONE-TAP INSTALL (Play-Store-style): the device is confidently detected
+    // and the app ships a package for it → the download starts IMMEDIATELY,
+    // with no "choose Android again" step. The platform picker remains only
+    // for web/iOS recommendations (iOS needs the Add-to-Home-Screen
+    // walkthrough), undetected devices, and apps without a matching package.
+    const oneTap = resolveOneTapPlatform(detectDevice(), app.platforms);
+    if (oneTap) { void doDownload(oneTap); return; }
     setShowDownload(true);
   };
   const doDownload = async (platform: string) => {
+    lastPlatformRef.current = platform;
     setIsInstalling(true);
     setShowDownload(false);
     try {
@@ -562,7 +575,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
               ) : unifiedInstallBtn.state === 'RETRY' ? (
                 <div className="flex items-center gap-2 flex-wrap justify-end" role="alert">
                   <span className="text-xs text-amber-300 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" /> {unifiedInstallBtn.label}</span>
-                  <button onClick={() => { resetTransaction(); setShowDownload(true); }} className="px-4 py-2.5 bg-rx-yellow text-rx-dark rounded-xl text-sm font-bold hover:bg-rx-yellow-light transition-colors">Retry</button>
+                  <button onClick={() => { resetTransaction(); if (lastPlatformRef.current) { void doDownload(lastPlatformRef.current); } else setShowDownload(true); }} className="px-4 py-2.5 bg-rx-yellow text-rx-dark rounded-xl text-sm font-bold hover:bg-rx-yellow-light transition-colors">Retry</button>
                 </div>
               ) : osInstalled ? (
                 <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -598,7 +611,11 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
                   </button>
                 ) : (
                 <button onClick={handleInstall} disabled={isInstalling} className="px-8 py-3.5 bg-white text-rx-dark font-bold rounded-xl hover:bg-white/90 transition-all active:scale-95 disabled:opacity-70 flex items-center gap-2 shadow-lg">
-                  <Download className="w-5 h-5" />Get
+                  {isInstalling && !txBusy ? (
+                    <><div className="w-5 h-5 border-2 border-rx-dark/30 border-t-rx-dark rounded-full animate-spin" />Preparing…</>
+                  ) : (
+                    <><Download className="w-5 h-5" />Get</>
+                  )}
                 </button>
                 )
               )}

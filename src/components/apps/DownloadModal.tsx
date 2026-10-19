@@ -5,6 +5,7 @@ import PlatformIcon from '../../icons/PlatformIcon';
 /** download-dialog platform id → Admin → Icons slot id */
 const DL_ICON: Record<string, string> = { web: 'web', ios: 'ios', android: 'android', windows: 'windows', macos: 'macos', linux_deb: 'linux', linux_appimage: 'linux', linux: 'linux' };
 import { detectDevice, isPWADisplayStandalone } from '../../hooks/useDeviceDetect';
+import { effectiveRecommendation } from '../../platform/oneTapInstall';
 import { getPublicSettings } from '../../services/api';
 import { formatBytes } from '../../utils/helpers';
 
@@ -37,11 +38,16 @@ export default function DownloadModal({ app, onClose, onDownload }: Props) {
     getPublicSettings().then((s) => setIosPwa((s.ios_recommend_pwa ?? '1') === '1'));
   }, []);
   const rawDetection = detectDevice();
-  const detection = iosPwa && (rawDetection.device === 'iphone' || rawDetection.device === 'ipad')
+  const baseDetection = iosPwa && (rawDetection.device === 'iphone' || rawDetection.device === 'ipad')
     ? { ...rawDetection, recommended: 'web' }
     : rawDetection;
   const isStandalone = isPWADisplayStandalone();
   const available = (app.platforms || ['web']) as string[];
+  // When the app does NOT ship the detected platform (e.g. an Android user on
+  // a web-only app), the highlighted recommendation falls back to what it
+  // DOES ship — Web/PWA on top — instead of a disabled "recommended" row with
+  // the usable option buried under "Other packages".
+  const detection = { ...baseDetection, recommended: effectiveRecommendation(baseDetection, available) };
   // Try to get packages with deployment_url for PWA
   const getPkg = (pid: string) => {
     // app.packages or app.files may contain package info

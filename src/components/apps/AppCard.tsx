@@ -10,6 +10,9 @@ import PlatformIcon from '../../icons/PlatformIcon';
 import { useInstalledState } from '../../platform/nativeDetection';
 import { useInstallButton } from '../../native/useInstallButton';
 import { deviceCountLabel } from '../../native/installUi';
+import { isAndroidShell } from '../../platform/nativeInstaller';
+import { resolveOneTapPlatform } from '../../platform/oneTapInstall';
+import { detectDevice } from '../../hooks/useDeviceDetect';
 import { useDevices } from '../../context/DeviceContext';
 
 interface AppCardProps {
@@ -19,13 +22,16 @@ interface AppCardProps {
 
 export default function AppCard({ app, variant = 'default' }: AppCardProps) {
   const [showDl, setShowDl] = useState(false);
+  // Instant feedback between tapping GET and the transaction's own progress
+  // labels (the download-URL resolution round-trip).
+  const [starting, setStarting] = useState(false);
   // NO FAKE STATE: the card's action is driven purely by native detection (+ the
   // centralized transaction state). A localStorage record must never make a card
   // look installed when the OS says the app is absent.
   const { state: detectedState, installed: osInstalled } = useInstalledState(app);
   // Single source of truth for the button state (GET / Downloading X% /
   // Verifying… / Installing… / Checking… / OPEN / UPDATE / Updating X% / RETRY).
-  const { button: installBtn, isBusy } = useInstallButton(app);
+  const { button: installBtn, isBusy, start: startInstallTx } = useInstallButton(app);
   const { currentDevice, installations } = useDevices();
   const isUpdate = detectedState === 'UPDATE_AVAILABLE';
   // "Installed on another device" hint — only for OTHER devices, never flips OPEN.
@@ -34,6 +40,65 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
   // Auto-detected package size (Phase 15 card requirement) — smallest platform
   // size we have a real measurement for.
   const firstSize = app.sizes ? (Object.values(app.sizes).filter((v: any) => Number(v) > 0).sort((a: any, b: any) => Number(a) - Number(b))[0] as number | undefined) ?? null : null;
+
+  /**
+   * Download an app package for a platform — shared by the one-tap path and
+   * the platform picker. On the ANDROID shell this runs the REAL install
+   * pipeline (DownloadManager → SHA-256 verify → system installer), because a
+   * browser blob download from the WebView cannot install an APK; on the web
+   * shell it streams the file to the browser's own download.
+   */
+  const handleCardDownload = async (platform: string) => {
+    const token = localStorage.getItem('rx-store-token');
+    if (!token) { window.location.href = '/login'; return; }
+    const { default: toast } = await import('react-hot-toast');
+    setStarting(true);
+    try {
+      const API = (import.meta as any).env?.VITE_API_URL;
+      if (!API) throw new Error('RX Store is not connected to its application service. Install a correctly configured build.');
+      const r = await fetch(`${API.replace(/\/$/, '')}/apps/${app.slug}/download?platform=${platform}`, { headers: { Authorization: `Bearer ${token}` } });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.success) throw new Error(j?.error?.message || 'Download failed');
+      if (j.data?.isPWA && j.data?.deploymentUrl) { window.open(j.data.deploymentUrl, '_blank'); setShowDl(false); return; }
+
+      // Android shell: full transaction pipeline (download → verify → install).
+      if (isAndroidShell()) {
+        const data = j.data || {};
+        const result = await startInstallTx(app, {
+          platform: 'android',
+          url: data.url,
+          fileName: data.fileName || `${app.slug}-${data.version || app.version}.apk`,
+          version: data.version || app.version,
+          size: data.size,
+          sha256: data.checksum || data.sha256,
+          isPwa: false,
+        });
+        if (result.state === 'INSTALLED') toast.success(`${app.name} is ready`);
+        else if (result.state === 'INSTALLATION_PENDING') toast('Downloaded — approve the install prompt to finish.', { icon: '⏳', duration: 6000 });
+        else if (result.state === 'DOWNLOAD_FAILED') toast.error('Download failed — check your connection and try again.');
+        else if (result.state === 'VERIFICATION_FAILED') toast.error(result.message || 'Checksum verification failed — the download was discarded.');
+        else if (result.state === 'INSTALL_FAILED') toast.error(result.message || 'The installer could not be launched.');
+        setShowDl(false);
+        return;
+      }
+
+      // Web shell: stream to a browser download.
+      const url = j?.data?.url;
+      const fr = await fetch(url);
+      if (!fr.ok) throw new Error('File not found — upload may be incomplete');
+      const blob = await fr.blob();
+      if (blob.size === 0) throw new Error('File is empty');
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = blobUrl; a.download = `${app.slug}-${app.version}-${platform}`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(blobUrl), 2000);
+      window.dispatchEvent(new CustomEvent('rx-refresh'));
+      toast.success(`Downloaded ${app.name} for ${platform} — open the file to install`);
+      setShowDl(false);
+    } catch (e: any) {
+      toast.error((e?.message || 'Download failed') + ' — not marked as complete, you can try again');
+    } finally {
+      setStarting(false);
+    }
+  };
 
   if (variant === 'horizontal') {
     return (
@@ -203,12 +268,12 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
             <span className="text-xs font-medium px-2.5 py-1 rounded-lg text-rx-yellow bg-rx-yellow/10">{installBtn.label}</span>
           ) : (
             <button
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); const token=localStorage.getItem('rx-store-token'); if(!token){ window.location.href='/login'; return; } if((window as any).rxDesktop?.isDesktop){ window.location.href=`/app/${app.slug}`; return; } setShowDl(true); }}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); const token=localStorage.getItem('rx-store-token'); if(!token){ window.location.href='/login'; return; } if((window as any).rxDesktop?.isDesktop){ window.location.href=`/app/${app.slug}`; return; } const oneTap=resolveOneTapPlatform(detectDevice(), app.platforms); if(oneTap){ void handleCardDownload(oneTap); return; } setShowDl(true); }}
               aria-label={installBtn.status || installBtn.label}
               title={installBtn.status || installBtn.label}
               className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-all ${app.price === 'free' ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-rx-yellow text-rx-dark hover:bg-rx-yellow-light'}`}
             >
-              {installBtn.label}
+              {starting && !isBusy ? 'Preparing…' : installBtn.label}
             </button>
           )}
           {!osInstalled && otherDevices > 0 && (
@@ -228,28 +293,7 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
         </div>
       </div>
     </Link>
-    {showDl && <DownloadModal app={app} onClose={()=>setShowDl(false)} onDownload={async (platform)=>{
-      const token=localStorage.getItem('rx-store-token');
-      if(!token){ window.location.href='/login'; return; }
-      try{
-        const API=(import.meta as any).env?.VITE_API_URL;
-        if(!API) throw new Error('RX Store is not connected to its application service. Install a correctly configured build.');
-        const r=await fetch(`${API.replace(/\/$/,'')}/apps/${app.slug}/download?platform=${platform}`,{headers:{'Authorization':`Bearer ${token}`}});
-        const j=await r.json().catch(()=>null);
-        if(!r.ok||!j?.success) throw new Error(j?.error?.message||'Download failed');
-        if (j.data?.isPWA && j.data?.deploymentUrl) { window.open(j.data.deploymentUrl, '_blank'); setShowDl(false); return; }
-        const url=j?.data?.url;
-        const fr = await fetch(url);
-        if(!fr.ok) throw new Error('File not found — upload may be incomplete');
-        const blob = await fr.blob();
-        if(blob.size===0) throw new Error('File is empty');
-        const blobUrl=URL.createObjectURL(blob);
-        const a=document.createElement('a'); a.href=blobUrl; a.download=`${app.slug}-${app.version}-${platform}`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(blobUrl),2000);
-        window.dispatchEvent(new CustomEvent('rx-refresh'));
-        const {default:toast}=await import('react-hot-toast'); toast.success(`Downloaded ${app.name} for ${platform} — open the file to install`);
-        setShowDl(false);
-      }catch(e:any){ const {default:toast}=await import('react-hot-toast'); toast.error(e.message + ' — not marked as complete, you can try again'); }
-    }} />}
+    {showDl && <DownloadModal app={app} onClose={()=>setShowDl(false)} onDownload={handleCardDownload} />}
     </>
   );
 }
