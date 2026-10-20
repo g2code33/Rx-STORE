@@ -13,7 +13,7 @@
  */
 import { resolveMembership } from './developers.ts';
 import {
-  githubAppConfig, githubConfigured, installationRepos,
+  githubAppConfig, githubConfigured, githubMissingSecrets, installationRepos,
 } from '../services/github.ts';
 import {
   connectAppRepository, disconnectAppRepository, getConnectionForApp,
@@ -69,6 +69,9 @@ export const githubDevRoutes = {
       : { results: [] };
     return {
       configured: githubConfigured(env),
+      // Honest diagnostics: which required secrets are missing/empty (names
+      // only — values are never exposed). Empty when everything is set.
+      missing: githubConfigured(env) ? [] : githubMissingSecrets(env),
       setupHint: githubConfigured(env) ? null : 'An administrator must complete the GitHub App setup (docs/GITHUB_RELEASES.md) before repositories can be connected.',
       app: { id: (app as any).id, name: (app as any).name, priceType: (app as any).price_type },
       connection,

@@ -47,6 +47,17 @@ export function githubConfigured(env: any): boolean {
   return githubAppConfig(env) !== null;
 }
 
+/** The Worker secrets the integration requires (names only — never values). */
+export const GITHUB_REQUIRED_SECRETS = ['GITHUB_APP_ID', 'GITHUB_APP_SLUG', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_WEBHOOK_SECRET'] as const;
+
+/**
+ * Which required secrets are missing or empty. Used for honest diagnostics
+ * ('configured: false' + the exact names) — secret VALUES are never exposed.
+ */
+export function githubMissingSecrets(env: any): string[] {
+  return GITHUB_REQUIRED_SECRETS.filter((k) => !String(env?.[k] || '').trim());
+}
+
 // ---------------------------------------------------------------------------
 // GitHub App JWT (RS256) — used only to mint short-lived installation tokens
 // ---------------------------------------------------------------------------

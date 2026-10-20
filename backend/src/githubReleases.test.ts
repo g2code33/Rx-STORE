@@ -1542,3 +1542,17 @@ test('REGRESSION appView: platforms/tags are ALWAYS arrays (JSON or legacy comma
   const c = appView({ id: 'x' });
   assert.deepEqual(c.platforms, []);
 });
+
+test('DIAGNOSTICS: githubMissingSecrets names exactly which required secrets are empty', async () => {
+  const { githubMissingSecrets } = await import('./services/github.ts');
+  assert.deepEqual(
+    githubMissingSecrets({ GITHUB_APP_ID: '', GITHUB_APP_SLUG: 'x', GITHUB_APP_PRIVATE_KEY: '   ', GITHUB_WEBHOOK_SECRET: 'y' }),
+    ['GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY'],
+    'empty and whitespace-only values are both reported',
+  );
+  assert.deepEqual(
+    githubMissingSecrets({ GITHUB_APP_ID: '1', GITHUB_APP_SLUG: 's', GITHUB_APP_PRIVATE_KEY: 'k', GITHUB_WEBHOOK_SECRET: 'w' }),
+    [],
+  );
+  assert.deepEqual(githubMissingSecrets({}), ['GITHUB_APP_ID', 'GITHUB_APP_SLUG', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_WEBHOOK_SECRET']);
+});

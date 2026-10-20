@@ -24,10 +24,12 @@ export default function GithubConnectPanel({ app, onChanged }: Props) {
   const [busy, setBusy] = useState(false);
   const [picker, setPicker] = useState<{ code: string; repos: any[] } | null>(null);
 
+  const [loadError, setLoadError] = useState(false);
   const load = useCallback(() => {
+    setLoadError(false);
     api.github.status(app.id)
       .then((s) => { setStatus(s); setState('ready'); })
-      .catch(() => { setStatus(null); setState('ready'); });
+      .catch(() => { setStatus(null); setLoadError(true); setState('ready'); });
   }, [app.id]);
 
   useEffect(load, [load]);
@@ -115,10 +117,27 @@ export default function GithubConnectPanel({ app, onChanged }: Props) {
         </div>
       )}
 
-      {state === 'ready' && !isPaid && !status?.configured && (
+      {state === 'ready' && loadError && (
+        <div className="mt-4 p-3 rounded-xl bg-white/5 border border-white/10 flex items-start gap-2">
+          <AlertCircle className="w-4 h-4 text-amber-300 mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <p className="text-xs text-rx-gray-medium">Could not load the GitHub connection status — a loading problem, not a setup problem.</p>
+            <button onClick={load} className="text-xs text-rx-yellow hover:underline mt-1">Retry</button>
+          </div>
+        </div>
+      )}
+
+      {state === 'ready' && !isPaid && !loadError && !status?.configured && (
         <div className="mt-4 p-3 rounded-xl bg-white/5 border border-white/10 flex items-start gap-2">
           <AlertCircle className="w-4 h-4 text-rx-yellow mt-0.5 shrink-0" />
-          <p className="text-xs text-rx-gray-medium">{status?.setupHint || 'The GitHub integration is not configured on this deployment yet. An administrator must complete the GitHub App setup first (docs/GITHUB_RELEASES.md).'}</p>
+          <div>
+            <p className="text-xs text-rx-gray-medium">{status?.setupHint || 'The GitHub integration is not configured on this deployment yet. An administrator must complete the GitHub App setup first (docs/GITHUB_RELEASES.md).'}</p>
+            {status?.missing && status.missing.length > 0 && (
+              <p className="text-xs text-amber-200 mt-1.5">
+                Missing or empty Worker secret{status.missing.length === 1 ? '' : 's'}: <span className="font-mono">{status.missing.join(', ')}</span> — set with <span className="font-mono">npx wrangler secret put &lt;name&gt; --name rx-store-api</span>
+              </p>
+            )}
+          </div>
         </div>
       )}
 
