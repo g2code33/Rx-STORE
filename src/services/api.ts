@@ -941,10 +941,12 @@ export const api = {
         method: 'POST', body: JSON.stringify({ code }),
       });
     },
-    /** Developer: bind the app to one repository of the installation. */
-    bind(appId: string, installationId: string, repositoryId: string) {
+    /** Developer: bind the app to one repository, using the completion code
+     *  from the install flow (the installation is resolved server-side from
+     *  the code — the client never supplies installation ids). */
+    bind(appId: string, code: string, repositoryId: string) {
       return request<{ connection: any }>(`/developers/apps/${encodeURIComponent(appId)}/github/bind`, {
-        method: 'POST', body: JSON.stringify({ installationId, repositoryId }),
+        method: 'POST', body: JSON.stringify({ code, repositoryId }),
       });
     },
     /** Developer: disconnect the app's repository (audited). */

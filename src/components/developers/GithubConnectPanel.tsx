@@ -22,7 +22,7 @@ export default function GithubConnectPanel({ app, onChanged }: Props) {
   const [state, setState] = useState<'loading' | 'ready'>('loading');
   const [status, setStatus] = useState<any>(null);
   const [busy, setBusy] = useState(false);
-  const [picker, setPicker] = useState<{ installationId: string; repos: any[] } | null>(null);
+  const [picker, setPicker] = useState<{ code: string; repos: any[] } | null>(null);
 
   const load = useCallback(() => {
     api.github.status(app.id)
@@ -45,7 +45,9 @@ export default function GithubConnectPanel({ app, onChanged }: Props) {
     if (code) {
       api.github.complete(code)
         .then((r) => {
-          setPicker({ installationId: r.installationId, repos: r.repos.filter((x) => !x.private) });
+          // The code stays live for the bind step; the server derives the
+          // installation from it — the client never supplies ids.
+          setPicker({ code, repos: r.repos.filter((x) => !x.private) });
           window.history.replaceState({}, '', window.location.pathname);
         })
         .catch((e) => toast.error(e?.message || 'Could not complete the GitHub connection.'))
@@ -70,7 +72,7 @@ export default function GithubConnectPanel({ app, onChanged }: Props) {
     if (!picker) return;
     setBusy(true);
     try {
-      await api.github.bind(app.id, picker.installationId, repositoryId);
+      await api.github.bind(app.id, picker.code, repositoryId);
       toast.success('Repository connected — GitHub releases will now be detected automatically.');
       setPicker(null);
       load();

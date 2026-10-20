@@ -17,11 +17,12 @@ import {
 } from '../services/github.ts';
 import {
   connectAppRepository, disconnectAppRepository, getConnectionForApp,
+  bindRepositoryFromCode,
   processWebhook, verifyGithubRelease, publishGithubRelease,
   rejectGithubRelease, withdrawGithubRelease, syncAllConnections,
   adminOverview, adminQueue, adminAudit, verifyPendingDetections, ensureGithubTables,
 } from '../services/githubReleases.ts';
-import { issueOneTimeToken, consumeOneTimeToken } from '../services/oauth.ts';
+import { issueOneTimeToken, consumeOneTimeToken, restoreOneTimeToken } from '../services/oauth.ts';
 
 type Result = { code?: string; message?: string; [k: string]: any } | null | undefined;
 
@@ -59,9 +60,13 @@ export const githubDevRoutes = {
     if ((app as any).error) return app as any;
     await ensureGithubTables(env);
     const connection = await getConnectionForApp(env, appId);
-    const events: any = await env.DB.prepare(
-      `SELECT event, action, status, detail, error, received_at FROM github_release_events ORDER BY received_at DESC LIMIT 5`
-    ).all().catch(() => ({ results: [] }));
+    // Webhook events are scoped to THIS app's repository — never a global feed
+    // (other developers' repository activity must not leak).
+    const events: any = connection
+      ? await env.DB.prepare(
+          `SELECT event, action, status, detail, error, received_at FROM github_release_events WHERE repository_id=? ORDER BY received_at DESC LIMIT 5`
+        ).bind(connection.repository_id).all().catch(() => ({ results: [] }))
+      : { results: [] };
     return {
       configured: githubConfigured(env),
       setupHint: githubConfigured(env) ? null : 'An administrator must complete the GitHub App setup (docs/GITHUB_RELEASES.md) before repositories can be connected.',
@@ -132,7 +137,7 @@ export const githubDevRoutes = {
     try { body = await request.json(); } catch { return { code: 'VALIDATION_ERROR', message: 'Invalid JSON body' }; }
     const raw = String(body?.code || '');
     if (!raw) return { code: 'VALIDATION_ERROR', message: 'code is required' };
-    const payload = await consumeOneTimeToken(env, 'code', raw);
+    const payload = await consumeOneTimeToken(env, 'code', raw, { allowRetry: true });
     if (!payload || payload.kind !== 'github-connect-complete') return { code: 'INVALID_TOKEN', message: 'This connection request is invalid or has expired. Start again.' };
     if (String(payload.userId) !== String(org.userId)) return { code: 'FORBIDDEN', message: 'This connection request was started by a different user.' };
     if (!githubConfigured(env)) return { code: 'NOT_IMPLEMENTED', message: 'The GitHub integration is not configured on this deployment.' };
@@ -140,6 +145,9 @@ export const githubDevRoutes = {
     try { repos = await installationRepos(env, String(payload.installationId)); } catch {
       return { code: 'UNAUTHORIZED', message: 'The GitHub installation could not be read. Install the App on the repository and try again.' };
     }
+    // The code stays live for the BIND step (it is consumed there, bound to
+    // this user + app + installation — the client never re-supplies ids).
+    await restoreOneTimeToken(env, raw);
     return {
       appId: String(payload.appId),
       installationId: String(payload.installationId),
@@ -147,16 +155,21 @@ export const githubDevRoutes = {
     };
   },
 
-  /** POST /developers/apps/:id/github/bind {installationId, repositoryId} */
+  /**
+   * POST /developers/apps/:id/github/bind {code, repositoryId}
+   * The installation comes from the SERVER-ISSUED completion code (bound to
+   * the initiating user + app) — a client-supplied installationId is NEVER
+   * trusted, so one developer cannot bind another organization's repository.
+   */
   async bind(request: Request, env: any) {
     const org = await requireOrg(env, request);
     if ('error' in org) return { code: 'UNAUTHORIZED', message: org.error };
     const appId = new URL(request.url).pathname.split('/')[3];
     let body: any;
     try { body = await request.json(); } catch { return { code: 'VALIDATION_ERROR', message: 'Invalid JSON body' }; }
-    const out = await connectAppRepository(env, {
-      appId, orgId: org.orgId, userId: org.userId,
-      installationId: String(body?.installationId || ''), repositoryId: String(body?.repositoryId || ''),
+    const out = await bindRepositoryFromCode(env, {
+      orgId: org.orgId, userId: org.userId, appId,
+      code: String(body?.code || ''), repositoryId: String(body?.repositoryId || ''),
     });
     if (!out.ok) return { code: out.code, message: out.message };
     return { connection: out.connection };

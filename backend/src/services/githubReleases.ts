@@ -32,6 +32,7 @@ import {
   mapAssetFilename, parseRxManifest, versionFromTag, validateAssetUrl,
   streamAssetHash, ghApi,
 } from './github.ts';
+import { consumeOneTimeToken, restoreOneTimeToken } from './oauth.ts';
 import { compareSemver, normalizeChannel } from './releases.ts';
 import { streamToMultipart } from './streaming.ts';
 
@@ -167,6 +168,48 @@ export async function connectAppRepository(env: any, input: {
   await audit(env, { action: 'connect', actorId: input.userId, appId: input.appId, repositoryId: String(repo.id), details: { repo: repo.full_name, installation: input.installationId } });
   const connection = await getConnectionForApp(env, input.appId);
   return { ok: true, connection };
+}
+
+/**
+ * Bind an app to a repository using the SERVER-ISSUED completion code from
+ * the GitHub App install flow. SECURITY: the installationId is taken from the
+ * one-time token payload (bound to the initiating user + app at callback
+ * time), NEVER from the client body — otherwise a developer could bind
+ * someone else's installation/repository to their app. The repositoryId from
+ * the body is safe: it is validated against the installation's server-read
+ * repository list inside connectAppRepository.
+ */
+export async function bindRepositoryFromCode(env: any, input: {
+  orgId: string; userId: string; appId: string; code: string; repositoryId: string;
+}): Promise<{ ok: true; connection: any } | { ok: false; code: string; message: string }> {
+  const raw = String(input.code || '').trim();
+  if (!raw) return { ok: false, code: 'VALIDATION_ERROR', message: 'The connection code is required (complete the GitHub installation first).' };
+  const payload = await consumeOneTimeToken(env, 'code', raw);
+  if (!payload || payload.kind !== 'github-connect-complete') {
+    return { ok: false, code: 'INVALID_TOKEN', message: 'This connection request is invalid or has expired. Start again.' };
+  }
+  const deny = async (code: string, message: string) => {
+    await restoreOneTimeToken(env, raw); // a denial must not burn the flow
+    return { ok: false as const, code, message };
+  };
+  if (String(payload.userId || '') !== String(input.userId)) {
+    return deny('FORBIDDEN', 'This connection request was started by a different user.');
+  }
+  if (String(payload.appId || '') !== String(input.appId)) {
+    return deny('FORBIDDEN', 'This connection request was started for a different application.');
+  }
+  const installationId = String(payload.installationId || '');
+  if (!installationId) return deny('INVALID_TOKEN', 'The connection request carries no installation.');
+  const out = await connectAppRepository(env, {
+    appId: input.appId, orgId: input.orgId, userId: input.userId,
+    installationId, repositoryId: String(input.repositoryId || ''),
+  });
+  if (!out.ok) {
+    // Wrong repository pick etc. — keep the code alive so the developer can retry.
+    await restoreOneTimeToken(env, raw);
+    return out;
+  }
+  return out;
 }
 
 export async function disconnectAppRepository(env: any, input: { appId: string; orgId: string; userId: string }): Promise<{ ok: true } | { ok: false; code: string; message: string }> {

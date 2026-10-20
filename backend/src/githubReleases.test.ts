@@ -25,7 +25,10 @@ import {
   connectAppRepository, disconnectAppRepository, processWebhook,
   verifyGithubRelease, publishGithubRelease, rejectGithubRelease,
   withdrawGithubRelease, syncAllConnections, ensureGithubTables,
+  bindRepositoryFromCode,
 } from './services/githubReleases.ts';
+import { githubDevRoutes, githubAdminRoutes } from './routes/githubIntegration.ts';
+import { issueOneTimeToken } from './services/oauth.ts';
 
 const WEBHOOK_SECRET = 'test-webhook-secret';
 const APP_ID = 'app-1';
@@ -49,6 +52,9 @@ function fakeEnv() {
     releases: [], packages: [], app_versions: [], notifications: [], downloads: [],
     github_repo_connections: [], github_release_events: [], github_releases: [],
     github_release_assets: [], github_audit_log: [], site_settings: [],
+    oauth_tokens: [],
+    developers: [{ id: ORG_ID, name: 'Org' }],
+    developer_members: [{ id: 'mem-1', developer_id: ORG_ID, user_id: USER_ID, role: 'owner' }],
   };
   const storagePuts: any[] = [];
 
@@ -197,6 +203,24 @@ function fakeEnv() {
             const v = T('app_versions').find((x) => x.id === a[2]); if (v) { v.files = a[0]; v.release_notes = a[1]; }
             return { meta: { changes: v ? 1 : 0 } };
           }
+          if (s.includes('INSERT INTO oauth_tokens')) {
+            T('oauth_tokens').push({ id: a[0], kind: a[1], token_hash: a[2], payload: a[3], created_at: 'now', expires_at: a[4], consumed_at: null });
+            return { meta: { changes: 1 } };
+          }
+          if (s.includes('UPDATE oauth_tokens SET consumed_at=datetime(\'now\') WHERE id=? AND consumed_at IS NULL')) {
+            const t = T('oauth_tokens').find((x) => x.id === a[0] && x.consumed_at === null);
+            if (t) t.consumed_at = 'now';
+            return { meta: { changes: t ? 1 : 0 } };
+          }
+          if (s.includes('UPDATE oauth_tokens SET consumed_at=NULL')) {
+            for (const t of T('oauth_tokens')) if (t.token_hash === a[0]) t.consumed_at = null;
+            return { meta: { changes: 1 } };
+          }
+          if (s.includes('DELETE FROM oauth_tokens WHERE expires_at')) {
+            const now = Date.now();
+            for (let i = T('oauth_tokens').length - 1; i >= 0; i--) if (new Date(T('oauth_tokens')[i].expires_at).getTime() < now) T('oauth_tokens').splice(i, 1);
+            return { meta: { changes: 0 } };
+          }
           if (s.includes('CREATE TABLE') || s.includes('CREATE INDEX') || s.includes('CREATE UNIQUE INDEX')) return { meta: { changes: 0 } };
           if (s.includes('DELETE FROM github_release_assets')) {
             const r = T('github_release_assets'); for (let i = r.length - 1; i >= 0; i--) if (r[i].release_id === a[0]) r.splice(i, 1);
@@ -207,6 +231,16 @@ function fakeEnv() {
         async first() {
           const a = this._binds;
           const T = (name: string) => tables[name];
+          if (s.includes('FROM oauth_tokens WHERE token_hash=? AND kind=?')) {
+            return T('oauth_tokens').find((t) => t.token_hash === a[0] && t.kind === a[1] && t.consumed_at === null && new Date(t.expires_at).getTime() > Date.now())
+              ? T('oauth_tokens').find((t) => t.token_hash === a[0] && t.kind === a[1] && t.consumed_at === null && new Date(t.expires_at).getTime() > Date.now())
+              : null;
+          }
+          if (s.includes('FROM developer_members m JOIN developers d ON d.id = m.developer_id')) {
+            const m = T('developer_members').find((x) => x.user_id === a[0]);
+            const d = m && T('developers').find((x) => x.id === m.developer_id);
+            return (m && d) ? { member_id: m.id, role: m.role, member_since: 'now', ...d } : null;
+          }
           if (s.includes('FROM github_repo_connections WHERE application_id')) return T('github_repo_connections').find((c) => c.application_id === a[0]) || null;
           if (s.includes('FROM github_repo_connections WHERE repository_id')) return T('github_repo_connections').find((c) => c.repository_id === a[0] && c.status === 'active') || null;
           if (s.includes('FROM github_repo_connections WHERE id')) return T('github_repo_connections').find((c) => c.id === a[0]) || null;
@@ -225,6 +259,7 @@ function fakeEnv() {
           const a = this._binds;
           const T = (name: string) => tables[name];
           if (s.includes('FROM github_release_assets WHERE release_id')) return { results: T('github_release_assets').filter((r) => r.release_id === a[0]) };
+          if (s.includes('FROM github_release_events WHERE repository_id=?')) return { results: T('github_release_events').filter((e) => String(e.repository_id) === String(a[0])).slice(0, 5) };
           if (s.includes('FROM github_repo_connections WHERE status=\'active\'') || s.includes("FROM github_repo_connections WHERE status = 'active'")) return { results: T('github_repo_connections').filter((c) => c.status === 'active') };
           if (s.includes('FROM github_releases WHERE status IN')) return { results: T('github_releases').filter((r) => ['detected', 'verifying'].includes(r.status)) };
           if (s.includes('SELECT COUNT(*)')) {
@@ -853,4 +888,125 @@ test('buildManifest serves the GitHub asset URL directly (never an /r2/ path)', 
   });
   assert.equal(manifest.url, 'https://github.com/o/r/releases/download/v1/a.apk');
   assert.ok(!manifest.url.includes('/r2/'));
+});
+
+
+// ---------------------------------------------------------------------------
+// AUDIT REGRESSION TESTS (independent security audit, 2026-10-20)
+// ---------------------------------------------------------------------------
+
+test('AUDIT bind: the installation comes from the server-issued code — a client-supplied installation id is NEVER trusted', async () => {
+  const stubs = installStubs(env);
+  try {
+    // The attacker's org/user initiates the flow for THEIR app, but tries to
+    // bind using a completion code while passing a foreign repository id that
+    // IS in the (own) installation list. The repository must resolve through
+    // the token's installation — the happy path proves the token's
+    // installationId is the one used (REPO_ID of installation 777).
+    const code = await issueOneTimeToken(env, 'code', { kind: 'github-connect-complete', userId: USER_ID, appId: APP_ID, installationId: INSTALLATION_ID });
+    const out = await bindRepositoryFromCode(env, { orgId: ORG_ID, userId: USER_ID, appId: APP_ID, code, repositoryId: REPO_ID });
+    assert.ok(out.ok, (out as any).message);
+    assert.equal(out.connection.repository_id, REPO_ID);
+    assert.equal(out.connection.installation_id, INSTALLATION_ID);
+  } finally { stubs.restore(); }
+});
+
+test('AUDIT bind: a completion code started by ANOTHER USER cannot bind (and is not burned)', async () => {
+  const stubs = installStubs(env);
+  try {
+    const code = await issueOneTimeToken(env, 'code', { kind: 'github-connect-complete', userId: 'someone-else', appId: APP_ID, installationId: INSTALLATION_ID });
+    const out = await bindRepositoryFromCode(env, { orgId: ORG_ID, userId: USER_ID, appId: APP_ID, code, repositoryId: REPO_ID });
+    assert.equal(out.ok, false);
+    assert.equal((out as any).code, 'FORBIDDEN');
+    // Not burned: the same code still works for its rightful owner's org+user.
+    const retry = await bindRepositoryFromCode(env, { orgId: ORG_ID, userId: 'someone-else', appId: APP_ID, code, repositoryId: REPO_ID });
+    // someone-else is not in this org (fake has one member) — NOT_FOUND is
+    // expected here; the point is the token survived (not INVALID_TOKEN).
+    assert.notEqual((retry as any).code, 'INVALID_TOKEN');
+  } finally { stubs.restore(); }
+});
+
+test('AUDIT bind: a completion code started for a DIFFERENT APP cannot bind', async () => {
+  const stubs = installStubs(env);
+  try {
+    const code = await issueOneTimeToken(env, 'code', { kind: 'github-connect-complete', userId: USER_ID, appId: 'app-other', installationId: INSTALLATION_ID });
+    const out = await bindRepositoryFromCode(env, { orgId: ORG_ID, userId: USER_ID, appId: APP_ID, code, repositoryId: REPO_ID });
+    assert.equal(out.ok, false);
+    assert.equal((out as any).code, 'FORBIDDEN');
+    assert.match((out as any).message, /different application/i);
+  } finally { stubs.restore(); }
+});
+
+test('AUDIT bind: garbage or missing codes fail closed', async () => {
+  const out1 = await bindRepositoryFromCode(env, { orgId: ORG_ID, userId: USER_ID, appId: APP_ID, code: '', repositoryId: REPO_ID });
+  assert.equal((out1 as any).code, 'VALIDATION_ERROR');
+  const out2 = await bindRepositoryFromCode(env, { orgId: ORG_ID, userId: USER_ID, appId: APP_ID, code: 'o_not_a_real_token', repositoryId: REPO_ID });
+  assert.equal((out2 as any).code, 'INVALID_TOKEN');
+});
+
+test('AUDIT bind: a repository outside the token installation is refused', async () => {
+  const stubs = installStubs(env);
+  try {
+    const code = await issueOneTimeToken(env, 'code', { kind: 'github-connect-complete', userId: USER_ID, appId: APP_ID, installationId: INSTALLATION_ID });
+    const out = await bindRepositoryFromCode(env, { orgId: ORG_ID, userId: USER_ID, appId: APP_ID, code, repositoryId: '999999' });
+    assert.equal(out.ok, false);
+    assert.equal((out as any).code, 'NOT_FOUND');
+  } finally { stubs.restore(); }
+});
+
+test('AUDIT status route: webhook events are scoped to the app\'s repository — no cross-developer leak', async () => {
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    // Two repositories' events exist; only the app's own must be returned.
+    env.tables.github_release_events.push(
+      { id: 'e1', delivery_id: 'd1', event: 'release', action: 'published', repository_id: REPO_ID, status: 'processed', detail: 'own repo event', error: null, received_at: 'now' },
+      { id: 'e2', delivery_id: 'd2', event: 'release', action: 'published', repository_id: '888777', status: 'processed', detail: 'OTHER developer repo event', error: null, received_at: 'now' },
+    );
+    const req = new Request('https://api.test/developers/apps/' + APP_ID + '/github', { method: 'GET', headers: { Authorization: 'Bearer x', 'User-Agent': 't' } });
+    (req as any).user = { userId: USER_ID };
+    const out: any = await githubDevRoutes.status(req as any, env);
+    const details = JSON.stringify(out.recentEvents || []);
+    assert.ok(details.includes('own repo event'), 'the app\'s own events are shown');
+    assert.ok(!details.includes('OTHER developer'), 'other repositories\' events must not leak');
+  } finally { stubs.restore(); }
+});
+
+test('AUDIT admin routes: a non-admin identity is refused on every privileged operation', async () => {
+  const req = (path: string) => {
+    const r = new Request(`https://api.test${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': 't' }, body: '{}' });
+    (r as any).user = { userId: 'u-normal', role: 'user' };
+    return r;
+  };
+  assert.equal((await (githubAdminRoutes.publish as any)(req('/admin/github/releases/rel_x/publish'), env)).code, 'UNAUTHORIZED');
+  assert.equal((await (githubAdminRoutes.reject as any)(req('/admin/github/releases/rel_x/reject'), env)).code, 'UNAUTHORIZED');
+  assert.equal((await (githubAdminRoutes.withdraw as any)(req('/admin/github/releases/rel_x/withdraw'), env)).code, 'UNAUTHORIZED');
+  assert.equal((await (githubAdminRoutes.retry as any)(req('/admin/github/releases/rel_x/retry'), env)).code, 'UNAUTHORIZED');
+  assert.equal((await (githubAdminRoutes.sync as any)(req('/admin/github/sync'), env)).code, 'UNAUTHORIZED');
+  const getReq = new Request('https://api.test/admin/github/releases', { method: 'GET', headers: { 'User-Agent': 't' } });
+  (getReq as any).user = { userId: 'u-normal', role: 'user' };
+  assert.equal((await (githubAdminRoutes.releases as any)(getReq as any, env)).code, 'UNAUTHORIZED');
+  // And no identity at all:
+  const anon = new Request('https://api.test/admin/github/releases', { method: 'GET' });
+  assert.equal((await (githubAdminRoutes.releases as any)(anon as any, env)).code, 'UNAUTHORIZED');
+});
+
+test('AUDIT publish route: only an ADMIN identity reaches the publish service (route layer)', async () => {
+  const stubs = installStubs(env, { vtVerdict: 'CLEAN' });
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-route');
+    const rel = env.tables.github_releases.find((r) => r.github_release_id === '5001');
+    await verifyGithubRelease(env, rel.id);
+    const r = new Request(`https://api.test/admin/github/releases/${rel.id}/publish`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': 't' }, body: '{}' });
+    (r as any).user = { userId: 'u-normal', role: 'user' };
+    const refused: any = await githubAdminRoutes.publish(r as any, env);
+    assert.equal(refused.code, 'UNAUTHORIZED');
+    assert.equal(env.tables.releases.length, 0); // nothing was published
+    // The admin identity succeeds through the same route.
+    (r as any).user = { userId: 'admin-1', role: 'admin' };
+    const ok: any = await githubAdminRoutes.publish(r as any, env);
+    assert.ok(!ok.code, ok.message);
+    assert.equal(env.tables.applications[0].current_version, '1.12.0');
+  } finally { stubs.restore(); }
 });
