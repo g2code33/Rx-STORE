@@ -26,7 +26,13 @@ self.addEventListener('fetch', (e) => {
     e.respondWith(
       fetch(e.request)
         .then((res) => {
-          if (res.ok) caches.open(CACHE).then((c) => c.put('/', res.clone()));
+          if (res.ok) {
+            // Clone IMMEDIATELY: once this .then returns, the body starts
+            // streaming to the page and a later clone() throws
+            // "Response body is already used".
+            const copy = res.clone();
+            caches.open(CACHE).then((c) => c.put('/', copy)).catch(() => {});
+          }
           return res;
         })
         .catch(() => caches.match('/'))

@@ -117,7 +117,7 @@ export default function DeveloperAppDetail() {
                   <Badge status={app.status} />
                 </div>
                 <p className="text-xs text-rx-gray-medium mt-1">
-                  {app.slug} · {app.category} · {(app.platforms || []).join(', ')} · created {formatDate(app.createdAt)}
+                  {app.slug} · {app.category} · {(Array.isArray(app.platforms) ? app.platforms : []).join(', ')} · created {formatDate(app.createdAt)}
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -222,7 +222,7 @@ function MetadataEditor({ app, editable, onSaved }: { app: any; editable: boolea
         <div className="grid sm:grid-cols-2 gap-3 mt-4 text-sm">
           <div className="sm:col-span-2"><p className="text-rx-gray-medium text-xs">Description</p><p className="text-white">{app.description || '—'}</p></div>
           <div><p className="text-rx-gray-medium text-xs">Category</p><p className="text-white">{app.category}</p></div>
-          <div><p className="text-rx-gray-medium text-xs">Platforms</p><p className="text-white">{(app.platforms || []).join(', ') || '—'}</p></div>
+          <div><p className="text-rx-gray-medium text-xs">Platforms</p><p className="text-white">{(Array.isArray(app.platforms) ? app.platforms : []).join(', ') || '—'}</p></div>
           <div><p className="text-rx-gray-medium text-xs">Icon</p><p className="text-white break-all">{app.icon ? '✓ set' : '— (required before submission)'}</p></div>
           <div><p className="text-rx-gray-medium text-xs">Website</p><p className="text-white break-all">{app.website || '—'}</p></div>
         </div>
@@ -583,7 +583,7 @@ function SdkIntegrationCard({ app, releases }: { app: any; releases: any[] }) {
           <h3 className="text-xs font-bold text-white/80 uppercase tracking-wider mb-2">Identifiers</h3>
           <CopyRow label="RX Store App ID" value={app.id} />
           <CopyRow label="SDK appId (slug)" value={app.slug} />
-          <CopyRow label="Platforms" value={(app.platforms || []).join(', ') || '—'} />
+          <CopyRow label="Platforms" value={(Array.isArray(app.platforms) ? app.platforms : []).join(', ') || '—'} />
           <CopyRow label="Published version" value={currentVersion || 'none yet'} />
           <CopyRow label="Deep link" value={deepLink} />
           <CopyRow label="Web fallback" value={webUrl} />

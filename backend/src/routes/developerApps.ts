@@ -134,12 +134,26 @@ function releaseView(rel: any, app: any) {
   };
 }
 
-function appView(app: any, extra: Record<string, unknown> = {}) {
+/**
+ * Normalize a list column (platforms/tags) to a real array. Stored values are
+ * JSON ('["web","android"]'); a legacy or corrupted plain comma string
+ * ('linux,web') is tolerated and split so consumers can never receive a
+ * non-array (the Developer App Detail page crashed on .join() otherwise).
+ */
+function listColumn(v: any): string[] {
+  if (Array.isArray(v)) return v.map(String);
+  const s = String(v ?? '').trim();
+  if (!s) return [];
+  try { const parsed = JSON.parse(s); if (Array.isArray(parsed)) return parsed.map(String); } catch { /* fall through */ }
+  return s.split(',').map((x) => x.trim()).filter(Boolean);
+}
+
+export function appView(app: any, extra: Record<string, unknown> = {}) {
   return {
     id: app.id, slug: app.slug, name: app.name, description: app.description,
-    longDescription: app.long_description, category: app.category, tags: app.tags,
+    longDescription: app.long_description, category: app.category, tags: listColumn(app.tags),
     icon: app.icon, screenshots: app.screenshots, status: app.status,
-    platforms: app.platforms, website: app.website, currentVersion: app.current_version,
+    platforms: listColumn(app.platforms), website: app.website, currentVersion: app.current_version,
     developer: app.developer, developerOrgId: app.developer_org_id,
     lastUpdated: app.last_updated || app.updated_at, createdAt: app.created_at,
     ...extra,

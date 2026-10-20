@@ -735,9 +735,20 @@ export async function publishGithubRelease(env: any, actor: { userId: string; la
           .bind(`ver_${Date.now().toString(36)}`, rel.application_id, rel.version, notes, JSON.stringify(files)).run();
       }
       // applications.platforms drives the install modal — keep it in sync.
-      const merged = new Set(Array.isArray(app.platforms) ? app.platforms : String(app.platforms || '').split(',').filter(Boolean));
-      for (const a of rows) merged.add(a.platform);
-      await env.DB.prepare(`UPDATE applications SET platforms=? WHERE id=?`).bind([...merged].join(','), rel.application_id).run().catch(() => {});
+      // The column is JSON ('["web","android"]'): merge exactly like the
+      // manual channel's mergeAppPlatforms (display ids — linux_deb/appimage/
+      // flatpak -> 'linux'), and ALWAYS write JSON.stringify([...]). A plain
+      // comma-joined string here corrupts the column and crashes consumers
+      // that expect an array (regression: Developer App Detail page).
+      {
+        let arr: string[] = [];
+        try { const parsed = JSON.parse(String(app.platforms || '[]')); if (Array.isArray(parsed)) arr = parsed.map(String); } catch { arr = []; }
+        const displayId = (plat: string) => (plat === 'linux_deb' || plat === 'linux_appimage' || plat === 'flatpak') ? 'linux' : plat;
+        const next = new Set(arr.length ? arr : ['web']);
+        for (const a of rows) next.add(displayId(a.platform));
+        if (!next.has('web')) next.add('web');
+        await env.DB.prepare(`UPDATE applications SET platforms=? WHERE id=?`).bind(JSON.stringify([...next]), rel.application_id).run().catch(() => {});
+      }
     }
 
     await env.DB.prepare(`UPDATE github_releases SET status='published', published_by=?, published_at=datetime('now'), prior_version=?, decision_reason=? WHERE id=? AND status='pending_approval'`)

@@ -974,6 +974,15 @@ test('an authorized admin can review, approve and publish a valid release', asyn
     assert.equal(pkg.status, 'published');
     // current_version advanced + legacy app_versions carries the GitHub URL.
     assert.equal(env.tables.applications[0].current_version, '1.12.0');
+    // REGRESSION: applications.platforms must stay a JSON array (a plain
+    // comma string here crashed the Developer App Detail page).
+    {
+      const stored = String(env.tables.applications[0].platforms);
+      const parsed = JSON.parse(stored); // throws if it is not JSON
+      assert.ok(Array.isArray(parsed), 'platforms must be stored as a JSON array');
+      assert.ok(parsed.includes('linux'), 'linux_deb merges as the display id linux');
+      assert.ok(parsed.includes('web'), 'web is always present');
+    }
     const legacy = env.tables.app_versions[0];
     assert.equal(legacy.version, '1.12.0');
     const files = JSON.parse(legacy.files);
@@ -1517,4 +1526,19 @@ test('GATE blocked releases are invisible to the public download selection query
     assert.equal(visibleAfter.length, 1);
     assert.equal(visibleAfter[0].sha256, DEB_SHA);
   } finally { stubs.restore(); }
+});
+
+test('REGRESSION appView: platforms/tags are ALWAYS arrays (JSON or legacy comma string)', async () => {
+  const { appView } = await import('./routes/developerApps.ts') as any;
+  // JSON row (the normal format)
+  const a = appView({ id: 'x', platforms: '["web","android"]', tags: '["t1"]' });
+  assert.deepEqual(a.platforms, ['web', 'android']);
+  assert.deepEqual(a.tags, ['t1']);
+  // Corrupted/legacy comma string — the page must not receive a string.
+  const b = appView({ id: 'x', platforms: 'linux,web', tags: null });
+  assert.deepEqual(b.platforms, ['linux', 'web']);
+  assert.deepEqual(b.tags, []);
+  // Missing entirely
+  const c = appView({ id: 'x' });
+  assert.deepEqual(c.platforms, []);
 });
