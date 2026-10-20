@@ -227,6 +227,10 @@ export const REQUIRED_PACKAGE_FIELDS = ['platform', 'architecture', 'filename', 
 export function validatePackageIntegrity(pkg: PackageRecord): { ok: boolean; problems: string[] } {
   const problems: string[] = [];
   const isPwa = pkg?.package_type === 'pwa' || !!pkg?.deployment_url;
+  // GitHub-hosted external packages deliberately have NO RX Store storage
+  // object (storage_key ''); their verified external_url is the artifact
+  // reference. Manual uploads keep the storage_key requirement.
+  const isGithub = pkg?.provider === 'github';
   if (!pkg) return { ok: false, problems: ['package is missing'] };
 
   if (!pkg.platform) problems.push('platform');
@@ -238,7 +242,9 @@ export function validatePackageIntegrity(pkg: PackageRecord): { ok: boolean; pro
     // size must be a positive integer (auto-derived from the upload, never hand-entered)
     if (!pkg.file_size || Number(pkg.file_size) <= 0) problems.push('file_size');
   }
-  if (!isPwa && !pkg.storage_key) problems.push('storage_key');
+  if (isGithub) {
+    if (!pkg.external_url || !/^https:\/\//i.test(String(pkg.external_url))) problems.push('external_url');
+  } else if (!isPwa && !pkg.storage_key) problems.push('storage_key');
   return { ok: problems.length === 0, problems };
 }
 
@@ -356,9 +362,14 @@ export function buildManifest(input: {
   origin: string;
 }): ReleaseManifest {
   const { pkg, matchedPlatform, matchedArchitecture, app, origin } = input;
+  // GitHub-channel packages point straight at the VERIFIED public GitHub asset
+  // URL (RX Store never proxies or stores the binary). Everything else uses
+  // the protected /r2/ path.
   const url = pkg.deployment_url
     ? pkg.deployment_url
-    : `${String(origin).replace(/\/$/, '')}/r2/${pkg.storage_key}`;
+    : pkg.provider === 'github' && pkg.external_url
+      ? String(pkg.external_url)
+      : `${String(origin).replace(/\/$/, '')}/r2/${pkg.storage_key}`;
   return {
     app: app || {},
     version: String(pkg.version || ''),

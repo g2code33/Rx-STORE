@@ -924,6 +924,71 @@ export const api = {
       return `${API_URL}/admin/developers/attachments/${encodeURIComponent(attachmentId)}`;
     },
   },
+
+  // ---- GitHub Releases integration (free apps; developer + admin surfaces) ----
+  github: {
+    /** Developer: connection status for one of the org's apps. */
+    status(appId: string) {
+      return request<any>(`/developers/apps/${encodeURIComponent(appId)}/github`);
+    },
+    /** Developer: begin the GitHub App install flow (returns the GitHub URL). */
+    connect(appId: string) {
+      return request<{ url: string }>(`/developers/apps/${encodeURIComponent(appId)}/github/connect`, { method: 'POST', body: '{}' });
+    },
+    /** Developer: exchange the callback completion code for the repo list. */
+    complete(code: string) {
+      return request<{ appId: string; installationId: string; repos: Array<{ id: string; name: string; fullName: string; owner: string; private: boolean; url: string }> }>('/developers/github/complete', {
+        method: 'POST', body: JSON.stringify({ code }),
+      });
+    },
+    /** Developer: bind the app to one repository of the installation. */
+    bind(appId: string, installationId: string, repositoryId: string) {
+      return request<{ connection: any }>(`/developers/apps/${encodeURIComponent(appId)}/github/bind`, {
+        method: 'POST', body: JSON.stringify({ installationId, repositoryId }),
+      });
+    },
+    /** Developer: disconnect the app's repository (audited). */
+    disconnect(appId: string) {
+      return request<{ success: true }>(`/developers/apps/${encodeURIComponent(appId)}/github/disconnect`, { method: 'POST', body: '{}' });
+    },
+  },
+
+  /** Admin: GitHub Releases & Approvals center (real data + real actions only). */
+  githubAdmin: {
+    overview() {
+      return request<any>('/admin/github/overview');
+    },
+    releases(filters: { status?: string; appId?: string } = {}) {
+      const q = new URLSearchParams(Object.entries(filters).filter(([, v]) => !!v) as [string, string][]);
+      return request<{ releases: any[] }>(`/admin/github/releases${q.toString() ? `?${q}` : ''}`);
+    },
+    publish(releaseId: string, opts: { overrideSecurity?: boolean; reason?: string } = {}) {
+      return request<{ success: true; version: string }>(`/admin/github/releases/${encodeURIComponent(releaseId)}/publish`, {
+        method: 'POST', body: JSON.stringify(opts),
+      });
+    },
+    reject(releaseId: string, reason: string) {
+      return request<{ success: true }>(`/admin/github/releases/${encodeURIComponent(releaseId)}/reject`, {
+        method: 'POST', body: JSON.stringify({ reason }),
+      });
+    },
+    withdraw(releaseId: string, reason: string) {
+      return request<{ success: true }>(`/admin/github/releases/${encodeURIComponent(releaseId)}/withdraw`, {
+        method: 'POST', body: JSON.stringify({ reason }),
+      });
+    },
+    retry(releaseId: string) {
+      return request<{ success: boolean; status: string; message?: string }>(`/admin/github/releases/${encodeURIComponent(releaseId)}/retry`, {
+        method: 'POST', body: '{}',
+      });
+    },
+    sync() {
+      return request<{ checked: number; detected: number; failures: number }>('/admin/github/sync', { method: 'POST', body: '{}' });
+    },
+    audit() {
+      return request<{ entries: any[] }>('/admin/github/audit');
+    },
+  },
 };
 
 export { API_URL };

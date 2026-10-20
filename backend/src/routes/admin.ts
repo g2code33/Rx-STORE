@@ -251,7 +251,9 @@ async function syncLegacyAppVersion(env: any, appId: string, rel: any, origin: s
     const pkgs: any = await env.DB.prepare(`SELECT * FROM packages WHERE release_id=? AND status='published'`).bind(rel.id).all();
     const files: Record<string, any> = {};
     for (const p of pkgs.results || []) {
-      const url = `${origin}/r2/${p.storage_key}`;
+      // GitHub-channel packages reference their verified public GitHub asset
+      // URL directly (there is no RX Store storage object to point at).
+      const url = p.provider === 'github' && p.external_url ? String(p.external_url) : `${origin}/r2/${p.storage_key}`;
       const entry = { url, fileUrl: url, fileName: p.filename, size: p.file_size, checksum: p.sha256, sha256: p.sha256 };
       files[p.platform] = entry;
       if (p.platform === 'linux_deb') files['linux'] = entry; // legacy alias old clients request
@@ -763,6 +765,11 @@ export const adminRoutes = {
     if (!normalizeChannel(rel.channel)) return { error: `Unknown release channel '${rel.channel}'. Use one of: ${CHANNELS.join(', ')}.` };
     const pkgs: any = await env.DB.prepare(`SELECT * FROM packages WHERE release_id=?`).bind(relId).all();
     if (!pkgs.results || pkgs.results.length===0) return { error: 'No packages uploaded for this release. Upload at least one platform.' };
+    // GitHub-channel packages are published ONLY through Admin -> GitHub
+    // Releases & Approvals (asset identity re-verification is mandatory there).
+    if (pkgs.results.some((p: any) => p.provider === 'github')) {
+      return { error: 'This release contains GitHub-hosted packages. Publish it from Admin -> GitHub Releases & Approvals.' };
+    }
     const seen = new Set<string>();
     for (const p of pkgs.results) {
       const integrity = validatePackageIntegrity(p);

@@ -21,6 +21,7 @@ import { updatesRoutes } from './routes/updates.ts';
 import { SECURITY_PIPELINE_VERSION } from './services/packageSecurity.ts';
 import { devicesRoutes } from './routes/devices.ts';
 import { developerRoutes, adminDeveloperRoutes } from './routes/developers.ts';
+import { githubDevRoutes, githubAdminRoutes, githubWebhookRoutes } from './routes/githubIntegration.ts';
 import { developerAppRoutes, adminDeveloperAppRoutes } from './routes/developerApps.ts';
 import { securityAdminRoutes } from './routes/securityAdmin.ts';
 import { developerSubmissionRoutes, adminSubmissionRoutes } from './routes/submissions.ts';
@@ -135,7 +136,7 @@ async function streamAttachment(env: any, att: any, origin: string): Promise<Res
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: any): Promise<Response> {
     const url = new URL(request.url);
     let path = url.pathname;
     if (path.startsWith('/v1')) path = path.slice(3) || '/';
@@ -177,6 +178,24 @@ export default {
       // Without this, overridePackage/manualReview saw no identity and
       // rejected every request with 'Admin identity required'.
       (normalizedRequest as any).user = { userId: adminUser.userId, role: adminUser.role };
+    }
+
+    // ---- GitHub App webhook (HMAC-verified; detection ONLY — the approval
+    // gate is the admin-only /admin/github/* surface). Reads the RAW body for
+    // the signature before any parsing. ----
+    if (path === '/webhooks/github' && request.method === 'POST') {
+      // normalizedRequest carries the intact body (constructing it moved the
+      // original's) and the original headers — exactly what the HMAC needs.
+      const out = await githubWebhookRoutes.handle(normalizedRequest as any, env, ctx);
+      return respond(out.body, out.status, origin);
+    }
+
+    // ---- GitHub App install callback (browser redirect from GitHub; the
+    // single-use state token is the proof — no Bearer header exists here). ----
+    if (path === '/developers/github/callback' && request.method === 'GET') {
+      const redirect: any = await githubDevRoutes.callback(normalizedRequest as any, env);
+      if (redirect instanceof Response) return withCors(redirect, origin, env, requestId);
+      return respond({ success: false, error: { code: 'VALIDATION_ERROR', message: redirect?.message || 'Callback failed.' } }, 400, origin);
     }
 
     if ((path === '/updates/check' || path === '/update/check' || path === '/api/updates/check' || path === '/api/update/check') && request.method === 'GET') {
@@ -261,6 +280,39 @@ export default {
       if ((data as any)?.error) return respond({ success: false, error: data }, 404, origin);
       return respond({ success: true, data }, 200, origin);
     }
+    // ---- GitHub Releases & Approvals (dedicated admin center; identity is
+    // attached by the /admin gate above and re-checked in every handler). ----
+    if (path.startsWith('/admin/github/')) {
+      try {
+        let data: any;
+        const seg = path.split('/')[3] || '';
+        if (seg === 'overview' && request.method === 'GET') data = await githubAdminRoutes.overview(normalizedRequest as any, env);
+        else if (seg === 'releases' && request.method === 'GET') data = await githubAdminRoutes.releases(normalizedRequest as any, env);
+        else if (seg === 'audit' && request.method === 'GET') data = await githubAdminRoutes.audit(normalizedRequest as any, env);
+        else if (seg === 'sync' && request.method === 'POST') data = await githubAdminRoutes.sync(normalizedRequest as any, env, ctx);
+        else if (seg === 'releases') {
+          const relId = path.split('/')[4] || '';
+          const action = path.split('/')[5] || '';
+          if (relId && action === 'publish' && request.method === 'POST') data = await githubAdminRoutes.publish(normalizedRequest as any, env, ctx);
+          else if (relId && action === 'reject' && request.method === 'POST') data = await githubAdminRoutes.reject(normalizedRequest as any, env);
+          else if (relId && action === 'withdraw' && request.method === 'POST') data = await githubAdminRoutes.withdraw(normalizedRequest as any, env);
+          else if (relId && action === 'retry' && request.method === 'POST') data = await githubAdminRoutes.retry(normalizedRequest as any, env);
+          else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown GitHub admin route' } }, 404, origin);
+        }
+        else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown GitHub admin route' } }, 404, origin);
+        if (data && (data.code || data.error)) {
+          const e = data as any;
+          const status = e.code === 'UNAUTHORIZED' ? 401 : e.code === 'NOT_FOUND' ? 404 : e.code === 'CONFLICT' ? 409
+            : e.code === 'FORBIDDEN' ? 403 : e.code === 'NOT_IMPLEMENTED' ? 501 : 400;
+          return respond({ success: false, error: { code: e.code || 'VALIDATION_ERROR', message: e.message || String(e.error) } }, status, origin);
+        }
+        return respond({ success: true, data }, 200, origin);
+      } catch (e: any) {
+        console.error(`[${requestId}] github admin:`, redact(String(e?.message || e)));
+        return fail('INTERNAL', 'GitHub admin action failed. Please try again.');
+      }
+    }
+
     if (path.match(/^\/admin\/releases\/[^\/]+\/publish$/) && request.method === 'POST') {
       // Publish re-runs the security pipeline (streamed hashing, scanner
       // upload, polling) and then finalizes the release — a long, multi-stage
@@ -598,6 +650,19 @@ export default {
         const { selected, reason } = selectPackage(candidates, { platform, architecture: reqArch });
         if (selected) {
           const pkg = selected.pkg;
+          // GitHub-channel package: the VERIFIED public GitHub asset URL is
+          // served directly (RX Store stays out of the binary path). Defense
+          // in depth: a github package on a PAID app can never exist (connect,
+          // publish and sync all refuse), but if data drift ever produced one,
+          // fail closed here.
+          if (pkg.provider === 'github') {
+            if (appIsPaid(app)) {
+              return respond({ success: false, error: { code: 'FORBIDDEN', message: 'GitHub-hosted packages are not available for paid applications.' } }, 403, origin);
+            }
+            if (!/^https?:\/\//i.test(String(pkg.external_url || ''))) {
+              return fail('NOT_FOUND', 'The external package URL is invalid — the release must be re-verified.');
+            }
+          }
           const isPwa = pkg.package_type === 'pwa' || (!pkg.storage_key && !!pkg.deployment_url);
           let notes: string[] = [];
           try { const n = JSON.parse(pkg.release_notes || '[]'); notes = Array.isArray(n) ? n : [String(n)]; } catch {}
@@ -1080,6 +1145,12 @@ export default {
         else if (path.match(/^\/developers\/team\/invitations\/[^\/]+\/cancel$/) && request.method === 'POST') data = await developerRoutes.cancelInvitation(normalizedRequest as any, env);
         else if (is('/developers/invitations/accept', 'POST')) data = await developerRoutes.acceptInvitation(normalizedRequest as any, env);
         else if (is('/developers/audit', 'GET')) data = await developerRoutes.listAudit(normalizedRequest as any, env);
+        // GitHub Releases integration — connect flow (org-authenticated)
+        else if (path.match(/^\/developers\/apps\/[^\/]+\/github$/) && request.method === 'GET') data = await githubDevRoutes.status(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/apps\/[^\/]+\/github\/connect$/) && request.method === 'POST') data = await githubDevRoutes.connect(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/apps\/[^\/]+\/github\/bind$/) && request.method === 'POST') data = await githubDevRoutes.bind(normalizedRequest as any, env);
+        else if (path.match(/^\/developers\/apps\/[^\/]+\/github\/disconnect$/) && request.method === 'POST') data = await githubDevRoutes.disconnect(normalizedRequest as any, env);
+        else if (is('/developers/github/complete', 'POST')) data = await githubDevRoutes.complete(normalizedRequest as any, env);
         else if (is('/developers/communications', 'GET')) data = await developerRoutes.listThreads(normalizedRequest as any, env);
         else if (is('/developers/communications/threads', 'POST')) data = await developerRoutes.createThread(normalizedRequest as any, env);
         else if (path.match(/^\/developers\/communications\/[^\/]+$/) && request.method === 'GET') data = await developerRoutes.getThread(normalizedRequest as any, env);

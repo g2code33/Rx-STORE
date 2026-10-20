@@ -12,6 +12,7 @@ import { api, isApiConfigured } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { formatDate } from '../../utils/helpers';
 import AppLogo from '../../components/apps/AppLogo';
+import GithubConnectPanel from '../../components/developers/GithubConnectPanel';
 import toast from 'react-hot-toast';
 
 const STATUS_BADGE: Record<string, string> = {
@@ -141,6 +142,9 @@ export default function DeveloperAppDetail() {
 
           {/* SDK & Update Integration (Phase 17) */}
           <SdkIntegrationCard app={app} releases={releases} />
+
+          {/* GitHub Releases integration (free apps) */}
+          <GithubConnectPanel app={app} onChanged={load} />
 
           {/* Releases */}
           <div className="flex items-center justify-between mt-10">

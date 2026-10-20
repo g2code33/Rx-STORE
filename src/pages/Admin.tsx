@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 import {
   LayoutDashboard, Package, Users, BarChart3, DollarSign, Upload,
   Download, Star, Settings, Shield, Plus, Edit, Trash2, Activity, Database, Cloud, Bot, Key, Globe, FileText, Bell, Megaphone,
-  Monitor, Eye, Paintbrush, Loader2, Rocket, MousePointerClick, Tablet, Smartphone, PanelRight, Shapes, Store, CreditCard, Inbox} from 'lucide-react';
+  Monitor, Eye, Paintbrush, Loader2, Rocket, MousePointerClick, Tablet, Smartphone, PanelRight, Shapes, Store, CreditCard, Inbox, Github} from 'lucide-react';
 import { useApps } from '../context/AppContext';
 import { useCategories } from '../hooks/useCategories';
 import { formatDownloadCount } from '../utils/helpers';
@@ -59,6 +59,7 @@ import ReviewModerationPanel from '../components/admin/ReviewModerationPanel';
 import PaymentsAdminPanel from '../components/admin/PaymentsAdminPanel';
 import CommunityModerationPanel from '../components/admin/CommunityModerationPanel';
 import AdminInboxPanel from '../components/admin/AdminInboxPanel';
+import GithubReleasesPanel from '../components/admin/GithubReleasesPanel';
 import AdminSettings from '../components/admin/AdminSettings';
 import RecycleBin from '../components/admin/RecycleBin';
 import { useAuth } from '../context/AuthContext';
@@ -193,6 +194,7 @@ export default function Admin() {
     { id: 'reviews', label: 'Reviews', icon: Star },
     { id: 'storefront', label: 'Storefront', icon: Store },
     { id: 'developers', label: 'Developers', icon: Shield },
+    { id: 'github', label: 'GitHub Releases', icon: Github },
     { id: 'ai', label: 'AI Providers', icon: Bot },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
     { id: 'notifications', label: 'Notifications', icon: Bell },
@@ -501,6 +503,7 @@ export default function Admin() {
 
           {activeSection === 'releases' && (<div className="animate-fade-in"><ReleasesManager /></div>)}
           {activeSection === 'users' && (<div className="animate-fade-in"><UserRoleEditor /></div>)}
+          {activeSection === 'github' && (<div className="animate-fade-in"><GithubReleasesPanel /></div>)}
           {activeSection === 'inbox' && (<div className="animate-fade-in"><AdminInboxPanel initialOpenId={searchParams.get('msg') || undefined} onInboxChanged={() => { api.inbox.list().then((l: any) => setInboxNew(l.counts?.new || 0)).catch(() => {}); }} /></div>)}
           {activeSection === 'icons' && (<div className="animate-fade-in"><IconManager /></div>)}
 
