@@ -72,16 +72,16 @@ export default function Footer() {
               </Editable>
             </p>
             <div className="flex items-center gap-3">
-              <a href="#" className="w-9 h-9 rounded-lg bg-rx-dark-tertiary flex items-center justify-center text-rx-gray-medium hover:text-rx-yellow hover:bg-rx-dark-secondary transition-all">
-                <Github className="w-4 h-4" />
+              <a href="#" aria-label="RX Store on GitHub" className="w-9 h-9 rounded-lg bg-rx-dark-tertiary flex items-center justify-center text-rx-gray-medium hover:text-rx-yellow hover:bg-rx-dark-secondary transition-all">
+                <Github className="w-4 h-4" aria-hidden="true" />
               </a>
-              <a href="#" className="w-9 h-9 rounded-lg bg-rx-dark-tertiary flex items-center justify-center text-rx-gray-medium hover:text-rx-yellow hover:bg-rx-dark-secondary transition-all">
-                <Twitter className="w-4 h-4" />
+              <a href="#" aria-label="RX Store on Twitter" className="w-9 h-9 rounded-lg bg-rx-dark-tertiary flex items-center justify-center text-rx-gray-medium hover:text-rx-yellow hover:bg-rx-dark-secondary transition-all">
+                <Twitter className="w-4 h-4" aria-hidden="true" />
               </a>
-              <a href="#" className="w-9 h-9 rounded-lg bg-rx-dark-tertiary flex items-center justify-center text-rx-gray-medium hover:text-rx-yellow hover:bg-rx-dark-secondary transition-all">
-                <Linkedin className="w-4 h-4" />
+              <a href="#" aria-label="RX Store on LinkedIn" className="w-9 h-9 rounded-lg bg-rx-dark-tertiary flex items-center justify-center text-rx-gray-medium hover:text-rx-yellow hover:bg-rx-dark-secondary transition-all">
+                <Linkedin className="w-4 h-4" aria-hidden="true" />
               </a>
-              <a href={`mailto:${supportEmail}`} className="w-9 h-9 rounded-lg bg-rx-dark-tertiary flex items-center justify-center text-rx-gray-medium hover:text-rx-yellow hover:bg-rx-dark-secondary transition-all" title={supportEmail}>
+              <a href={`mailto:${supportEmail}`} aria-label={`Email ${supportEmail}`} className="w-9 h-9 rounded-lg bg-rx-dark-tertiary flex items-center justify-center text-rx-gray-medium hover:text-rx-yellow hover:bg-rx-dark-secondary transition-all" title={supportEmail}>
                 <Mail className="w-4 h-4" />
               </a>
             </div>
@@ -94,7 +94,7 @@ export default function Footer() {
               <ul className="space-y-3">
                 {platformLinks.map((item: { label: string; to: string }) => (
                   <li key={item.label}>
-                    <FooterLink to={item.to} className="text-sm text-rx-gray-medium hover:text-rx-yellow transition-colors">
+                    <FooterLink to={item.to} className="text-sm text-white/70 hover:text-rx-yellow hover:underline underline-offset-4 transition-colors">
                       {item.label}
                     </FooterLink>
                   </li>
@@ -108,27 +108,27 @@ export default function Footer() {
             <h3 className="text-sm font-semibold text-white mb-4 uppercase tracking-wider">Developers</h3>
             <ul className="space-y-3">
               <li>
-                <Link to="/developers" className="text-sm text-rx-gray-medium/70 hover:text-rx-yellow transition-colors">
+                <Link to="/developers" className="text-sm text-white/70 hover:text-rx-yellow hover:underline underline-offset-4 transition-colors">
                   Developer Portal
                 </Link>
               </li>
               <li>
-                <Link to="/developers/docs" className="text-sm text-rx-gray-medium/70 hover:text-rx-yellow transition-colors">
+                <Link to="/developers/docs" className="text-sm text-white/70 hover:text-rx-yellow hover:underline underline-offset-4 transition-colors">
                   API Documentation
                 </Link>
               </li>
               <li>
-                <button onClick={submitAnApp} className="text-sm text-rx-gray-medium/70 hover:text-rx-yellow transition-colors text-left">
+                <button onClick={submitAnApp} className="text-sm text-white/70 hover:text-rx-yellow hover:underline underline-offset-4 transition-colors text-left">
                   Submit an App
                 </button>
               </li>
               <li>
-                <Link to="/developers/sdk" className="text-sm text-rx-gray-medium/70 hover:text-rx-yellow transition-colors">
+                <Link to="/developers/sdk" className="text-sm text-white/70 hover:text-rx-yellow hover:underline underline-offset-4 transition-colors">
                   SDK Downloads
                 </Link>
               </li>
               <li>
-                <Link to="/developers/community" className="text-sm text-rx-gray-medium/70 hover:text-rx-yellow transition-colors">
+                <Link to="/developers/community" className="text-sm text-white/70 hover:text-rx-yellow hover:underline underline-offset-4 transition-colors">
                   Community
                 </Link>
               </li>
@@ -142,7 +142,7 @@ export default function Footer() {
               <ul className="space-y-3">
                 {companyLinks.filter((item: { label: string; to: string }) => item.to).map((item: { label: string; to: string }) => (
                   <li key={item.label}>
-                    <FooterLink to={item.to} className="text-sm text-rx-gray-medium hover:text-rx-yellow transition-colors">
+                    <FooterLink to={item.to} className="text-sm text-white/70 hover:text-rx-yellow hover:underline underline-offset-4 transition-colors">
                       {item.label}
                     </FooterLink>
                   </li>
@@ -154,12 +154,12 @@ export default function Footer() {
 
         {/* Bottom */}
         <div className="mt-12 pt-8 border-t border-white/5 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <p className="text-xs text-rx-gray-medium">
+          <p className="text-xs text-white/60">
             <Editable id="footer.copyright" label="Copyright line">
               {get('footer.copyright', '© {year} Calcitonin Technologies. All rights reserved.').replace('{year}', String(new Date().getFullYear()))}
             </Editable>
           </p>
-          <p className="text-xs text-rx-gray-medium flex items-center gap-1">
+          <p className="text-xs text-white/60 flex items-center gap-1">
             Made with <Heart className="w-3 h-3 text-rx-yellow fill-rx-yellow" />{' '}
             <Editable id="footer.madeWith" label="Made-with line">{get('footer.madeWith', 'for Healthcare Innovation')}</Editable>
           </p>
