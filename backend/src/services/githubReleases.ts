@@ -32,6 +32,10 @@ import {
   mapAssetFilename, parseRxManifest, versionFromTag, validateAssetUrl,
   streamAssetHash, ghApi,
 } from './github.ts';
+import {
+  runSecurityPipeline, publicationSecurityGate, latestCheckStatus,
+  latestChecksForPackages, loadExternalPackageBytes,
+} from './packageSecurity.ts';
 import { consumeOneTimeToken, restoreOneTimeToken } from './oauth.ts';
 import { compareSemver, normalizeChannel } from './releases.ts';
 import { streamToMultipart } from './streaming.ts';
@@ -407,6 +411,40 @@ export async function detectRelease(env: any, conn: any, ghRelease: any, action:
     return { status: 'blocked_ambiguous', releaseId: id, latestVersion: version };
   }
 
+  // Create the canonical (UNPUBLISHED) rows so the REAL security pipeline
+  // (packageSecurity.ts) records its evidence against genuine packages rows —
+  // exactly like manual uploads. Status stays 'under_review'/'stored' until
+  // an admin publishes; every public surface filters on published.
+  // ONLY on first detection: a redelivery (or sync re-run) must not re-create
+  // rows — the UNIQUE(app, version) constraint would misreport a duplicate.
+  if (!existing) try {
+    const canonicalId = `rel_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    await env.DB.prepare(
+      `INSERT INTO releases (id, application_id, version, release_notes, release_type, channel, status, developer_id, security_status, verification_status, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,'under_review',NULL,'pending','pending',datetime('now'),datetime('now'))`
+    ).bind(canonicalId, conn.application_id, version, JSON.stringify([notes.slice(0, 4000)]), 'patch', 'stable').run();
+    for (const m of mapped) {
+      const url = validateAssetUrl(m.asset.browser_download_url);
+      await env.DB.prepare(
+        `INSERT INTO packages (id, application_id, release_id, platform, architecture, filename, storage_key, file_size, mime_type, sha256, version, package_type, provider, external_url, github_asset_id, security_state, overall_security, status, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?, 'installer', 'github', ?, ?, 'QUARANTINED','PENDING','stored',datetime('now'))`
+      ).bind(
+        `pkg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, conn.application_id, canonicalId,
+        m.platform, m.architecture, String(m.asset.name || '').slice(0, 200), '', 0, 'application/octet-stream', '',
+        version, url.ok ? url.url : String(m.asset.browser_download_url || ''), String(m.asset.id ?? '')
+      ).run();
+    }
+  } catch (e: any) {
+    // UNIQUE(application_id, version): a manual release of this version
+    // already exists — a GitHub release must never take it over.
+    if (String(e?.message || '').includes('UNIQUE')) {
+      await env.DB.prepare(`UPDATE github_releases SET status='blocked', block_reason=? WHERE id=?`)
+        .bind(`Version ${version} already exists in the RX Store release history for this app — a GitHub release cannot duplicate or replace it.`, id).run();
+      return { status: 'blocked_duplicate_version', releaseId: id, latestVersion: version };
+    }
+    throw e;
+  }
+
   // A previous release row for the same (app, version) that was rejected stays
   // rejected — redelivery does not resurrect a decision.
   const sameVersion: any = await env.DB.prepare(`SELECT id, status FROM github_releases WHERE application_id=? AND version=? AND id != ?`).bind(conn.application_id, version, id).first().catch(() => null);
@@ -422,91 +460,21 @@ export async function detectRelease(env: any, conn: any, ghRelease: any, action:
 // time via waitUntil, or on demand via the admin Retry action
 // ---------------------------------------------------------------------------
 
-async function scanAssetWithVt(env: any, input: { url: string; filename: string; size: number }): Promise<{ status: string; detail: string }> {
-  if (!env?.VIRUSTOTAL_API_KEY) {
-    return { status: 'UNAVAILABLE', detail: 'VirusTotal is not configured (VIRUSTOTAL_API_KEY missing). The release stays blocked unless an admin explicitly overrides with a reason.' };
-  }
-  if (input.size > vtMaxBytes(env)) {
-    return { status: 'UNAVAILABLE', detail: `Asset is ${Math.round(input.size / 1048576)}MB — above the ${Math.round(vtMaxBytes(env) / 1048576)}MB scanner upload ceiling for external assets. Blocked unless an admin explicitly overrides with a reason.` };
-  }
-  try {
-    // Fetch the bytes (validated redirects) and stream them straight into the
-    // VT multipart upload — never buffered whole, never persisted.
-    const resp = await fetchFollowingGithubRedirects(input.url, 3);
-    if (!resp.ok || !resp.body) return { status: 'UNAVAILABLE', detail: `Asset fetch for scanning failed (${resp.status}).` };
-    const mp = streamToMultipart(resp.body, { filename: input.filename, fileSize: input.size });
-    let uploadUrl = 'https://www.virustotal.com/api/v3/files';
-    if (input.size >= 32 * 1024 * 1024) {
-      const urlRes = await fetch('https://www.virustotal.com/api/v3/files/upload_url', {
-        headers: { 'x-apikey': String(env.VIRUSTOTAL_API_KEY) }, signal: AbortSignal.timeout(30000),
-      });
-      if (urlRes.status === 429) return { status: 'UNAVAILABLE', detail: 'VirusTotal rate limit (upload_url) — retry verification shortly.' };
-      if (urlRes.ok) { const j: any = await urlRes.json().catch(() => null); if (j?.data) uploadUrl = String(j.data); }
-    }
-    const up = await fetch(uploadUrl, {
-      method: 'POST',
-      headers: { 'x-apikey': String(env.VIRUSTOTAL_API_KEY), 'Content-Type': mp.contentType, 'Content-Length': String(mp.contentLength) },
-      body: mp.body,
-      signal: AbortSignal.timeout(120000),
-    });
-    if (up.status === 429) return { status: 'UNAVAILABLE', detail: 'VirusTotal rate limited the upload — retry verification shortly.' };
-    if (!up.ok) return { status: 'UNAVAILABLE', detail: `VirusTotal upload failed (${up.status}).` };
-    const upJson: any = await up.json().catch(() => null);
-    const analysisId = upJson?.data?.id;
-    if (!analysisId) return { status: 'UNAVAILABLE', detail: 'VirusTotal did not return an analysis id.' };
+// ---------------------------------------------------------------------------
+// Verification (actual bytes: size + SHA-256 + scanner) — runs at detection
+// time via waitUntil, or on demand via the admin Retry action
+// ---------------------------------------------------------------------------
 
-    // Bounded polling — an inconclusive scan is NEVER clean.
-    const maxPolls = Number(env?.VT_SCAN_MAX_POLLS || 3);
-    const firstInterval = Number(env?.VT_SCAN_POLL_INTERVAL_MS || 2500);
-    let interval = firstInterval;
-    for (let i = 0; i < maxPolls; i++) {
-      await new Promise((r) => setTimeout(r, Math.min(interval, 6000)));
-      interval = Math.min(interval * Number(env?.VT_SCAN_POLL_GROWTH || 2), 6000);
-      const poll = await fetch(`https://www.virustotal.com/api/v3/analyses/${encodeURIComponent(analysisId)}`, {
-        headers: { 'x-apikey': String(env.VIRUSTOTAL_API_KEY) }, signal: AbortSignal.timeout(15000),
-      }).catch(() => null);
-      if (!poll || !poll.ok) continue;
-      const j: any = await poll.json().catch(() => null);
-      const st = j?.data?.attributes?.status;
-      if (st === 'completed') {
-        const stats = j?.data?.attributes?.stats || {};
-        const bad = Number(stats.malicious || 0) + Number(stats.suspicious || 0);
-        return {
-          status: bad > 0 ? 'DETECTED' : 'CLEAN',
-          detail: `VirusTotal: malicious=${stats.malicious || 0} suspicious=${stats.suspicious || 0} harmless=${stats.harmless || 0} undetected=${stats.undetected || 0}`,
-        };
-      }
-    }
-    return { status: 'UNAVAILABLE', detail: 'VirusTotal analysis did not complete within the bounded polling window — retry verification shortly.' };
-  } catch (e: any) {
-    return { status: 'UNAVAILABLE', detail: `Scanner error: ${String(e?.message || e).slice(0, 160)}` };
-  }
-}
+// ---------------------------------------------------------------------------
+// Verification — the REAL security pipeline (packageSecurity.ts): every
+// asset is streamed from GitHub (validated redirects, hashed in-stream,
+// never persisted), recorded on the canonical packages row, and then run
+// through the SAME automated check suite as manual uploads (structure,
+// integrity, duplicate, malware, signature, certificate, dependency,
+// native identity) with evidence in package_security_results and the
+// manual-review workflow. Nothing github-specific is weaker.
+// ---------------------------------------------------------------------------
 
-async function fetchFollowingGithubRedirects(url: string, maxHops: number): Promise<Response> {
-  let current = url;
-  for (let hop = 0; hop <= maxHops; hop++) {
-    const check = validateAssetUrl(current);
-    if (!check.ok) throw new Error(`asset URL rejected: ${check.reason}`);
-    const resp = await fetch(current, { redirect: 'manual', headers: { 'User-Agent': 'rx-store-github' }, signal: AbortSignal.timeout(60000) });
-    if (resp.status >= 300 && resp.status < 400) {
-      const loc = resp.headers.get('Location');
-      if (!loc) return resp;
-      current = new URL(loc, current).toString();
-      continue;
-    }
-    return resp;
-  }
-  throw new Error('too many redirects');
-}
-
-/**
- * Verify a detected release: every mapped asset is streamed from GitHub
- * (through the Worker, never persisted), size + SHA-256 are computed from the
- * ACTUAL bytes and compared against the GitHub API metadata + any declared
- * digest, and the bytes are scanned. On success the release becomes
- * pending_approval — approval still NEVER happens here.
- */
 export async function verifyGithubRelease(env: any, releaseId: string): Promise<{ ok: boolean; status: string; message?: string }> {
   await ensureGithubTables(env);
   const rel: any = await env.DB.prepare(`SELECT * FROM github_releases WHERE id=?`).bind(releaseId).first().catch(() => null);
@@ -522,50 +490,102 @@ export async function verifyGithubRelease(env: any, releaseId: string): Promise<
   await env.DB.prepare(`UPDATE github_releases SET status='verifying', block_reason=NULL WHERE id=?`).bind(releaseId).run();
   const assets: any = await env.DB.prepare(`SELECT * FROM github_release_assets WHERE release_id=?`).bind(releaseId).all().catch(() => ({ results: [] }));
 
+  // The canonical (unpublished) packages rows for this release — created at
+  // detection so the REAL security pipeline records its evidence against
+  // them exactly like manual uploads.
+  const canonical: any = await env.DB.prepare(
+    `SELECT id FROM releases WHERE application_id=? AND version=?`
+  ).bind(rel.application_id, rel.version).first().catch(() => null);
+  if (!canonical) {
+    await env.DB.prepare(`UPDATE github_releases SET status='blocked', block_reason='The canonical release row is missing — re-detect the release (webhook redelivery or admin sync).' WHERE id=?`).bind(releaseId).run();
+    return { ok: false, status: 'blocked', message: 'Canonical release row missing.' };
+  }
+
   let failures = 0;
+  const failureReasons: string[] = [];
   for (const a of assets.results || []) {
     try {
       // 1. Identity via the GitHub API (server-side, installation token).
       const meta = await ghApi(env, `/repos/${conn.repository_full_name}/releases/assets/${a.github_asset_id}`, { installationId: conn.installation_id });
       if (!meta.ok || !meta.json) {
         await env.DB.prepare(`UPDATE github_release_assets SET state='missing', error=? WHERE id=?`).bind(`GitHub reports the asset as missing (${meta.status}).`, a.id).run();
-        failures++;
+        failures++; failureReasons.push(`${a.name}: missing on GitHub (${meta.status})`);
         continue;
       }
       if (String(meta.json.name || '') !== String(a.name)) {
         await env.DB.prepare(`UPDATE github_release_assets SET state='mismatch', error=? WHERE id=?`).bind(`Asset was renamed on GitHub ('${meta.json.name}' vs verified '${a.name}').`, a.id).run();
-        failures++;
+        failures++; failureReasons.push(`${a.name}: renamed on GitHub`);
         continue;
       }
-      // 2. Actual bytes: stream, hash, count. Never buffered, never persisted.
-      const streamed = await streamAssetHash(a.download_url, { maxBytes: assetMaxBytes(env) });
-      if (Number(meta.json.size) !== streamed.size) {
+      // 2. PASS 1 — stream the ACTUAL bytes (validated redirects, hashed
+      //    in-stream, head/tail windows captured). Never persisted.
+      const ext = await loadExternalPackageBytes(a.download_url, { maxBytes: assetMaxBytes(env) });
+      if (!ext) {
+        await env.DB.prepare(`UPDATE github_release_assets SET state='failed', error=? WHERE id=?`)
+          .bind(`The asset could not be streamed for verification (unreachable, redirect-rejected, or above the ${Math.floor(assetMaxBytes(env) / 1048576)}MB cap).`, a.id).run();
+        failures++; failureReasons.push(`${a.name}: could not be streamed`);
+        continue;
+      }
+      if (Number(meta.json.size) !== ext.size) {
         await env.DB.prepare(`UPDATE github_release_assets SET state='mismatch', size_bytes=?, error=? WHERE id=?`)
-          .bind(streamed.size, `GitHub metadata says ${meta.json.size} bytes but the asset served ${streamed.size}.`, a.id).run();
-        failures++;
+          .bind(ext.size, `GitHub metadata says ${meta.json.size} bytes but the asset served ${ext.size}.`, a.id).run();
+        failures++; failureReasons.push(`${a.name}: size differs from GitHub metadata`);
         continue;
       }
-      if (a.declared_sha256 && String(a.declared_sha256).toLowerCase() !== streamed.sha256) {
+      if (a.declared_sha256 && String(a.declared_sha256).toLowerCase() !== ext.sha256) {
         await env.DB.prepare(`UPDATE github_release_assets SET state='mismatch', size_bytes=?, sha256=?, error=? WHERE id=?`)
-          .bind(streamed.size, streamed.sha256, `Declared digest does not match the actual bytes (declared ${String(a.declared_sha256).slice(0, 12)}…).`, a.id).run();
-        failures++;
+          .bind(ext.size, ext.sha256, `Declared digest does not match the actual bytes (declared ${String(a.declared_sha256).slice(0, 12)}…).`, a.id).run();
+        failures++; failureReasons.push(`${a.name}: declared checksum mismatch`);
         continue;
       }
-      // 3. Scanner — the actual bytes, honestly interpreted.
-      const scan = await scanAssetWithVt(env, { url: a.download_url, filename: a.name, size: streamed.size });
+      // 3. Record the VERIFIED size + SHA-256 (bound to the exact asset
+      //    identity: repository, release, asset id, version, platform, arch).
+      await env.DB.prepare(`UPDATE github_release_assets SET state='verified', size_bytes=?, sha256=?, error=NULL, verified_at=datetime('now') WHERE id=?`)
+        .bind(ext.size, ext.sha256, a.id).run();
+      await env.DB.prepare(`UPDATE packages SET sha256=?, file_size=? WHERE release_id=? AND platform=? AND architecture=? AND provider='github'`)
+        .bind(ext.sha256, ext.size, canonical.id, a.platform, a.architecture).run();
+
+      // 4. PASS 2 — the REAL pipeline (independent re-stream + structure,
+      //    integrity, duplicate, malware, signature, certificate, dependency,
+      //    native identity; evidence rows + manual-review workflow included).
+      const pkgRow: any = await env.DB.prepare(
+        `SELECT id FROM packages WHERE release_id=? AND platform=? AND architecture=? AND provider='github'`
+      ).bind(canonical.id, a.platform, a.architecture).first().catch(() => null);
+      if (!pkgRow) {
+        failures++; failureReasons.push(`${a.name}: canonical package row missing`);
+        continue;
+      }
+      const run = await runSecurityPipeline(env, pkgRow.id).catch(() => null);
+      const malware = await latestCheckStatus(env, pkgRow.id, 'malware').catch(() => null);
+      const overall = run?.overall || 'FAILED';
+      const scannerDetail = (run?.results?.malware?.details || run?.results?.malware?.result || null);
       await env.DB.prepare(
-        `UPDATE github_release_assets SET state=?, size_bytes=?, sha256=?, scanner_status=?, scanner_detail=?, scanned_at=datetime('now'), verified_at=datetime('now'), error=NULL WHERE id=?`
-      ).bind(scan.status === 'DETECTED' ? 'failed' : 'verified', streamed.size, streamed.sha256, scan.status, scan.detail, a.id).run();
-      if (scan.status === 'DETECTED') failures++;
+        `UPDATE github_release_assets SET scanner_status=?, scanner_detail=?, scanned_at=datetime('now') WHERE id=?`
+      ).bind(malware || 'UNAVAILABLE', scannerDetail, a.id).run();
+      // Failure classification (fail-closed, but honest about WHICH kind):
+      //  - DEFINITIVE bad: malware DETECTED, or any non-malware check FAILED
+      //    (bad file: structure/integrity/duplicate/native identity) → the
+      //    release cannot even be queued for approval.
+      //  - Scanner INFRASTRUCTURE failures (malware UNAVAILABLE/FAILED/SCANNING
+      //    — e.g. VT outage/rate limit) do NOT fail verification: the release
+      //    reaches pending_approval with the honest non-clean status, and the
+      //    publication gate blocks it until a retry, a byte-bound manual
+      //    approval, or an explicit audited override. NEVER clean.
+      const results = (run?.results || {}) as Record<string, any>;
+      const definitiveBad = malware === 'DETECTED'
+        || Object.entries(results).some(([check, r]) => check !== 'malware' && r && ['FAILED', 'DETECTED'].includes(r.status));
+      if (definitiveBad) {
+        failures++; failureReasons.push(`${a.name}: security pipeline FAILED (${malware || 'checks failed'})`);
+      }
     } catch (e: any) {
       await env.DB.prepare(`UPDATE github_release_assets SET state='failed', error=? WHERE id=?`).bind(String(e?.message || e).slice(0, 300), a.id).run();
-      failures++;
+      failures++; failureReasons.push(`${a.name}: ${String(e?.message || e).slice(0, 120)}`);
     }
   }
 
   if (failures > 0) {
     await env.DB.prepare(`UPDATE github_releases SET status='verification_failed', block_reason=? WHERE id=?`)
-      .bind(`${failures} asset(s) failed verification — see the asset rows for the exact reasons.`, releaseId).run();
+      .bind(`${failures} asset(s) failed verification: ${failureReasons.slice(0, 5).join(' | ')}`, releaseId).run();
     return { ok: false, status: 'verification_failed', message: 'One or more assets failed verification.' };
   }
   await env.DB.prepare(`UPDATE github_releases SET status='pending_approval', verified_at=datetime('now') WHERE id=?`).bind(releaseId).run();
@@ -594,8 +614,14 @@ export async function publishGithubRelease(env: any, actor: { userId: string; la
   const rows = assets.results || [];
   if (!rows.length) return { ok: false, code: 'CONFLICT', message: 'The release has no verified assets.' };
 
-  // Security gate: every asset must be hash-verified + scanner CLEAN, or carry
-  // an EXPLICIT audited override (only for UNAVAILABLE — never DETECTED).
+  // ---- SECURITY GATE: the SAME publicationSecurityGate as the manual
+  // channel (Path 1 AUTOMATED / Path 2 SECURITY_OVERRIDE / Path 3
+  // MANUAL_APPROVAL), PLUS github-specific hardening:
+  //   - every asset must be hash-verified,
+  //   - a DETECTED malware verdict can NEVER be published (not even by
+  //     override or manual approval),
+  //   - publish-time identity + fresh-byte re-verification binds the approval
+  //     to the EXACT verified artifact set.
   const override = !!opts.overrideSecurity;
   const reason = String(opts.reason || '').trim();
   if (override && reason.length < 10) {
@@ -604,12 +630,6 @@ export async function publishGithubRelease(env: any, actor: { userId: string; la
   for (const a of rows) {
     if (a.state !== 'verified' || !a.sha256) {
       return { ok: false, code: 'CONFLICT', message: `Asset ${a.name} (${a.platform}/${a.architecture}) is not verified (state: ${a.state}). Retry verification.` };
-    }
-    if (a.scanner_status === 'DETECTED') {
-      return { ok: false, code: 'FORBIDDEN', message: `Asset ${a.name} was flagged by the malware scanner. A security override can never publish a DETECTED asset.` };
-    }
-    if (a.scanner_status !== 'CLEAN' && !override) {
-      return { ok: false, code: 'FORBIDDEN', message: `Asset ${a.name}: scanner status is ${a.scanner_status || 'unknown'} — publication is blocked. Retry verification, or publish with an explicit security override + reason (allowed only for UNAVAILABLE).` };
     }
   }
 
@@ -624,8 +644,8 @@ export async function publishGithubRelease(env: any, actor: { userId: string; la
       return { ok: false, code: 'CONFLICT', message: `Asset ${a.name} changed on GitHub after review. The release was blocked — re-verify and approve again.` };
     }
     try {
-      const streamed = await streamAssetHash(a.download_url, { maxBytes: assetMaxBytes(env) });
-      if (streamed.sha256 !== a.sha256 || streamed.size !== Number(a.size_bytes)) {
+      const ext = await loadExternalPackageBytes(a.download_url, { maxBytes: assetMaxBytes(env) });
+      if (!ext || ext.sha256 !== a.sha256 || ext.size !== Number(a.size_bytes)) {
         await env.DB.prepare(`UPDATE github_releases SET status='blocked', block_reason=? WHERE id=?`)
           .bind(`Asset ${a.name} bytes changed after review (hash mismatch) — re-verify and re-approve.`, releaseId).run();
         await audit(env, { action: 'publish_blocked', actorId: actor.userId, actorLabel: actor.label, appId: rel.application_id, releaseId, repositoryId: conn.repository_id, reason: 'asset bytes changed', details: { asset: a.name } });
@@ -636,36 +656,62 @@ export async function publishGithubRelease(env: any, actor: { userId: string; la
     }
   }
 
+  // The canonical rows exist since detection (status under_review/stored).
+  const canonical: any = await env.DB.prepare(
+    `SELECT id FROM releases WHERE application_id=? AND version=?`
+  ).bind(rel.application_id, rel.version).first().catch(() => null);
+  if (!canonical) return { ok: false, code: 'CONFLICT', message: 'The canonical release row is missing — retry verification (or re-detect via sync).' };
+
+  // A definitive DETECTED verdict on ANY package kills the publication
+  // outright — overrides and manual approvals cannot outvote a detection.
+  const canonicalPkgs: any = await env.DB.prepare(`SELECT * FROM packages WHERE release_id=?`).bind(canonical.id).all().catch(() => ({ results: [] }));
+  for (const pkg of canonicalPkgs.results || []) {
+    if ((await latestCheckStatus(env, pkg.id, 'malware').catch(() => null)) === 'DETECTED') {
+      return { ok: false, code: 'FORBIDDEN', message: `Package ${pkg.filename} was flagged by the malware scanner (DETECTED). A security override or manual approval can never publish a detected asset.` };
+    }
+  }
+
+  // The shared gate (AUTOMATED / MANUAL_APPROVAL / SECURITY_OVERRIDE paths,
+  // freshness-window re-verification with the current pipeline).
+  let gate = await publicationSecurityGate(env, canonical.id);
+  if (!gate.ok && override) {
+    // An explicit, audited override is recorded per blocking package through
+    // the SAME package_security_overrides machinery the manual channel uses
+    // (sha256-bound: a changed asset can never ride an old override).
+    for (const b of gate.blockers) {
+      const pkg: any = await env.DB.prepare(`SELECT * FROM packages WHERE id=?`).bind(b.packageId).first().catch(() => null);
+      if (!pkg) continue;
+      if ((await latestCheckStatus(env, pkg.id, 'malware').catch(() => null)) === 'DETECTED') continue; // never
+      await env.DB.prepare(
+        `INSERT INTO package_security_overrides (id, package_id, admin_user_id, reason, prior_state, prior_overall, sha256)
+         VALUES (?,?,?,?,?,?,?)`
+      ).bind(`pso_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`, pkg.id, actor.userId, reason.slice(0, 500), pkg.security_state, pkg.overall_security, String(pkg.sha256 || '')).run().catch(() => {});
+    }
+    gate = await publicationSecurityGate(env, canonical.id);
+  }
+  if (!gate.ok) {
+    const lines = gate.blockers.map((b: any) => `• ${b.filename} (${b.platform}): state=${b.state}, overall=${b.overall}` + (b.reasons?.length ? ` — ${b.reasons.slice(0, 3).join(' | ')}` : '')).join('\n');
+    return {
+      ok: false, code: 'FORBIDDEN',
+      message: `Security verification blocked publication. ${gate.blockers.length} package(s) not cleared:\n${lines}\n` +
+        `SCANNING/UNAVAILABLE mean the scanner has no definitive verdict yet — retry verification shortly, approve the byte-bound manual review in Admin → Security, or publish with an explicit override + reason (never possible for a DETECTED verdict).`,
+    };
+  }
+
   // Channel policy: the stable channel is the only connected channel (v1).
   const channel = normalizeChannel(conn.channel) || 'stable';
-
-  // ---- Create the canonical rows (the SAME lifecycle the manual flow uses).
-  // UNIQUE(application_id, version) on `releases` is the concurrency guard:
-  // a second concurrent publish or a retry hits the constraint and fails.
-  const canonicalId = `rel_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const canonicalId = canonical.id;
   try {
+    // Flip the EXISTING canonical rows live (they were created at detection
+    // and carry the pipeline evidence). The conditional UPDATE on the github
+    // row (status='pending_approval') is the concurrency guard: a second
+    // concurrent publish cannot flip anything twice.
     await env.DB.prepare(
-      `INSERT INTO releases (id, application_id, version, release_notes, release_type, channel, status, developer_id, security_status, verification_status, published_at, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,'published',NULL,'passed','passed',datetime('now'),datetime('now'),datetime('now'))`
-    ).bind(canonicalId, rel.application_id, rel.version, JSON.stringify([String(rel.release_notes || '').slice(0, 4000)]), 'patch', channel).run();
-  } catch (e: any) {
-    if (String(e?.message || '').includes('UNIQUE')) {
-      return { ok: false, code: 'CONFLICT', message: `Version ${rel.version} already exists as a release for this application — a GitHub release cannot duplicate it.` };
-    }
-    throw e;
-  }
-  try {
-    for (const a of rows) {
-      await env.DB.prepare(
-        `INSERT INTO packages (id, application_id, release_id, platform, architecture, filename, storage_key, file_size, mime_type, sha256, version, package_type, provider, external_url, github_asset_id, security_scan_status, signature_status, security_state, overall_security, status, verified_at, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'installer','github',?,?,'passed','pending',?,?,'published',datetime('now'),datetime('now'))`
-      ).bind(
-        `pkg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, rel.application_id, canonicalId,
-        a.platform, a.architecture, a.name, '', Number(a.size_bytes), 'application/octet-stream', a.sha256, rel.version,
-        a.download_url, a.github_asset_id,
-        override ? 'SECURITY_OVERRIDE' : 'PUBLISHED', override ? 'NEEDS_REVIEW' : 'PASSED',
-      ).run();
-    }
+      `UPDATE releases SET status='published', published_at=datetime('now'), updated_at=datetime('now') WHERE id=? AND status != 'published'`
+    ).bind(canonicalId).run();
+    await env.DB.prepare(
+      `UPDATE packages SET status='published', security_state=?, overall_security=?, verified_at=datetime('now') WHERE release_id=? AND status='stored'`
+    ).bind(override ? 'SECURITY_OVERRIDE' : 'PUBLISHED', override ? 'NEEDS_REVIEW' : 'PASSED', canonicalId).run();
 
     const priorVersion = app.current_version || null;
     if (channel === 'stable') {
@@ -719,9 +765,10 @@ export async function publishGithubRelease(env: any, actor: { userId: string; la
 
     return { ok: true, version: rel.version };
   } catch (e: any) {
-    // Compensate: never leave a half-published canonical release behind.
-    await env.DB.prepare(`DELETE FROM packages WHERE release_id=?`).bind(canonicalId).run().catch(() => {});
-    await env.DB.prepare(`DELETE FROM releases WHERE id=?`).bind(canonicalId).run().catch(() => {});
+    // Compensate: never leave a half-published canonical release behind —
+    // revert the statuses (the rows and their evidence survive for retry).
+    await env.DB.prepare(`UPDATE packages SET status='stored' WHERE release_id=? AND status='published'`).bind(canonicalId).run().catch(() => {});
+    await env.DB.prepare(`UPDATE releases SET status='under_review', published_at=NULL WHERE id=?`).bind(canonicalId).run().catch(() => {});
     await env.DB.prepare(`UPDATE github_releases SET status='pending_approval', block_reason=? WHERE id=?`)
       .bind(`Publication failed: ${String(e?.message || e).slice(0, 200)}`, releaseId).run().catch(() => {});
     return { ok: false, code: 'INTERNAL', message: `Publication failed and was rolled back: ${String(e?.message || e).slice(0, 200)}` };
@@ -857,7 +904,25 @@ export async function adminQueue(env: any, filters: { status?: string; appId?: s
   const out = [];
   for (const r of rows?.results || []) {
     const assets: any = await env.DB.prepare(`SELECT * FROM github_release_assets WHERE release_id=?`).bind(r.id).all().catch(() => ({ results: [] }));
-    out.push({ ...r, assets: assets?.results || [] });
+    // Full per-check security evidence from the REAL pipeline: the canonical
+    // packages rows + their latest package_security_results + manual-review
+    // state (the admin reviews the same evidence the manual channel shows).
+    const canonical: any = await env.DB.prepare(
+      `SELECT id, status AS canonical_status FROM releases WHERE application_id=? AND version=?`
+    ).bind(r.application_id, r.version).first().catch(() => null);
+    let packages: any[] = [];
+    if (canonical?.id) {
+      const pkgs: any = await env.DB.prepare(`SELECT * FROM packages WHERE release_id=?`).bind(canonical.id).all().catch(() => ({ results: [] }));
+      packages = pkgs?.results || [];
+      const checks = await latestChecksForPackages(env, packages.map((p: any) => p.id)).catch(() => ({} as Record<string, any[]>));
+      for (const p of packages) {
+        (p as any).checks = checks[p.id] || [];
+        (p as any).manualReview = await env.DB.prepare(
+          `SELECT status, reason, admin_notes, created_at, reviewed_at, invalidated_at FROM package_manual_reviews WHERE package_id=? ORDER BY created_at DESC LIMIT 1`
+        ).bind(p.id).first().catch(() => null);
+      }
+    }
+    out.push({ ...r, assets: assets?.results || [], canonicalReleaseId: canonical?.id || null, canonicalStatus: canonical?.canonical_status || null, packages });
   }
   return out;
 }

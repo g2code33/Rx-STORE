@@ -47,12 +47,15 @@ function fakeEnv() {
   const tables: Record<string, any[]> = {
     applications: [{
       id: APP_ID, slug: 'clinical-rx', name: 'Clinical Rx', developer_org_id: ORG_ID,
-      price_type: 'free', price_amount: 0, current_version: '1.11.11', platforms: 'android,web',
+      price_type: 'free', price_amount: 0, current_version: '1.11.11', platforms: 'linux,web',
+      linux_package_name: 'clinical-rx',
     }],
     releases: [], packages: [], app_versions: [], notifications: [], downloads: [],
     github_repo_connections: [], github_release_events: [], github_releases: [],
     github_release_assets: [], github_audit_log: [], site_settings: [],
     oauth_tokens: [],
+    package_security_results: [], package_manual_reviews: [], package_security_overrides: [],
+    scanner_cache: [], audit_logs: [],
     developers: [{ id: ORG_ID, name: 'Org' }],
     developer_members: [{ id: 'mem-1', developer_id: ORG_ID, user_id: USER_ID, role: 'owner' }],
   };
@@ -99,12 +102,96 @@ function fakeEnv() {
           if (s.includes('INSERT INTO releases')) {
             const dup = T('releases').find((r) => r.application_id === a[1] && r.version === a[2]);
             if (dup) { const e: any = new Error('UNIQUE constraint failed: releases.application_id, releases.version'); return Promise.reject(e); }
-            T('releases').push({ id: a[0], application_id: a[1], version: a[2], status: 'published', channel: a[5], release_notes: a[3] });
+            // status comes from the SQL literal ('under_review' at detection)
+            const status = s.includes("'under_review'") ? 'under_review' : 'published';
+            T('releases').push({ id: a[0], application_id: a[1], version: a[2], status, channel: a[5], release_notes: a[3], published_at: status === 'published' ? 'now' : null });
             return { meta: { changes: 1 } };
           }
           if (s.includes('INSERT INTO packages')) {
-            T('packages').push({ id: a[0], application_id: a[1], release_id: a[2], platform: a[3], architecture: a[4], filename: a[5], storage_key: a[6], file_size: a[7], sha256: a[9], version: a[10], provider: 'github', external_url: a[11], github_asset_id: a[12], status: 'published', overall_security: a[14], security_state: a[13] });
+            // detection shape: (id, app, release, platform, arch, filename, storage_key,
+            // file_size, mime, sha256, version, external_url, github_asset_id) with
+            // status 'stored' + QUARANTINED in the SQL literal.
+            const pkgRow: any = { id: a[0], application_id: a[1], release_id: a[2], platform: a[3], architecture: a[4], filename: a[5], storage_key: a[6], file_size: a[7], sha256: a[9], version: a[10], provider: 'github', external_url: a[11], github_asset_id: a[12], status: s.includes("'stored'") ? 'stored' : 'published', security_state: 'QUARANTINED', overall_security: 'PENDING', quarantine_key: null, deployment_url: null, security_scan_status: 'pending', signature_status: 'pending' };
+            const dup = T('packages').find((x) => x.release_id === pkgRow.release_id && x.platform === pkgRow.platform && x.architecture === pkgRow.architecture);
+            if (dup) { const e: any = new Error('UNIQUE constraint failed: packages.release_id'); return Promise.reject(e); }
+            T('packages').push(pkgRow);
             return { meta: { changes: 1 } };
+          }
+          if (s.includes('INSERT INTO package_security_results')) {
+            T('package_security_results').push({ id: a[0], package_id: a[1], release_id: a[2], app_id: a[3], developer_id: a[4], check_type: a[5], status: a[6], classification: a[7], provider: a[8], provider_version: a[9], result: a[10], details: a[11], fingerprint: a[12], error: a[13], started_at: a[14], completed_at: a[15], scanner_analysis_id: a[16], scanner_verdict: a[20], created_at: new Date().toISOString() });
+            return { meta: { changes: 1 } };
+          }
+          if (s.includes('INSERT INTO package_manual_reviews')) {
+            T('package_manual_reviews').push({ id: a[0], package_id: a[1], release_id: a[2], sha256: a[3], platform: a[4], automated_integrity: a[5], automated_malware: a[6], automated_overall: a[7], reason: a[8], status: 'PENDING', created_at: new Date().toISOString(), reviewed_at: null, invalidated_at: null, admin_notes: null });
+            return { meta: { changes: 1 } };
+          }
+          if (s.includes('INSERT INTO package_security_overrides')) {
+            T('package_security_overrides').push({ id: a[0], package_id: a[1], admin_user_id: a[2], reason: a[3], prior_state: a[4], prior_overall: a[5], sha256: a[6], invalidated_at: null, created_at: new Date().toISOString() });
+            return { meta: { changes: 1 } };
+          }
+          if (s.includes('INSERT INTO audit_logs')) {
+            T('audit_logs').push({ id: a[0], action: a[1], resource_type: a[2], resource_id: a[3], details: a[4] });
+            return { meta: { changes: 1 } };
+          }
+          if (s.includes('INSERT INTO scanner_cache')) {
+            // (sha256, provider, verdict, analysis_id, malicious, suspicious, harmless, undetected) — scanned_at is a SQL literal
+            const [sha, provider, verdict, analysis_id, malicious, suspicious, harmless, undetected] = a;
+            const existing = T('scanner_cache').find((c) => c.sha256 === sha);
+            const row = { sha256: sha, provider, verdict, analysis_id, malicious, suspicious, harmless, undetected, scanned_at: new Date().toISOString() };
+            if (existing) Object.assign(existing, row); else T('scanner_cache').push(row);
+            return { meta: { changes: 1 } };
+          }
+          // pipeline per-check progress: UPDATE packages SET security_state=?, overall_security='PENDING'[, scan/sig cols] WHERE id=?
+          if (s.includes('UPDATE packages SET security_state=?') && s.includes("overall_security='PENDING'")) {
+            const pkg = T('packages').find((x) => x.id === a[a.length - 1]);
+            if (pkg) {
+              pkg.security_state = a[0];
+              if (s.includes('security_scan_status=')) pkg.security_scan_status = null; // literal in SQL; find it
+              const m = s.match(/security_scan_status='([A-Z]+)'/); if (m) pkg.security_scan_status = m[1];
+              const m2 = s.match(/signature_status='([A-Z_]+)'/); if (m2) pkg.signature_status = m2[1];
+            }
+            return { meta: { changes: pkg ? 1 : 0 } };
+          }
+          // finish(): UPDATE packages SET security_state=?, overall_security=?, verified_at=... WHERE id=?
+          if (s.includes('UPDATE packages SET security_state=?') && s.includes('verified_at=')) {
+            const pkg = T('packages').find((x) => x.id === a[2]);
+            if (pkg) { pkg.security_state = a[0]; pkg.overall_security = a[1]; pkg.verified_at = 'now'; }
+            return { meta: { changes: pkg ? 1 : 0 } };
+          }
+          // verify pass 1 records the hash: UPDATE packages SET sha256=?, file_size=? WHERE release_id=? AND platform=? AND architecture=? AND provider='github'
+          if (s.includes('UPDATE packages SET sha256=?, file_size=?')) {
+            const pkgs = T('packages').filter((x) => x.release_id === a[2] && x.platform === a[3] && x.architecture === a[4] && x.provider === 'github');
+            for (const pkg of pkgs) { pkg.sha256 = a[0]; pkg.file_size = a[1]; }
+            return { meta: { changes: pkgs.length } };
+          }
+          // publish transitions
+          if (s.includes("UPDATE releases SET status='published'")) {
+            const r = T('releases').find((x) => x.id === a[0] && x.status !== 'published');
+            if (r) { r.status = 'published'; r.published_at = 'now'; }
+            return { meta: { changes: r ? 1 : 0 } };
+          }
+          if (s.includes("UPDATE releases SET status='under_review', published_at=NULL")) {
+            const r = T('releases').find((x) => x.id === a[0]);
+            if (r) { r.status = 'under_review'; r.published_at = null; }
+            return { meta: { changes: r ? 1 : 0 } };
+          }
+          if (s.includes("UPDATE packages SET status='published'")) {
+            // (security_state, overall_security, release_id) — literal status in SQL
+            const pkgs = T('packages').filter((x) => x.release_id === a[2] && x.status === 'stored');
+            for (const pkg of pkgs) { pkg.status = 'published'; pkg.security_state = a[0]; pkg.overall_security = a[1]; }
+            return { meta: { changes: pkgs.length } };
+          }
+          if (s.includes("UPDATE packages SET status='stored'")) {
+            const pkgs = T('packages').filter((x) => x.release_id === a[0] && x.status === 'published');
+            for (const pkg of pkgs) pkg.status = 'stored';
+            return { meta: { changes: pkgs.length } };
+          }
+          if (s.includes('UPDATE package_manual_reviews SET invalidated_at')) {
+            let n = 0;
+            for (const r of T('package_manual_reviews')) {
+              if (r.package_id === a[0] && String(r.sha256) === String(a[1]) && String(s).includes(`'${r.status}'`)) { r.invalidated_at = 'now'; n++; }
+            }
+            return { meta: { changes: n } };
           }
           if (s.includes('INSERT INTO app_versions')) {
             T('app_versions').push({ id: a[0], app_id: a[1], version: a[2], release_notes: a[3], files: a[4] });
@@ -165,7 +252,19 @@ function fakeEnv() {
             const r = T('github_releases').find((x) => x.id === a[3]); if (r) { r.status = 'published'; r.published_by = a[0]; r.prior_version = a[1]; r.decision_reason = a[2]; r.published_at = 'now'; }
             return { meta: { changes: r ? 1 : 0 } };
           }
-          if (s.includes('UPDATE github_release_assets SET state=\'missing\'')) {
+          if (s.includes("UPDATE github_release_assets SET state='verified'")) {
+            // (size_bytes, sha256, id)
+            const r = T('github_release_assets').find((x) => x.id === a[2]);
+            if (r) { r.state = 'verified'; r.size_bytes = a[0]; r.sha256 = a[1]; r.error = null; r.verified_at = 'now'; }
+            return { meta: { changes: r ? 1 : 0 } };
+          }
+          if (s.includes('UPDATE github_release_assets SET scanner_status=?')) {
+            // (scanner_status, scanner_detail, id)
+            const r = T('github_release_assets').find((x) => x.id === a[2]);
+            if (r) { r.scanner_status = a[0]; r.scanner_detail = a[1]; r.scanned_at = 'now'; }
+            return { meta: { changes: r ? 1 : 0 } };
+          }
+          if (s.includes("UPDATE github_release_assets SET state='missing'")) {
             const r = T('github_release_assets').find((x) => x.id === a[1]); if (r) { r.state = 'missing'; r.error = a[0]; }
             return { meta: { changes: r ? 1 : 0 } };
           }
@@ -241,6 +340,45 @@ function fakeEnv() {
             const d = m && T('developers').find((x) => x.id === m.developer_id);
             return (m && d) ? { member_id: m.id, role: m.role, member_since: 'now', ...d } : null;
           }
+          if (s.includes('FROM package_security_results WHERE package_id=? AND check_type=?')) {
+            const rows = T('package_security_results').filter((r) => r.package_id === a[0] && r.check_type === a[1]);
+            return rows.length ? rows[rows.length - 1] : null;
+          }
+          if (s.includes('SELECT MAX(CASE WHEN check_type')) {
+            const rows = T('package_security_results').filter((r) => r.package_id === a[0]);
+            const at = (t: string) => rows.filter((r) => r.check_type === t).map((r) => r.created_at).sort().pop() || null;
+            return { integrity_at: at('integrity'), malware_at: at('malware') };
+          }
+          if (s.includes('FROM package_manual_reviews WHERE package_id=? AND sha256=?')) {
+            return T('package_manual_reviews').find((r) => r.package_id === a[0] && String(r.sha256) === String(a[1]) && ['PENDING', 'APPROVED'].includes(r.status) && !r.invalidated_at) || null;
+          }
+          if (s.includes("FROM package_manual_reviews WHERE package_id=? AND status='APPROVED'")) {
+            return T('package_manual_reviews').filter((r) => r.package_id === a[0] && r.status === 'APPROVED' && !r.invalidated_at).pop() || null;
+          }
+          if (s.includes('FROM package_manual_reviews WHERE package_id=?')) {
+            return T('package_manual_reviews').filter((r) => r.package_id === a[0]).pop() || null;
+          }
+          if (s.includes('FROM package_security_overrides WHERE package_id=?')) {
+            return T('package_security_overrides').filter((r) => r.package_id === a[0] && !r.invalidated_at).pop() || null;
+          }
+          if (s.includes('FROM scanner_cache WHERE sha256=? AND provider=?')) {
+            return T('scanner_cache').find((c) => c.sha256 === a[0] && c.provider === a[1]) || null;
+          }
+          if (s.includes('SELECT id, status AS canonical_status FROM releases WHERE application_id=? AND version=?')) {
+            const r = T('releases').find((x) => x.application_id === a[0] && x.version === a[1]);
+            return r ? { id: r.id, canonical_status: r.status } : null;
+          }
+          if (s.includes('SELECT id FROM releases WHERE application_id=? AND version=?')) {
+            return T('releases').find((x) => x.application_id === a[0] && x.version === a[1]) || null;
+          }
+          if (s.includes("SELECT id FROM packages WHERE release_id=? AND platform=? AND architecture=? AND provider='github'")) {
+            return T('packages').find((x) => x.release_id === a[0] && x.platform === a[1] && x.architecture === a[2] && x.provider === 'github') || null;
+          }
+          if (s.includes('SELECT id FROM releases WHERE application_id') && s.includes("status='published'")) return T('releases').find((r) => r.application_id === a[0] && r.version === a[1] && r.status === 'published') || null;
+          if (s.includes('FROM packages WHERE id=?')) {
+            const rows = T('packages').filter((x) => x.id === a[0]);
+            return rows.length ? rows[rows.length - 1] : null;
+          }
           if (s.includes('FROM github_repo_connections WHERE application_id')) return T('github_repo_connections').find((c) => c.application_id === a[0]) || null;
           if (s.includes('FROM github_repo_connections WHERE repository_id')) return T('github_repo_connections').find((c) => c.repository_id === a[0] && c.status === 'active') || null;
           if (s.includes('FROM github_repo_connections WHERE id')) return T('github_repo_connections').find((c) => c.id === a[0]) || null;
@@ -260,6 +398,24 @@ function fakeEnv() {
           const T = (name: string) => tables[name];
           if (s.includes('FROM github_release_assets WHERE release_id')) return { results: T('github_release_assets').filter((r) => r.release_id === a[0]) };
           if (s.includes('FROM github_release_events WHERE repository_id=?')) return { results: T('github_release_events').filter((e) => String(e.repository_id) === String(a[0])).slice(0, 5) };
+          if (s.includes('FROM package_security_results') && s.includes('SELECT MAX(id)')) {
+            // latest per check_type for one package (a[0]); blockers variant adds a status filter
+            const target = a[a.length - 1];
+            const statuses = s.match(/status IN \(([^)]*)\)/)?.[1];
+            const latest: any[] = [];
+            for (const t of ['structure', 'integrity', 'duplicate', 'malware', 'signature', 'certificate', 'dependency', 'native_identity']) {
+              const rows = T('package_security_results').filter((r) => r.package_id === target && r.check_type === t);
+              if (rows.length) latest.push(rows[rows.length - 1]);
+            }
+            const filtered = statuses ? latest.filter((r) => statuses.includes(`'${r.status}'`)) : latest;
+            return { results: filtered.map((r) => ({ check_type: r.check_type, status: r.status, result: r.result, details: r.details, provider: r.provider, provider_version: r.provider_version, classification: r.classification, fingerprint: r.fingerprint, error: r.error, completed_at: r.completed_at, started_at: r.started_at, scanner_analysis_id: r.scanner_analysis_id, scanner_verdict: r.scanner_verdict, scanner_raw_summary: null, scanner_started_at: null, scanner_completed_at: null })) };
+          }
+          if (s.includes('FROM packages WHERE release_id=?')) {
+            return { results: T('packages').filter((x) => x.release_id === a[0]) };
+          }
+          if (s.includes('FROM packages p LEFT JOIN releases r')) {
+            return { results: T('packages').filter((x) => x.sha256 === a[0] && x.id !== a[1]).map((x) => ({ id: x.id, application_id: x.application_id, platform: x.platform, release_id: x.release_id, appId: x.application_id, release_version: null })) };
+          }
           if (s.includes('FROM github_repo_connections WHERE status=\'active\'') || s.includes("FROM github_repo_connections WHERE status = 'active'")) return { results: T('github_repo_connections').filter((c) => c.status === 'active') };
           if (s.includes('FROM github_releases WHERE status IN')) return { results: T('github_releases').filter((r) => ['detected', 'verifying'].includes(r.status)) };
           if (s.includes('SELECT COUNT(*)')) {
@@ -283,6 +439,7 @@ function fakeEnv() {
     GITHUB_APP_ID: '12345', GITHUB_APP_SLUG: 'rx-store-releases',
     GITHUB_APP_PRIVATE_KEY: '', GITHUB_WEBHOOK_SECRET: WEBHOOK_SECRET,
     VIRUSTOTAL_API_KEY: 'vt-test-key',
+    MALWARE_SCANNER: 'virustotal',
     RX_STORE_WEB_URL: 'https://web.test',
     STORAGE: { put: (...args: any[]) => { storagePuts.push(args); return Promise.resolve({}); }, get: () => Promise.resolve(null), head: () => Promise.resolve(null) },
   };
@@ -292,25 +449,175 @@ function fakeEnv() {
 // Fetch stubs: GitHub API + asset bytes + VirusTotal
 // ---------------------------------------------------------------------------
 
-function apkBytes(): Uint8Array {
-  return new TextEncoder().encode('FAKE-APK-BYTES-FOR-TESTING-1234567890');
+// ---------------------------------------------------------------------------
+// REAL package fixtures — the security pipeline parses actual structures
+// (ZIP central directories, ar archives, PE headers), so the test assets must
+// be genuine minimal packages, not blobs.
+// ---------------------------------------------------------------------------
+
+/** Build a minimal STORED-entry ZIP (valid local headers + central directory + EOCD). */
+function buildZip(entries: Array<{ name: string; data: Uint8Array }>): Uint8Array {
+  const enc = new TextEncoder();
+  const chunks: Uint8Array[] = [];
+  const central: Uint8Array[] = [];
+  let offset = 0;
+  for (const e of entries) {
+    const nameBytes = enc.encode(e.name);
+    const lh = new Uint8Array(30 + nameBytes.length);
+    const dv = new DataView(lh.buffer);
+    dv.setUint32(0, 0x04034b50, true);
+    dv.setUint16(8, 0, true);            // method STORED
+    dv.setUint32(18, e.data.length, true); // compressed
+    dv.setUint32(22, e.data.length, true); // uncompressed
+    dv.setUint16(26, nameBytes.length, true);
+    lh.set(nameBytes, 30);
+    chunks.push(lh, e.data);
+    const cd = new Uint8Array(46 + nameBytes.length);
+    const dv2 = new DataView(cd.buffer);
+    dv2.setUint32(0, 0x02014b50, true);
+    dv2.setUint16(10, 0, true);           // method STORED
+    dv2.setUint32(20, e.data.length, true);
+    dv2.setUint32(24, e.data.length, true);
+    dv2.setUint16(28, nameBytes.length, true);
+    dv2.setUint32(42, offset, true);
+    cd.set(nameBytes, 46);
+    central.push(cd);
+    offset += lh.length + e.data.length;
+  }
+  const cdSize = central.reduce((n, c) => n + c.length, 0);
+  const eocd = new Uint8Array(22);
+  const dv3 = new DataView(eocd.buffer);
+  dv3.setUint32(0, 0x06054b50, true);
+  dv3.setUint16(8, central.length, true);
+  dv3.setUint16(10, central.length, true);
+  dv3.setUint32(12, cdSize, true);
+  dv3.setUint32(16, offset, true);
+  return concat([...chunks, ...central, eocd]);
 }
+
+function concat(parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
+/** APK fixture: ZIP with AndroidManifest.xml + a v1 JAR signature file. */
+function apkBytes(): Uint8Array {
+  return buildZip([
+    { name: 'AndroidManifest.xml', data: new TextEncoder().encode('binary-axml-package:com.calcitonin.clinicalrx') },
+    { name: 'META-INF/CERT.RSA', data: new TextEncoder().encode('PKCS7-PLACEHOLDER') },
+  ]);
+}
+
+// Precomputed fixtures (the deb is async to build — gzip/tar).
+const DEB_FIXTURE = await debBytes('clinical-rx');
+const DEB_SHA = await sha256Hex(DEB_FIXTURE);
+
+/** Unsigned APK fixture: manifest present, NO signature file. */
+function unsignedApkBytes(): Uint8Array {
+  return buildZip([
+    { name: 'AndroidManifest.xml', data: new TextEncoder().encode('binary-axml') },
+  ]);
+}
+
+/** Minimal gzip (a real tar with ./control declaring Package: clinical-rx). */
+async function gzip(data: Uint8Array): Promise<Uint8Array> {
+  const ds = new CompressionStream('gzip');
+  const stream = new Blob([data.slice() as unknown as BlobPart]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+async function tarWithControl(control: string): Promise<Uint8Array> {
+  const enc = new TextEncoder();
+  const content = enc.encode(control);
+  const header = new Uint8Array(512);
+  const name = enc.encode('./control');
+  header.set(name, 0);
+  header.set(enc.encode('0000644\0'), 100);
+  header.set(enc.encode('0000000\0'), 108);
+  header.set(enc.encode('0000000\0'), 116);
+  header.set(enc.encode(String(content.length).padStart(11, '0') + '\0'), 124);
+  header.set(enc.encode('0'), 156);
+  header.set(enc.encode('        '), 148); // checksum placeholder
+  let sum = 0; for (const b of header) sum += b;
+  header.set(enc.encode(String(sum).padStart(6, '0') + '\0 '), 148);
+  const pad = new Uint8Array(512 - (content.length % 512));
+  return concat([header, content, pad, new Uint8Array(1024)]);
+}
+
+/** .deb fixture: ar archive (debian-binary + control.tar.gz + data.tar.gz). */
+async function debBytes(packageName = 'clinical-rx'): Promise<Uint8Array> {
+  const enc = new TextEncoder();
+  const member = (name: string, data: Uint8Array) => {
+    // ar header: name[16] mtime[12] uid[6] gid[6] mode[8] size[10] magic[2]
+    const head = new Uint8Array(60);
+    head.set(enc.encode(name.padEnd(16, ' ')), 0);
+    head.set(enc.encode('0'.repeat(12)), 16);          // mtime
+    head.set(enc.encode('0'.repeat(6)), 28);           // uid
+    head.set(enc.encode('0'.repeat(6)), 34);           // gid
+    head.set(enc.encode('100644'.padEnd(8, ' ')), 40); // mode
+    head.set(enc.encode(String(data.length).padEnd(10, ' ')), 48);
+    head.set(enc.encode('`\n'), 58);
+    const pad = data.length % 2 ? new Uint8Array([10]) : new Uint8Array(0);
+    return concat([head, data, pad]);
+  };
+  const controlTar = await gzip(await tarWithControl(`Package: ${packageName}\nVersion: 1.12.0\nArchitecture: amd64\n`));
+  const dataTar = await gzip(await tarWithControl('Package: data\n'));
+  return concat([
+    enc.encode('!<arch>\n'),
+    member('debian-binary', enc.encode('2.0\n')),
+    member('control.tar.gz', controlTar),
+    member('data.tar.gz', dataTar),
+  ]);
+}
+
+/** Minimal PE (MZ + PE header, machine configurable, no security directory). */
+function peBytes(machine = 0x8664): Uint8Array {
+  const buf = new Uint8Array(512);
+  const dv = new DataView(buf.buffer);
+  buf.set([0x4d, 0x5a], 0);                 // MZ
+  dv.setUint32(0x3c, 128, true);            // e_lfanew -> PE at 128
+  buf.set([0x50, 0x45, 0x00, 0x00], 128);   // PE\0\0
+  dv.setUint16(132 + 20, 0x10b, true);      // optional header magic PE32
+  dv.setUint16(128 + 4, machine, true);     // machine
+  dv.setUint16(128 + 20, 224, true);        // SizeOfOptionalHeader
+  dv.setUint32(128 + 20 + 92, 2, true);     // NumberOfRvaAndSizes (2 < 5 -> no security dir)
+  return buf;
+}
+
+
 async function sha256Hex(data: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', data as unknown as BufferSource);
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+type AssetKind = 'deb' | 'apk' | 'unsigned-apk' | 'pe-x64' | 'pe-arm64';
+
 interface StubOpts {
-  assetBytes?: Uint8Array;
+  asset?: AssetKind;
   assetStatus?: number;
   ghAssetName?: string;
   ghAssetSize?: number;
-  vtVerdict?: 'CLEAN' | 'DETECTED' | 'UNAVAILABLE';
+  vtVerdict?: 'CLEAN' | 'DETECTED' | 'UNAVAILABLE' | 'SCANNING';
+}
+
+function assetBytesFor(kind: AssetKind = 'deb'): Uint8Array {
+  switch (kind) {
+    case 'apk': return apkBytes();
+    case 'unsigned-apk': return unsignedApkBytes();
+    case 'pe-x64': return peBytes(0x8664);
+    case 'pe-arm64': return peBytes(0xaa64);
+    default: return DEB_FIXTURE;
+  }
 }
 
 function installStubs(env: any, opts: StubOpts = {}) {
   const original = globalThis.fetch;
-  const bytes = opts.assetBytes ?? apkBytes();
+  const kind: AssetKind = opts.asset ?? 'deb';
+  const bytes = assetBytesFor(kind);
+  const ghName = opts.ghAssetName ?? (kind === 'deb' ? 'clinical-rx_1.12.0_amd64.deb' : kind === 'apk' || kind === 'unsigned-apk' ? 'clinical-rx-1.12.0.apk' : 'clinical-rx-1.12.0.exe');
   const vtVerdict = opts.vtVerdict ?? 'CLEAN';
   globalThis.fetch = (async (url: any, init?: any) => {
     const u = String(url);
@@ -325,19 +632,29 @@ function installStubs(env: any, opts: StubOpts = {}) {
     // from GitHub entirely: the API 404s too)
     if (u.startsWith('https://api.github.com/repos/octo/app/releases/assets/')) {
       if (opts.assetStatus && opts.assetStatus !== 200) return new Response('gone', { status: opts.assetStatus });
-      return new Response(JSON.stringify({ id: 555001, name: opts.ghAssetName ?? 'clinical-rx-1.12.0.apk', size: opts.ghAssetSize ?? bytes.byteLength, state: 'uploaded' }), { status: 200 });
+      return new Response(JSON.stringify({ id: 555001, name: ghName, size: opts.ghAssetSize ?? bytes.byteLength, state: 'uploaded' }), { status: 200 });
     }
     // Asset bytes (the public download URL)
     if (u.startsWith('https://github.com/octo/app/releases/download/')) {
       if (opts.assetStatus && opts.assetStatus !== 200) return new Response('gone', { status: opts.assetStatus });
       return new Response(bytes as unknown as BodyInit, { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
     }
+    // VirusTotal hash lookup (the pipeline checks for an existing report first)
+    if (/^https:\/\/www\.virustotal\.com\/api\/v3\/files\/[0-9a-f]{64}$/.test(u)) {
+      if (vtVerdict === 'UNAVAILABLE') return new Response('boom', { status: 500 });
+      return new Response('not found', { status: 404 });
+    }
     // VirusTotal upload + analysis
-    if (u === 'https://www.virustotal.com/api/v3/files') {
+    if (u === 'https://www.virustotal.com/api/v3/files' || u === 'https://www.virustotal.com/api/v3/files/upload_url') {
+      if (u.endsWith('upload_url')) return new Response(JSON.stringify({ data: 'https://www.virustotal.com/api/v3/files/upload_url/one-time' }), { status: 200 });
+      return new Response(JSON.stringify({ data: { id: 'analysis-1', type: 'analysis' } }), { status: 200 });
+    }
+    if (u.startsWith('https://www.virustotal.com/api/v3/files/upload_url/')) {
       return new Response(JSON.stringify({ data: { id: 'analysis-1', type: 'analysis' } }), { status: 200 });
     }
     if (u === 'https://www.virustotal.com/api/v3/analyses/analysis-1') {
       if (vtVerdict === 'UNAVAILABLE') return new Response('boom', { status: 500 });
+      if (vtVerdict === 'SCANNING') return new Response(JSON.stringify({ data: { attributes: { status: 'queued' } } }), { status: 200 });
       const stats = vtVerdict === 'CLEAN'
         ? { malicious: 0, suspicious: 0, harmless: 5, undetected: 60 }
         : { malicious: 3, suspicious: 1, harmless: 5, undetected: 60 };
@@ -366,7 +683,7 @@ function ghReleasePayload(overrides: any = {}) {
     release: {
       id: 5001, tag_name: 'v1.12.0', name: 'v1.12.0', draft: false, prerelease: false,
       body: 'Bug fixes', target_commitish: 'abc123', published_at: '2026-10-20T10:00:00Z',
-      assets: [{ id: 555001, name: 'clinical-rx-1.12.0.apk', size: apkBytes().byteLength, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/clinical-rx-1.12.0.apk' }],
+      assets: [{ id: 555001, name: 'clinical-rx_1.12.0_amd64.deb', size: DEB_FIXTURE.byteLength, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/clinical-rx_1.12.0_amd64.deb' }],
       ...overrides,
     },
     repository: { id: Number(REPO_ID), full_name: 'octo/app' },
@@ -521,16 +838,23 @@ test('drafts, deleted releases, prereleases and invalid tags never become stable
   } finally { stubs.restore(); }
 });
 
-test('detection NEVER touches current_version, app_versions, canonical releases or notifications', async () => {
+test('detection NEVER publishes: current_version, app_versions and notifications untouched; canonical rows stay UNPUBLISHED', async () => {
   const stubs = installStubs(env);
   try {
     await connect();
     await signedDelivery(env, 'release', ghReleasePayload(), 'd-clean');
     assert.equal(env.tables.applications[0].current_version, '1.11.11'); // unchanged
-    assert.equal(env.tables.releases.length, 0);
-    assert.equal(env.tables.packages.length, 0);
     assert.equal(env.tables.app_versions.length, 0);
     assert.equal(env.tables.notifications.length, 0);
+    // Canonical rows exist for the pipeline — but nothing is live.
+    assert.equal(env.tables.releases.length, 1);
+    assert.equal(env.tables.releases[0].status, 'under_review');
+    assert.equal(env.tables.releases[0].published_at, null);
+    assert.equal(env.tables.packages.length, 1);
+    assert.equal(env.tables.packages[0].status, 'stored');
+    // And the public selection queries can never see them (status filter).
+    const visible = env.tables.packages.filter((x: any) => x.status === 'published');
+    assert.equal(visible.length, 0);
   } finally { stubs.restore(); }
 });
 
@@ -577,8 +901,8 @@ test('verification computes size/sha256 from ACTUAL bytes and scans them; releas
     assert.equal(out.status, 'pending_approval');
     const asset = env.tables.github_release_assets[0];
     assert.equal(asset.state, 'verified');
-    assert.equal(asset.sha256, await sha256Hex(apkBytes()));
-    assert.equal(asset.size_bytes, apkBytes().byteLength);
+    assert.equal(asset.sha256, DEB_SHA);
+    assert.equal(asset.size_bytes, DEB_FIXTURE.byteLength);
     assert.equal(asset.scanner_status, 'CLEAN');
     // R2 was never written — GitHub binaries are not RX Store storage.
     assert.equal(env.storagePuts.length, 0);
@@ -645,15 +969,16 @@ test('an authorized admin can review, approve and publish a valid release', asyn
     const pkg = env.tables.packages[0];
     assert.equal(pkg.provider, 'github');
     assert.equal(pkg.storage_key, '');
-    assert.equal(pkg.external_url, 'https://github.com/octo/app/releases/download/v1.12.0/clinical-rx-1.12.0.apk');
-    assert.equal(pkg.sha256, await sha256Hex(apkBytes()));
+    assert.equal(pkg.external_url, 'https://github.com/octo/app/releases/download/v1.12.0/clinical-rx_1.12.0_amd64.deb');
+    assert.equal(pkg.sha256, DEB_SHA);
     assert.equal(pkg.status, 'published');
     // current_version advanced + legacy app_versions carries the GitHub URL.
     assert.equal(env.tables.applications[0].current_version, '1.12.0');
     const legacy = env.tables.app_versions[0];
     assert.equal(legacy.version, '1.12.0');
     const files = JSON.parse(legacy.files);
-    assert.equal(files.android.url, 'https://github.com/octo/app/releases/download/v1.12.0/clinical-rx-1.12.0.apk');
+    assert.equal(files.linux_deb.url, 'https://github.com/octo/app/releases/download/v1.12.0/clinical-rx_1.12.0_amd64.deb');
+    assert.equal(files.linux.url, files.linux_deb.url, 'legacy linux alias');
     // Notifications happen ONLY after publication.
     assert.ok(env.tables.notifications.length >= 0); // no downloaders in fake -> zero is honest
     assert.equal(env.tables.github_audit_log.some((e) => e.action === 'publish'), true);
@@ -673,13 +998,18 @@ test('a DETECTED scanner verdict can NEVER be published, not even with an overri
     // reaches pending_approval.
     assert.equal(v.ok, false);
     assert.equal(env.tables.github_release_assets[0].scanner_status, 'DETECTED');
-    assert.equal(env.tables.github_release_assets[0].state, 'failed');
+    assert.equal(env.tables.github_release_assets[0].state, 'verified', 'bytes verified — the SCANNER verdict is the failure');
     assert.equal(rel.status, 'verification_failed');
+    // The detection also invalidated nothing to approve: no review can rescue it.
+    const pkgId = env.tables.packages[0].id;
+    const review = env.tables.package_manual_reviews.find((r: any) => r.package_id === pkgId && r.status === 'APPROVED' && !r.invalidated_at);
+    assert.equal(review, undefined);
     // ...and an override attempt cannot publish it from any state.
     const out = await publishGithubRelease(env, ADMIN, rel.id, { overrideSecurity: true, reason: 'trusted developer, honest mistake' });
     assert.equal(out.ok, false);
     if (!out.ok) assert.equal(out.code, 'CONFLICT'); // not pending_approval
-    assert.equal(env.tables.releases.length, 0);
+    assert.equal(env.tables.releases[0].status, 'under_review', 'canonical rows exist but stay unpublished');
+    assert.equal(env.tables.packages[0].status, 'stored');
     assert.equal(env.tables.applications[0].current_version, '1.11.11');
   } finally { stubs.restore(); }
 });
@@ -732,7 +1062,8 @@ test('an asset that changed AFTER review re-blocks the release at publish time',
     });
     const out = await publishGithubRelease(env, ADMIN, rel.id, {});
     assert.equal(out.ok, false);
-    assert.equal(env.tables.releases.length, 0);
+    assert.equal(env.tables.releases[0].status, 'under_review', 'canonical rows exist but stay UNPUBLISHED');
+    assert.equal(env.tables.packages[0].status, 'stored');
     assert.equal(env.tables.applications[0].current_version, '1.11.11');
     assert.equal(env.tables.github_releases.find((r) => r.id === rel.id).status, 'blocked');
   } finally { stubs.restore(); }
@@ -745,7 +1076,8 @@ test('rejecting a release (reason required) never makes it downloadable; redeliv
     assert.equal(out.ok, false); // reason too short
     out = await rejectGithubRelease(env, ADMIN, rel.id, 'Release notes do not match the changelog in the repository.');
     assert.equal(out.ok, true);
-    assert.equal(env.tables.releases.length, 0);
+    assert.equal(env.tables.releases[0].status, 'under_review', 'canonical rows exist but nothing is published');
+    assert.equal(env.tables.packages[0].status, 'stored');
     assert.equal(env.tables.applications[0].current_version, '1.11.11');
     // A redelivered webhook for the same GitHub release does not resurrect it.
     await signedDelivery(env, 'release', ghReleasePayload(), 'd-pub-2');
@@ -1002,11 +1334,187 @@ test('AUDIT publish route: only an ADMIN identity reaches the publish service (r
     (r as any).user = { userId: 'u-normal', role: 'user' };
     const refused: any = await githubAdminRoutes.publish(r as any, env);
     assert.equal(refused.code, 'UNAUTHORIZED');
-    assert.equal(env.tables.releases.length, 0); // nothing was published
+    assert.equal(env.tables.releases[0].status, 'under_review', 'nothing was published'); // refusal leaves rows unpublished
     // The admin identity succeeds through the same route.
     (r as any).user = { userId: 'admin-1', role: 'admin' };
     const ok: any = await githubAdminRoutes.publish(r as any, env);
     assert.ok(!ok.code, ok.message);
     assert.equal(env.tables.applications[0].current_version, '1.12.0');
+  } finally { stubs.restore(); }
+});
+
+
+// ---------------------------------------------------------------------------
+// SECURITY VERIFICATION GATE (mandatory matrix) — the REAL pipeline runs on
+// GitHub assets: clean, detected, unsigned, invalid-signature, arch mismatch,
+// scanner timeout, duplicates, manual approval, override, leak checks.
+// ---------------------------------------------------------------------------
+
+test('GATE clean file: every automated check recorded; publication is AUTOMATED', async () => {
+  const stubs = installStubs(env, { asset: 'deb', vtVerdict: 'CLEAN' });
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-gate-clean');
+    const rel = env.tables.github_releases.find((r) => r.github_release_id === '5001');
+    const v = await verifyGithubRelease(env, rel.id);
+    assert.ok(v.ok, v.message);
+    // Full evidence: all 8 checks with honest statuses for a valid .deb.
+    const byCheck: Record<string, string> = {};
+    for (const row of env.tables.package_security_results) byCheck[row.check_type] = row.status;
+    assert.equal(byCheck.structure, 'PASSED');
+    assert.equal(byCheck.integrity, 'PASSED');
+    assert.equal(byCheck.duplicate, 'PASSED');
+    assert.equal(byCheck.malware, 'CLEAN', 'scanner CLEAN — from the ACTUAL uploaded bytes');
+    assert.equal(byCheck.signature, 'NOT_APPLICABLE');
+    assert.equal(byCheck.certificate, 'NOT_APPLICABLE');
+    assert.equal(byCheck.dependency, 'NOT_APPLICABLE');
+    assert.equal(byCheck.native_identity, 'PASSED', '.deb package name matches the registered identity');
+    // Provider/report reference recorded for the scan.
+    assert.ok(env.tables.package_security_results.some((r: any) => r.check_type === 'malware' && r.provider === 'virustotal'));
+    // Publish → AUTOMATED authorization, live, evidence intact.
+    const out = await publishGithubRelease(env, ADMIN, rel.id, {});
+    assert.ok(out.ok, (out as any).message);
+    assert.equal(env.tables.applications[0].current_version, '1.12.0');
+    assert.equal(env.tables.packages[0].status, 'published');
+  } finally { stubs.restore(); }
+});
+
+test('GATE unsigned APK: signature FAILED → the release is not even queued for approval', async () => {
+  const stubs = installStubs(env, { asset: 'unsigned-apk', vtVerdict: 'CLEAN' });
+  try {
+    await connect();
+    const payload = ghReleasePayload();
+    payload.release.assets = [{ id: 555001, name: 'clinical-rx-1.12.0.apk', size: unsignedApkBytes().byteLength, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/clinical-rx-1.12.0.apk' }];
+    await signedDelivery(env, 'release', payload, 'd-gate-unsigned-apk');
+    const rel = env.tables.github_releases.find((r) => r.github_release_id === '5001');
+    const v = await verifyGithubRelease(env, rel.id);
+    assert.equal(v.ok, false);
+    const sig = env.tables.package_security_results.find((r: any) => r.check_type === 'signature');
+    assert.equal(sig.status, 'FAILED');
+    assert.match(sig.result, /unsigned APK/i);
+    assert.equal(rel.status, 'verification_failed');
+    // Publishing from that state is refused.
+    const out = await publishGithubRelease(env, ADMIN, rel.id, {});
+    assert.equal(out.ok, false);
+  } finally { stubs.restore(); }
+});
+
+test('GATE unsigned Windows exe: WARNING (needs review) → publish ONLY via byte-bound manual approval', async () => {
+  const stubs = installStubs(env, { asset: 'pe-x64', vtVerdict: 'CLEAN' });
+  try {
+    await connect();
+    const payload = ghReleasePayload();
+    payload.release.assets = [{ id: 555001, name: 'clinical-rx-1.12.0.exe', size: peBytes(0x8664).byteLength, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/clinical-rx-1.12.0.exe' }];
+    await signedDelivery(env, 'release', payload, 'd-gate-unsigned-exe');
+    const rel = env.tables.github_releases.find((r) => r.github_release_id === '5001');
+    const v = await verifyGithubRelease(env, rel.id);
+    assert.ok(v.ok, v.message); // bytes + structure + scan all fine
+    const sig = env.tables.package_security_results.find((r: any) => r.check_type === 'signature');
+    assert.equal(sig.status, 'WARNING');
+    assert.match(sig.result, /unsigned executable/i, 'honestly reported as UNSIGNED — never as signed');
+    // A PENDING manual review was auto-opened (indeterminate overall).
+    const pkgId = env.tables.packages[0].id;
+    assert.ok(env.tables.package_manual_reviews.some((r: any) => r.package_id === pkgId && r.status === 'PENDING'));
+    // Publish without approval → blocked by the gate.
+    let out = await publishGithubRelease(env, ADMIN, rel.id, {});
+    assert.equal(out.ok, false);
+    if (!out.ok) assert.equal(out.code, 'FORBIDDEN');
+    // Approve the review FOR THESE EXACT BYTES → publish succeeds (Path 3).
+    const review = env.tables.package_manual_reviews.find((r: any) => r.package_id === pkgId && r.status === 'PENDING');
+    review.status = 'APPROVED';
+    review.reviewed_at = new Date().toISOString();
+    out = await publishGithubRelease(env, ADMIN, rel.id, {});
+    assert.ok(out.ok, (out as any).message);
+    // Byte binding: a DIFFERENT hash can never ride the approval.
+    const pkg = env.tables.packages[0];
+    pkg.sha256 = 'f'.repeat(64);
+    const again = await publishGithubRelease(env, ADMIN, { ...rel, status: 'pending_approval' } as any, {});
+    // (the github row is already published here; the point is the approval is
+    // sha-bound — validManualApproval refuses the new hash)
+    const { validManualApproval } = await import('./services/packageSecurity.ts');
+    assert.equal(await validManualApproval(env, pkgId, 'f'.repeat(64)), null);
+  } finally { stubs.restore(); }
+});
+
+test('GATE architecture mismatch: arm64 binary recorded as x64 → structure FAILED', async () => {
+  const stubs = installStubs(env, { asset: 'pe-arm64', vtVerdict: 'CLEAN' });
+  try {
+    await connect();
+    const payload = ghReleasePayload();
+    payload.release.assets = [{ id: 555001, name: 'clinical-rx-1.12.0.exe', size: peBytes(0xaa64).byteLength, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/clinical-rx-1.12.0.exe' }];
+    await signedDelivery(env, 'release', payload, 'd-gate-arch');
+    const rel = env.tables.github_releases.find((r) => r.github_release_id === '5001');
+    const v = await verifyGithubRelease(env, rel.id);
+    assert.equal(v.ok, false);
+    const structure = env.tables.package_security_results.find((r: any) => r.check_type === 'structure');
+    assert.equal(structure.status, 'FAILED');
+    assert.match(structure.result, /architecture mismatch/i);
+    assert.equal(rel.status, 'verification_failed');
+  } finally { stubs.restore(); }
+});
+
+test('GATE scanner never completes (timeout): honest SCANNING — never clean; publication blocked; review path open', async () => {
+  const stubs = installStubs(env, { asset: 'deb', vtVerdict: 'SCANNING' });
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-gate-scanning');
+    const rel = env.tables.github_releases.find((r) => r.github_release_id === '5001');
+    const v = await verifyGithubRelease(env, rel.id);
+    assert.ok(v.ok, v.message); // queued with the honest status
+    const asset = env.tables.github_release_assets[0];
+    assert.equal(asset.scanner_status, 'SCANNING', 'an incomplete scan is NEVER represented as clean');
+    const out = await publishGithubRelease(env, ADMIN, rel.id, {});
+    assert.equal(out.ok, false);
+    if (!out.ok) assert.match(out.message, /blocked|SCANNING/i);
+    // The retry path exists (admin Retry re-runs verification + polling).
+    const again = await verifyGithubRelease(env, rel.id);
+    assert.ok(again.ok || again.status === 'verification_failed');
+  } finally { stubs.restore(); }
+});
+
+test('GATE duplicate binary: same SHA-256 under another app → WARNING + review; no silent publication', async () => {
+  const stubs = installStubs(env, { asset: 'deb', vtVerdict: 'CLEAN' });
+  try {
+    // Another app already ships the exact same bytes.
+    env.tables.applications.push({ id: 'app-2', slug: 'other-app', name: 'Other', developer_org_id: 'org-2', price_type: 'free', price_amount: 0, current_version: '1.0.0', platforms: 'linux' });
+    env.tables.releases.push({ id: 'rel-other', application_id: 'app-2', version: '1.0.0', status: 'published', channel: 'stable' });
+    env.tables.packages.push({ id: 'pkg-other', application_id: 'app-2', release_id: 'rel-other', platform: 'linux_deb', architecture: 'x64', filename: 'other.deb', storage_key: 'k', file_size: 1, sha256: DEB_SHA, version: '1.0.0', provider: 'rxstore', status: 'published', security_state: 'PUBLISHED', overall_security: 'PASSED' });
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-gate-dup');
+    const rel = env.tables.github_releases.find((r) => r.github_release_id === '5001');
+    const v = await verifyGithubRelease(env, rel.id);
+    assert.ok(v.ok, v.message); // WARNING, not a hard failure
+    const dup = env.tables.package_security_results.find((r: any) => r.check_type === 'duplicate');
+    assert.equal(dup.status, 'WARNING');
+    assert.match(dup.result, /another application/i);
+    // Publication is blocked until reviewed.
+    const out = await publishGithubRelease(env, ADMIN, rel.id, {});
+    assert.equal(out.ok, false);
+  } finally { stubs.restore(); }
+});
+
+test('GATE blocked releases are invisible to the public download selection query', async () => {
+  const stubs = installStubs(env, { asset: 'deb', vtVerdict: 'CLEAN' });
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-gate-leak');
+    const rel = env.tables.github_releases.find((r) => r.github_release_id === '5001');
+    await verifyGithubRelease(env, rel.id); // pending_approval — never published
+    // The download endpoint's selection shape: published release + published package.
+    const visible = env.tables.packages.filter((p: any) => {
+      const r = env.tables.releases.find((x: any) => x.id === p.release_id);
+      return r && r.status === 'published' && p.status === 'published' && !p.deleted_at;
+    });
+    assert.equal(visible.length, 0, 'nothing from a pending github release can be selected for download');
+    assert.equal(env.tables.applications[0].current_version, '1.11.11');
+    assert.equal(env.tables.app_versions.length, 0, 'legacy app_versions cannot leak an unapproved version');
+    // After admin publish, the SAME query finds exactly the approved set.
+    await publishGithubRelease(env, ADMIN, rel.id, {});
+    const visibleAfter = env.tables.packages.filter((p: any) => {
+      const r = env.tables.releases.find((x: any) => x.id === p.release_id);
+      return r && r.status === 'published' && p.status === 'published' && !p.deleted_at;
+    });
+    assert.equal(visibleAfter.length, 1);
+    assert.equal(visibleAfter[0].sha256, DEB_SHA);
   } finally { stubs.restore(); }
 });

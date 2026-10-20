@@ -261,6 +261,40 @@ export default function GithubReleasesPanel() {
                       </div>
                     </div>
 
+                    {(rel.packages || []).length > 0 && (
+                      <div>
+                        <p className="text-xs text-rx-gray-medium uppercase tracking-wide mb-2">Security pipeline evidence (per package)</p>
+                        <div className="space-y-3">
+                          {(rel.packages || []).map((p: any) => (
+                            <div key={p.id} className="p-3 rounded-xl bg-rx-dark border border-white/5">
+                              <div className="flex flex-wrap items-center gap-2 mb-2">
+                                <p className="text-xs text-white/90 font-medium truncate">{p.filename}</p>
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-rx-gray-medium">{p.platform}/{p.architecture}</span>
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded ${p.overall_security === 'PASSED' ? 'bg-green-500/20 text-green-300' : p.overall_security === 'FAILED' ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300'}`}>{p.overall_security}</span>
+                                {p.signature_status && p.signature_status !== 'pending' && (
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded ${p.signature_status === 'SIGNED' ? 'bg-green-500/20 text-green-300' : p.signature_status === 'UNSIGNED' ? 'bg-amber-500/20 text-amber-300' : 'bg-white/10 text-rx-gray-medium'}`} title="Signature status">signature: {p.signature_status}</span>
+                                )}
+                                {p.manualReview && (
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded ${p.manualReview.status === 'APPROVED' ? 'bg-green-500/20 text-green-300' : p.manualReview.invalidated_at ? 'bg-white/10 text-rx-gray-medium' : 'bg-rx-yellow/20 text-rx-yellow'}`} title={p.manualReview.reason}>
+                                    manual review: {p.manualReview.invalidated_at ? `${p.manualReview.status} (invalidated)` : p.manualReview.status}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                                {(p.checks || []).map((c: any) => (
+                                  <div key={c.check_type} className="px-2 py-1 rounded-lg bg-white/[0.03] border border-white/5" title={`${c.result}${c.details ? ` — ${c.details}` : ''}`}>
+                                    <p className="text-[10px] text-rx-gray-medium">{c.check_type}</p>
+                                    <p className={`text-[11px] font-medium ${c.status === 'PASSED' || c.status === 'CLEAN' ? 'text-green-300' : c.status === 'FAILED' || c.status === 'DETECTED' ? 'text-red-300' : c.status === 'NOT_APPLICABLE' ? 'text-rx-gray-medium' : 'text-amber-300'}`}>{c.status}</p>
+                                  </div>
+                                ))}
+                                {(p.checks || []).length === 0 && <p className="text-[11px] text-rx-gray-medium">No checks recorded yet — run verification.</p>}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     <div className="flex flex-wrap gap-2 border-t border-white/5 pt-4">
                       {rel.status === 'pending_approval' && (
                         <>

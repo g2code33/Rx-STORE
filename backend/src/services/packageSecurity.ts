@@ -39,6 +39,7 @@ export const CHECK_ORDER = [
 export type CheckType = (typeof CHECK_ORDER)[number];
 
 import { sha256R2Object, streamToMultipart } from './streaming.ts';
+import { validateAssetUrl } from './github.ts';
 
 /** Malware scan statuses (spec §5). */
 /**
@@ -114,6 +115,102 @@ export async function loadPackageBytes(env: any, storageKey: string): Promise<Pa
   } catch {
     return null;
   }
+}
+
+/**
+ * Load a GITHUB-HOSTED external asset into the same windowed PackageBytes
+ * shape the R2 loader produces, in ONE validated streaming pass:
+ *   - every redirect hop is re-validated against the GitHub asset allowlist,
+ *   - the full stream is hashed (SHA-256) and counted — size and hash ALWAYS
+ *     come from the actual bytes, never from GitHub metadata,
+ *   - the first WINDOW bytes and the last WINDOW bytes are captured for the
+ *     structure/signature/identity checks (ZIP central directory + APK
+ *     Signing Block live at the tail),
+ *   - files <= FULL_INSPECT_LIMIT are buffered whole (full !== null),
+ *   - nothing is persisted anywhere — bytes exist only for this inspection.
+ */
+export interface ExternalPackageBytes extends PackageBytes {
+  sha256: string;
+  finalUrl: string;
+}
+
+export async function loadExternalPackageBytes(url: string, opts: { maxBytes: number; timeoutMs?: number }): Promise<ExternalPackageBytes | null> {
+  let current = url;
+  let resp: Response | null = null;
+  for (let hop = 0; hop <= 3; hop++) {
+    const check = validateAssetUrl(current);
+    if (!check.ok) return null;
+    resp = await fetch(current, {
+      redirect: 'manual',
+      headers: { 'User-Agent': 'rx-store-github', Accept: 'application/octet-stream' },
+      signal: AbortSignal.timeout(opts.timeoutMs || 60_000),
+    });
+    if (resp.status >= 300 && resp.status < 400) {
+      const loc = resp.headers.get('Location');
+      if (!loc) return null;
+      current = new URL(loc, current).toString();
+      continue;
+    }
+    if (!resp.ok || !resp.body) return null;
+    break;
+  }
+  if (!resp || !resp.body) return null;
+
+  const DS = (globalThis as any).crypto?.DigestStream;
+  const hash = DS ? null : await import('node:crypto').then((m) => m.createHash('sha256')).catch(() => null);
+  if (!DS && !hash) return null;
+  const ds = DS ? new DS('SHA-256') : null;
+  const writer = ds ? ds.getWriter() : null;
+
+  // Windows for the checks; `all` buffers the WHOLE file only while it is
+  // within the full-inspect budget (mirrors the R2 loader's 64MB rule), so a
+  // mid-size APK's ZIP central directory is genuinely inspectable.
+  const head: number[] = [];
+  const tail: number[] = []; // ring buffer of the last WINDOW bytes
+  let all: number[] | null = []; // whole-file buffer while size <= FULL_INSPECT_LIMIT
+  let size = 0;
+  const reader = resp.body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > opts.maxBytes) return null; // hard cap — caller reports the size violation
+      if (writer) await writer.write(value);
+      else if (hash) hash.update(value);
+      for (let i = 0; i < value.length; i++) {
+        const b = value[i];
+        if (head.length < WINDOW) head.push(b);
+        if (tail.length >= WINDOW) tail.shift();
+        tail.push(b);
+        if (all) {
+          all.push(b);
+          if (all.length > FULL_INSPECT_LIMIT) all = null; // over budget — windows only
+        }
+      }
+    }
+  } finally {
+    try { await reader.cancel(); } catch {}
+    try { if (writer) await writer.close(); } catch {}
+  }
+
+  let sha256: string | null = null;
+  if (ds) {
+    const buf: ArrayBuffer = await ds.digest; // Workers contract: PROMISE
+    sha256 = Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  } else if (hash) {
+    sha256 = String(hash.digest('hex'));
+  }
+  if (!sha256) return null;
+
+  return {
+    size,
+    sha256,
+    finalUrl: current,
+    head: new Uint8Array(head), headOffset: 0,
+    tail: new Uint8Array(tail), tailOffset: size - tail.length,
+    full: all ? new Uint8Array(all) : null,
+  };
 }
 
 /** Read [offset, offset+length) if it falls inside a loaded window. */
@@ -731,8 +828,62 @@ async function vtUploadObject(env: any, input: {
   return { analysisId: String(analysisId) };
 }
 
+/**
+ * Stream-upload EXTERNAL (GitHub-hosted) asset bytes to VirusTotal. Mirrors
+ * vtUploadObject: the bytes are fetched through the validated, redirect-checked
+ * URL and piped straight into the multipart upload — never buffered whole,
+ * never persisted in RX Store storage.
+ */
+async function vtUploadExternal(env: any, input: {
+  url: string; filename: string; size: number; sha256: string;
+}): Promise<{ analysisId: string } | { error: string; status?: number }> {
+  let current = input.url;
+  let resp: Response | null = null;
+  for (let hop = 0; hop <= 3; hop++) {
+    const check = validateAssetUrl(current);
+    if (!check.ok) return { error: `asset URL rejected: ${check.reason}` };
+    resp = await fetch(current, { redirect: 'manual', headers: { 'User-Agent': 'rx-store-github' }, signal: AbortSignal.timeout(120000) });
+    if (resp.status >= 300 && resp.status < 400) {
+      const loc = resp.headers.get('Location');
+      if (!loc) return { error: `asset redirect without Location (${resp.status})` };
+      current = new URL(loc, current).toString();
+      continue;
+    }
+    break;
+  }
+  if (!resp || !resp.ok || !resp.body) return { error: `asset fetch for scanning failed (${resp ? resp.status : 'no response'})` };
+  const mp = streamToMultipart(resp.body as ReadableStream<Uint8Array>, { filename: input.filename, fileSize: input.size });
+  let uploadUrl = 'https://www.virustotal.com/api/v3/files';
+  if (input.size >= VT_NORMAL_UPLOAD_LIMIT) {
+    let urlRes: Response;
+    try {
+      urlRes = await fetch('https://www.virustotal.com/api/v3/files/upload_url', {
+        headers: { 'x-apikey': String(env.VIRUSTOTAL_API_KEY) }, signal: AbortSignal.timeout(SCAN_TIMEOUT_MS),
+      });
+    } catch (e: any) {
+      return { error: `upload_url request failed: ${String(e?.message || e).slice(0, 120)}` };
+    }
+    if (urlRes.status === 429) return { error: 'rate limited while requesting the large-file upload URL', status: 429 };
+    if (urlRes.ok) { const j: any = await urlRes.json().catch(() => null); if (j?.data) uploadUrl = String(j.data); }
+  }
+  const up = await fetch(uploadUrl, {
+    method: 'POST',
+    headers: { 'x-apikey': String(env.VIRUSTOTAL_API_KEY), 'Content-Type': mp.contentType, 'Content-Length': String(mp.contentLength) },
+    body: mp.body,
+    signal: AbortSignal.timeout(120000),
+  }).catch((e: any) => null);
+  if (!up) return { error: 'scanner upload request failed (network)' };
+  if (up.status === 429) return { error: 'scanner rate limited during upload', status: 429 };
+  if (!up.ok) return { error: `scanner upload failed (${up.status})` };
+  const j: any = await up.json().catch(() => null);
+  if (!j?.data?.id) return { error: 'scanner did not return an analysis id' };
+  return { analysisId: String(j.data.id) };
+}
+
 export async function runMalwareScan(env: any, input: {
   sha256: string; filename: string; size: number; platform: string; storageKey?: string;
+  /** GitHub-hosted external asset: the verified public URL (no R2 object). */
+  externalUrl?: string;
 }): Promise<CheckResult> {
   const provider = scannerProvider(env);
   if (!provider) {
@@ -806,7 +957,32 @@ export async function runMalwareScan(env: any, input: {
       return { status: 'UNAVAILABLE', provider: 'virustotal', result: `scanner rate limited (${retry.maxRetries + 1} attempts, backing off)`, details: 'VirusTotal kept responding 429. The package stays blocked; the next pipeline run retries (cached scan results are reused when fresh).' };
     }
     if (res.status === 404) {
-      // 2) Unknown hash is NOT malware — upload the ACTUAL package bytes.
+      // 2) Unknown hash is NOT malware — upload the ACTUAL package bytes
+      //    (from R2 for manual uploads, from the validated external URL for
+      //    GitHub-hosted assets; in both cases the REAL bytes are scanned).
+      if (input.externalUrl) {
+        const uploaded = await vtUploadExternal(env, { url: input.externalUrl, filename: input.filename, size: input.size, sha256: sha });
+        if ('error' in uploaded) {
+          const rateLimited = uploaded.status === 429;
+          return rateLimited
+            ? { status: 'UNAVAILABLE', provider: 'virustotal', result: 'scanner rate limited during upload', details: `${uploaded.error}. The package stays blocked; retry shortly.` }
+            : { status: 'FAILED', provider: 'virustotal', result: 'scanner upload failed', error: uploaded.error, details: `${uploaded.error}. The package stays blocked from publication.` };
+        }
+        await writeScannerCache(env, { sha256: sha, provider: 'virustotal', verdict: 'SCANNING', analysisId: uploaded.analysisId });
+        const doneExt = await pollVtAnalysis(env, uploaded.analysisId);
+        if (!doneExt) {
+          return { status: 'SCANNING', provider: 'virustotal', providerVersion: 'api-v3',
+            result: 'VirusTotal analysis in progress',
+            details: `The GitHub asset was uploaded to VirusTotal (analysis ${uploaded.analysisId}); the analysis has not completed within the polling budget. Publication stays blocked — re-run the security pipeline to poll for the final verdict.`,
+            analysisId: uploaded.analysisId };
+        }
+        await writeScannerCache(env, { sha256: sha, provider: 'virustotal', verdict: doneExt.verdict, analysisId: uploaded.analysisId, stats: doneExt.stats });
+        return {
+          status: doneExt.verdict, provider: 'virustotal', providerVersion: 'api-v3',
+          result: doneExt.verdict === 'DETECTED' ? `${doneExt.stats.malicious + doneExt.stats.suspicious} engine detection(s)` : 'no engine detections',
+          details: summaryOf(doneExt.stats), analysisId: uploaded.analysisId, scannerStats: doneExt.stats,
+        };
+      }
       if (!input.storageKey) {
         return { status: 'FAILED', provider: 'virustotal', result: 'unknown hash and no stored object to scan',
           details: 'The hash is not known to VirusTotal and no storage key was supplied, so the file cannot be uploaded for scanning.' };
@@ -1045,6 +1221,20 @@ const STAGE_FOR_CHECK: Record<CheckType, PipelineStage> = {
  * from a filename, MIME type or client-supplied checksum.
  */
 async function checkIntegrity(env: any, pkg: any, bytes: PackageBytes | null): Promise<CheckResult> {
+  // GitHub-hosted external package: the "stored object" is the verified
+  // external asset — the streamed hash/size were computed from the ACTUAL
+  // remote bytes by loadExternalPackageBytes (never from metadata).
+  if (pkg.provider === 'github') {
+    const ext = bytes as (PackageBytes & { sha256?: string }) | null;
+    if (!ext || !ext.sha256) return { status: 'FAILED', result: 'external asset could not be read', details: 'The GitHub asset could not be streamed for verification — check the connection and retry verification.' };
+    if (Number(pkg.file_size) !== ext.size) {
+      return { status: 'FAILED', result: 'size mismatch', details: `The recorded size is ${pkg.file_size} bytes but the GitHub asset serves ${ext.size}.` };
+    }
+    if (String(pkg.sha256).toLowerCase() !== ext.sha256) {
+      return { status: 'FAILED', result: 'hash mismatch', details: `Recorded SHA-256 ${pkg.sha256} does not match the GitHub asset bytes (${ext.sha256}). The asset changed after the record was written.` };
+    }
+    return { status: 'PASSED', result: 'GitHub asset bytes match the recorded SHA-256 (streamed verification)', details: `Verified ${ext.size} bytes by streaming SHA-256 from the verified asset URL.` };
+  }
   if (!bytes) return { status: 'FAILED', result: 'stored object missing', details: 'The package file could not be read from storage — re-upload it.' };
   if (pkg.file_size && bytes.size !== Number(pkg.file_size)) {
     return { status: 'FAILED', result: 'size mismatch', details: `The recorded size is ${pkg.file_size} bytes but storage holds ${bytes.size}.` };
@@ -1270,9 +1460,23 @@ export async function runSecurityPipeline(env: any, packageId: string): Promise<
   }
 
   const app: any = await env.DB.prepare('SELECT * FROM applications WHERE id=?').bind(pkg.application_id).first().catch(() => null);
-  const bytes = await loadPackageBytes(env, pkg.quarantine_key || pkg.storage_key);
+  // GitHub-hosted packages: the bytes come from the VERIFIED external asset
+  // URL (validated redirects, hashed in-stream) — the same PackageBytes shape,
+  // so every check below runs unchanged. Nothing is persisted.
+  const bytes = pkg.provider === 'github' && pkg.external_url
+    ? await loadExternalPackageBytes(String(pkg.external_url), { maxBytes: Number(env?.GITHUB_ASSET_MAX_BYTES) || 500 * 1024 * 1024 })
+    : await loadPackageBytes(env, pkg.quarantine_key || pkg.storage_key);
   const results: Partial<Record<CheckType, CheckResult>> = {};
   let lastStage: PipelineStage = 'QUARANTINED';
+  // A github package without a recorded hash has never been through the
+  // external streaming pass — integrity cannot be evaluated. Fail closed
+  // (verifyGithubRelease records the hash BEFORE invoking the pipeline).
+  if (pkg.provider === 'github' && !/^[a-f0-9]{64}$/i.test(String(pkg.sha256 || ''))) {
+    const res: CheckResult = { status: 'FAILED', result: 'external asset not yet hash-verified', details: 'The GitHub asset has no recorded SHA-256 yet — run verification first (the streaming pass computes and records it from the actual bytes).' };
+    results.integrity = res;
+    await recordResult(env, pkg, 'integrity', res, Date.now());
+    return finish(env, packageId, 'INTEGRITY_CHECK', results, 'FAILED', prevSecurity);
+  }
 
   const run = async (check: CheckType, fn: () => Promise<CheckResult>): Promise<CheckResult> => {
     const t0 = Date.now();
@@ -1313,7 +1517,8 @@ export async function runSecurityPipeline(env: any, packageId: string): Promise<
   // 4. malware
   const malware = await run('malware', () => runMalwareScan(env, {
     sha256: pkg.sha256, filename: pkg.filename, size: Number(pkg.file_size) || 0, platform: pkg.platform,
-    storageKey: pkg.quarantine_key || pkg.storage_key,
+    storageKey: pkg.provider === 'github' ? undefined : (pkg.quarantine_key || pkg.storage_key),
+    externalUrl: pkg.provider === 'github' ? String(pkg.external_url || '') : undefined,
   }));
   if (malware.status === 'DETECTED' || malware.status === 'FAILED') return finish(env, packageId, lastStage, results, 'FAILED', prevSecurity);
 
