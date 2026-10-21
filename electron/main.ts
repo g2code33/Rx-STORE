@@ -202,8 +202,62 @@ function openChildWindow(url: string): BrowserWindow {
         },
   });
   attachWindowOpenHandler(child);
-  child.loadURL(url).catch((err) => console.error('[rx-store] child window failed:', err));
+  if (appUrl) {
+    child.loadURL(url).catch((err) => console.error('[rx-store] child window failed:', err));
+  } else {
+    // External destination: render through a wrapper that keeps an RX Store
+    // bar on screen — "Open in web" (the system browser), a Back button for
+    // in-page history, and the destination URL. The page itself runs in the
+    // isolated partition on its own origin (no rewrite, no injected scripts),
+    // so third-party sites behave normally.
+    child.loadURL(externalWrapperUrl(url)).catch((err) => console.error('[rx-store] child window failed:', err));
+  }
   return child;
+}
+
+/** data: wrapper page hosting an external site in an iframe + an RX Store bar. */
+function externalWrapperUrl(target: string): string {
+  const escape = (v: string) => String(v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const safe = escape(target);
+  const display = escape(target.length > 90 ? `${target.slice(0, 88)}…` : target);
+  const html = `<!doctype html><html><head><meta charset="utf-8" />
+<title>RX Store — external page</title>
+<style>
+  :root{color-scheme:dark}
+  html,body{margin:0;height:100%;background:#0f1419;color:#e6e8eb;font:13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  .bar{height:44px;display:flex;align-items:center;gap:8px;padding:0 12px;background:#1a2332;border-bottom:1px solid rgba(255,255,255,.08)}
+  .brand{font-weight:800;letter-spacing:.02em}.brand span{color:#ffd600}
+  .url{flex:1;min-width:0;color:#9aa4b2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,monospace;font-size:11px}
+  button,a.btn{background:#ffd600;color:#0f1419;border:0;border-radius:8px;padding:6px 12px;font-weight:700;cursor:pointer;text-decoration:none;font-size:12px;white-space:nowrap}
+  button.ghost{background:rgba(255,255,255,.08);color:#e6e8eb}
+  iframe{border:0;width:100%;height:calc(100vh - 44px);display:block;background:#fff}
+  .note{padding:6px 12px;color:#9aa4b2;font-size:11px;background:#141b26;border-bottom:1px solid rgba(255,255,255,.05)}
+</style></head><body>
+  <div class="bar">
+    <span class="brand">RX <span>Store</span></span>
+    <button class="ghost" id="back" title="Go back">&#8592;</button>
+    <span class="url" id="url" title="${safe}">${display}</span>
+    <a class="btn" id="openweb" href="${safe}" target="_blank" rel="noreferrer">Open in web</a>
+  </div>
+  <div class="note">This page is opened by RX Store. Use “Open in web” to continue in your browser, or close this window to return to the app.</div>
+  <iframe id="frame" src="${safe}" referrerpolicy="no-referrer"></iframe>
+  <script>
+    // "Open in web" hands the URL to the system browser through the app shell.
+    var target = ${JSON.stringify(target)};
+    document.getElementById('openweb').addEventListener('click', function (ev) {
+      if (window.rxDesktop && window.rxDesktop.openInBrowser) {
+        ev.preventDefault();
+        window.rxDesktop.openInBrowser(target);
+      }
+    });
+    document.getElementById('back').addEventListener('click', function () {
+      try { var f = document.getElementById('frame'); f.contentWindow.history.back(); } catch (e) {}
+    });
+  </script>
+</body></html>`;
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
 }
 
 /** Route every window.open()/target=_blank from any RX Store window. */

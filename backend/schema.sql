@@ -302,7 +302,7 @@ CREATE TABLE IF NOT EXISTS ai_settings (
   api_key TEXT,
   updated_at TEXT DEFAULT (datetime('now'))
 );
-INSERT OR IGNORE INTO ai_settings (id, provider, model) VALUES ('default','nvidia','meta/llama-3.1-8b-instruct');
+INSERT OR IGNORE INTO ai_settings (id, provider, model) VALUES ('default','nvidia','nvidia/nemotron-3-super-120b-a12b');
 
 -- ==================== RELEASE MANAGEMENT (Production) ====================
 CREATE TABLE IF NOT EXISTS releases (

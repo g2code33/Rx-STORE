@@ -8,12 +8,52 @@
 
 type Provider = 'nvidia' | 'openrouter' | 'openai' | 'gemini';
 
+/**
+ * Provider defaults + a fallback chain.
+ *
+ * Upstream providers RETIRE model ids (NVIDIA returned 410 "Gone" for
+ * meta/llama-3.1-8b-instruct in Oct 2026, OpenAI retired gpt-4o-mini, Google
+ * retired gemini-1.5-flash). A retired id must never brick the assistant:
+ * each provider lists current models in preference order and the call retries
+ * down the chain on a "model not found / gone / decommissioned" error.
+ */
 const PROVIDER_CONFIG: Record<Provider, { baseUrlEnv: string; keyEnv: string; defaultBase: string; defaultModel: string }> = {
-  nvidia:     { baseUrlEnv: 'AI_BASE_URL_NVIDIA',     keyEnv: 'NVIDIA_API_KEY',     defaultBase: 'https://integrate.api.nvidia.com/v1', defaultModel: 'meta/llama-3.1-8b-instruct' },
-  openrouter: { baseUrlEnv: 'AI_BASE_URL_OPENROUTER', keyEnv: 'OPENROUTER_API_KEY', defaultBase: 'https://openrouter.ai/api/v1', defaultModel: 'meta-llama/llama-3.1-8b-instruct' },
-  openai:     { baseUrlEnv: 'AI_BASE_URL_OPENAI',     keyEnv: 'OPENAI_API_KEY',     defaultBase: 'https://api.openai.com/v1',          defaultModel: 'gpt-4o-mini' },
-  gemini:     { baseUrlEnv: 'AI_BASE_URL_GEMINI',     keyEnv: 'GEMINI_API_KEY',     defaultBase: 'https://generativelanguage.googleapis.com/v1beta', defaultModel: 'gemini-1.5-flash' },
+  // Nemotron 3 family is NVIDIA's current hosted line (build.nvidia.com).
+  nvidia:     { baseUrlEnv: 'AI_BASE_URL_NVIDIA',     keyEnv: 'NVIDIA_API_KEY',     defaultBase: 'https://integrate.api.nvidia.com/v1', defaultModel: 'nvidia/nemotron-3-super-120b-a12b' },
+  openrouter: { baseUrlEnv: 'AI_BASE_URL_OPENROUTER', keyEnv: 'OPENROUTER_API_KEY', defaultBase: 'https://openrouter.ai/api/v1', defaultModel: 'meta-llama/llama-3.3-70b-instruct' },
+  openai:     { baseUrlEnv: 'AI_BASE_URL_OPENAI',     keyEnv: 'OPENAI_API_KEY',     defaultBase: 'https://api.openai.com/v1',          defaultModel: 'gpt-4.1-mini' },
+  gemini:     { baseUrlEnv: 'AI_BASE_URL_GEMINI',     keyEnv: 'GEMINI_API_KEY',     defaultBase: 'https://generativelanguage.googleapis.com/v1beta', defaultModel: 'gemini-2.5-flash' },
 };
+
+/** Current models per provider, best first — used when a configured id is dead. */
+export const PROVIDER_MODEL_CHAIN: Record<Provider, string[]> = {
+  nvidia: [
+    'nvidia/nemotron-3-super-120b-a12b',
+    'nvidia/nemotron-3-nano-30b-a3b',
+    'nvidia/nemotron-3.5-lightning-30b-a3b',
+  ],
+  openrouter: [
+    'meta-llama/llama-3.3-70b-instruct',
+    'openai/gpt-4.1-mini',
+    'google/gemini-2.5-flash',
+  ],
+  openai: ['gpt-4.1-mini', 'gpt-4.1', 'gpt-5-mini'],
+  gemini: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro'],
+};
+
+/** Model ids that upstreams have retired — auto-replaced, never served again. */
+const RETIRED_MODELS = new Set([
+  'meta/llama-3.1-8b-instruct', 'meta/llama-3.1-70b-instruct',
+  'meta-llama/llama-3.1-8b-instruct',
+  'gpt-4o-mini', 'gemini-1.5-flash', 'gemini-1.5-pro',
+]);
+
+/** Does a provider error mean "this model no longer exists"? */
+export function isModelGoneError(status: number, body: string): boolean {
+  if (status !== 404 && status !== 410 && status !== 400) return false;
+  const t = String(body || '').toLowerCase();
+  return /gone|decommission|no longer available|not found|does not exist|invalid model|unknown model|unsupported model|end of life/.test(t);
+}
 
 // Build the system prompt from the LIVE store catalog — the assistant may only
 // speak from this data (no hallucinations), and may only point "outside" to an
@@ -70,6 +110,8 @@ async function getActiveProvider(env: any, requested?: string): Promise<{ provid
   if (!provider) provider = (env.AI_PROVIDER as Provider) || 'nvidia';
   if (!valid.includes(provider)) provider = 'nvidia';
   if (!model) model = env.AI_MODEL || PROVIDER_CONFIG[provider].defaultModel;
+  // A retired id (stored in D1, env or a migration) is replaced automatically.
+  if (RETIRED_MODELS.has(String(model))) model = PROVIDER_CONFIG[provider].defaultModel;
   return { provider, model };
 }
 
@@ -84,7 +126,8 @@ async function getProviderCreds(env: any, provider: Provider) {
       if (row?.api_key) key = row.api_key;
     } catch {}
   }
-  const model = env.AI_MODEL || cfg.defaultModel;
+  let model = env.AI_MODEL || cfg.defaultModel;
+  if (RETIRED_MODELS.has(String(model))) model = cfg.defaultModel;
   return { baseUrl, key, model };
 }
 
@@ -114,7 +157,7 @@ async function callOpenAICompatible(baseUrl: string, key: string, model: string,
   });
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Provider error ${res.status}: ${err.slice(0,500)}`);
+    { const e: any = new Error(`Provider error ${res.status}: ${err.slice(0,500)}`); e.status = res.status; e.body = err; throw e; }
   }
   const data: any = await res.json();
   return data.choices?.[0]?.message?.content || data.choices?.[0]?.text || '';
@@ -142,7 +185,7 @@ async function streamOpenAICompatible(baseUrl: string, key: string, model: strin
   });
   if (!res.ok || !res.body) {
     const err = await res.text().catch(() => '');
-    throw new Error(`Provider error ${res.status}: ${err.slice(0,300)}`);
+    { const e: any = new Error(`Provider error ${res.status}: ${err.slice(0,300)}`); e.status = res.status; e.body = err; throw e; }
   }
   return res.body;
 }
@@ -160,7 +203,7 @@ async function callGemini(baseUrl: string, key: string, model: string, message: 
   });
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Gemini error ${res.status}: ${err.slice(0,800)}`);
+    { const e: any = new Error(`Gemini error ${res.status}: ${err.slice(0,800)}`); e.status = res.status; e.body = err; throw e; }
   }
   const data: any = await res.json();
   return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
@@ -196,7 +239,24 @@ export const aiRoutes = {
       const m = p === provider ? model : PROVIDER_CONFIG[p].defaultModel;
       if (!key) { lastError = `No key for ${p}`; continue; }
       try {
-        const text = p === 'gemini' ? await callGemini(baseUrl, key, m, message, systemPrompt) : await callOpenAICompatible(baseUrl, key, m, message, systemPrompt);
+        // Try the configured model, then the provider's current chain. A
+        // retired/unknown model id must never brick the assistant.
+        let text = '';
+        const chain = [m, ...PROVIDER_MODEL_CHAIN[p].filter((x) => x !== m)];
+        let lastErr: any = null;
+        for (const candidate of chain.slice(0, 3)) {
+          try {
+            text = p === 'gemini'
+              ? await callGemini(baseUrl, key, candidate, message, systemPrompt)
+              : await callOpenAICompatible(baseUrl, key, candidate, message, systemPrompt);
+            if (candidate !== m) console.warn(`[ai] model '${m}' is unavailable; served with '${candidate}' (${p})`);
+            break;
+          } catch (err: any) {
+            lastErr = err;
+            if (!isModelGoneError(Number(err?.status || 0), String(err?.body || err?.message || ''))) throw err;
+          }
+        }
+        if (!text) throw lastErr || new Error('No model in the provider chain responded');
         if (text) return { response: text, provider: p, model: m, suggestions: ['Show me healthcare apps','Compare Clinical Rx vs CureLink','What apps work offline?'] };
       } catch (e: any) { lastError = e.message || String(e); continue; }
     }

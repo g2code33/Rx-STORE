@@ -21,10 +21,10 @@ export default function AIProviderPanel() {
   const fetchProviders = async () => {
     if (!API_URL) {
       setProviders([
-        { id: 'nvidia', enabled: false, hasKey: false, baseUrl: 'https://integrate.api.nvidia.com/v1', defaultModel: 'meta/llama-3.1-8b-instruct', active: true },
-        { id: 'openrouter', enabled: false, hasKey: false, baseUrl: 'https://openrouter.ai/api/v1', defaultModel: 'meta-llama/llama-3.1-8b-instruct', active: false },
-        { id: 'openai', enabled: false, hasKey: false, baseUrl: 'https://api.openai.com/v1', defaultModel: 'gpt-4o-mini', active: false },
-        { id: 'gemini', enabled: false, hasKey: false, baseUrl: 'https://generativelanguage.googleapis.com/v1beta', defaultModel: 'gemini-1.5-flash', active: false },
+        { id: 'nvidia', enabled: false, hasKey: false, baseUrl: 'https://integrate.api.nvidia.com/v1', defaultModel: 'nvidia/nemotron-3-super-120b-a12b', active: true },
+        { id: 'openrouter', enabled: false, hasKey: false, baseUrl: 'https://openrouter.ai/api/v1', defaultModel: 'meta-llama/llama-3.3-70b-instruct', active: false },
+        { id: 'openai', enabled: false, hasKey: false, baseUrl: 'https://api.openai.com/v1', defaultModel: 'gpt-4.1-mini', active: false },
+        { id: 'gemini', enabled: false, hasKey: false, baseUrl: 'https://generativelanguage.googleapis.com/v1beta', defaultModel: 'gemini-2.5-flash', active: false },
       ]); setActive('nvidia'); setLoading(false); return;
     }
     try {
