@@ -21,7 +21,7 @@ import { updatesRoutes } from './routes/updates.ts';
 import { SECURITY_PIPELINE_VERSION } from './services/packageSecurity.ts';
 import { devicesRoutes } from './routes/devices.ts';
 import { developerRoutes, adminDeveloperRoutes } from './routes/developers.ts';
-import { githubDevRoutes, githubAdminRoutes, githubWebhookRoutes } from './routes/githubIntegration.ts';
+import { githubDevRoutes, githubAdminRoutes, githubWebhookRoutes, githubOAuthRoutes } from './routes/githubIntegration.ts';
 import { adminEventCounts, adminEventList, markAdminEventsSeen, userNotificationCounts, markUserNotificationsSeen } from './services/adminNotifications.ts';
 import { developerAppRoutes, adminDeveloperAppRoutes } from './routes/developerApps.ts';
 import { securityAdminRoutes } from './routes/securityAdmin.ts';
@@ -194,9 +194,16 @@ export default {
     // ---- GitHub App install callback (browser redirect from GitHub; the
     // single-use state token is the proof — no Bearer header exists here). ----
     if (path === '/developers/github/callback' && request.method === 'GET') {
-      const redirect: any = await githubDevRoutes.callback(normalizedRequest as any, env);
-      if (redirect instanceof Response) return withCors(redirect, origin, env, requestId);
-      return respond({ success: false, error: { code: 'VALIDATION_ERROR', message: redirect?.message || 'Callback failed.' } }, 400, origin);
+      const out: any = await githubDevRoutes.callback(normalizedRequest as any, env);
+      if (out instanceof Response) return withCors(out, origin, env, requestId);
+      return respond({ success: false, error: { code: 'VALIDATION_ERROR', message: out?.message || 'Callback failed.' } }, 400, origin);
+    }
+
+    // ---- GitHub user-authorization completion (self-contained HTML pages;
+    // the one-time code is the proof, so no RX Store session is required). ----
+    if (path === '/developers/github/oauth/bind' && request.method === 'POST') {
+      const out = await githubOAuthRoutes.bind(normalizedRequest as any, env);
+      return withCors(out, origin, env, requestId);
     }
 
     if ((path === '/updates/check' || path === '/update/check' || path === '/api/updates/check' || path === '/api/update/check') && request.method === 'GET') {

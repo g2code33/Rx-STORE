@@ -4,6 +4,11 @@ import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('rxDesktop', {
   isDesktop: true,
   appVersion: () => ipcRenderer.invoke('app:version'),
+  /** Open a NEW RX Store window: { path: '/app/slug' } or { url: 'https://…' }. */
+  openWindow: (target: { path?: string; url?: string } | string) =>
+    ipcRenderer.invoke('window:open', typeof target === 'string' ? { path: target } : target),
+  /** Escape hatch: hand a URL to the operating system's default browser. */
+  openInBrowser: (url: string) => ipcRenderer.invoke('window:openExternal', url),
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
   setUpdatePolicy: (policy: any) => ipcRenderer.invoke('update:policy', policy),

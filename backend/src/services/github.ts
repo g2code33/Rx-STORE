@@ -47,6 +47,118 @@ export function githubConfigured(env: any): boolean {
   return githubAppConfig(env) !== null;
 }
 
+// ---------------------------------------------------------------------------
+// User-to-server OAuth (GitHub App's own client credentials)
+//
+// This is the RELIABLE connection path: the developer authorizes the App as a
+// USER, we receive a short-lived user token, and list ONLY the installations
+// and repositories that user can already access. It does not depend on the
+// post-install redirect (which drops our state when the App is already
+// installed) and needs no RX Store session in the browser that completes it.
+//
+// Secrets: GITHUB_APP_CLIENT_ID / GITHUB_APP_CLIENT_SECRET (the App's own
+// client credentials — NOT the sign-in OAuth app's). Optional: when absent the
+// install-redirect flow stays available.
+// ---------------------------------------------------------------------------
+
+export interface GithubAppOAuthConfig { clientId: string; clientSecret: string }
+
+export function githubAppOAuthConfig(env: any): GithubAppOAuthConfig | null {
+  const clientId = String(env?.GITHUB_APP_CLIENT_ID || '').trim();
+  const clientSecret = String(env?.GITHUB_APP_CLIENT_SECRET || '').trim();
+  if (!clientId || !clientSecret) return null;
+  return { clientId, clientSecret };
+}
+
+export function githubAppOAuthConfigured(env: any): boolean {
+  return githubAppOAuthConfig(env) !== null;
+}
+
+/** Authorization URL for user-to-server OAuth (the App's own client id). */
+export function userAuthorizeUrl(env: any, input: { state: string; redirectUri: string }): string | null {
+  const cfg = githubAppOAuthConfig(env);
+  if (!cfg) return null;
+  const params = new URLSearchParams({
+    client_id: cfg.clientId,
+    state: input.state,
+    redirect_uri: input.redirectUri,
+    allow_signup: 'false',
+  });
+  return `https://github.com/login/oauth/authorize?${params.toString()}`;
+}
+
+/** Exchange the user authorization code for a user access token. */
+export async function exchangeUserCode(env: any, input: { code: string; redirectUri: string }): Promise<string | null> {
+  const cfg = githubAppOAuthConfig(env);
+  if (!cfg) return null;
+  try {
+    const res = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        client_id: cfg.clientId, client_secret: cfg.clientSecret,
+        code: input.code, redirect_uri: input.redirectUri,
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const j: any = await res.json().catch(() => null);
+    return res.ok && typeof j?.access_token === 'string' && j.access_token ? String(j.access_token) : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface UserInstallation { installationId: string; accountLogin: string; accountType: string }
+
+/** Installations the USER can access (never a global App listing). */
+export async function userInstallations(userToken: string): Promise<UserInstallation[]> {
+  try {
+    const res = await fetch('https://api.github.com/user/installations?per_page=100', {
+      headers: { Authorization: `Bearer ${userToken}`, Accept: 'application/vnd.github+json', 'User-Agent': 'rx-store-github' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return [];
+    const j: any = await res.json().catch(() => null);
+    const list = Array.isArray(j?.installations) ? j.installations : [];
+    return list.map((i: any) => ({
+      installationId: String(i?.id ?? ''),
+      accountLogin: String(i?.account?.login ?? ''),
+      accountType: String(i?.account?.type ?? ''),
+    })).filter((i: UserInstallation) => !!i.installationId);
+  } catch {
+    return [];
+  }
+}
+
+export interface UserRepo { repositoryId: string; installationId: string; fullName: string; name: string; private: boolean }
+
+/** Repositories of ONE installation that the USER can access. */
+export async function userInstallationRepos(userToken: string, installationId: string): Promise<UserRepo[]> {
+  try {
+    const out: UserRepo[] = [];
+    for (let page = 1; page <= 3; page++) {
+      const res = await fetch(`https://api.github.com/user/installations/${encodeURIComponent(installationId)}/repositories?per_page=100&page=${page}`, {
+        headers: { Authorization: `Bearer ${userToken}`, Accept: 'application/vnd.github+json', 'User-Agent': 'rx-store-github' },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) break;
+      const j: any = await res.json().catch(() => null);
+      const repos = Array.isArray(j?.repositories) ? j.repositories : [];
+      for (const r of repos) {
+        out.push({
+          repositoryId: String(r?.id ?? ''), installationId,
+          fullName: String(r?.full_name ?? ''), name: String(r?.name ?? ''),
+          private: r?.private === true,
+        });
+      }
+      if (repos.length < 100) break;
+    }
+    return out.filter((r) => !!r.repositoryId);
+  } catch {
+    return [];
+  }
+}
+
 /** The Worker secrets the integration requires (names only — never values). */
 export const GITHUB_REQUIRED_SECRETS = ['GITHUB_APP_ID', 'GITHUB_APP_SLUG', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_WEBHOOK_SECRET'] as const;
 

@@ -27,7 +27,7 @@ import {
   withdrawGithubRelease, syncAllConnections, ensureGithubTables,
   bindRepositoryFromCode,
 } from './services/githubReleases.ts';
-import { githubDevRoutes, githubAdminRoutes } from './routes/githubIntegration.ts';
+import { githubDevRoutes, githubAdminRoutes, githubOAuthRoutes } from './routes/githubIntegration.ts';
 import { issueOneTimeToken } from './services/oauth.ts';
 
 const WEBHOOK_SECRET = 'test-webhook-secret';
@@ -437,6 +437,7 @@ function fakeEnv() {
   return {
     DB, tables, storagePuts,
     GITHUB_APP_ID: '12345', GITHUB_APP_SLUG: 'rx-store-releases',
+    GITHUB_APP_CLIENT_ID: 'Iv1.rxstoreapp', GITHUB_APP_CLIENT_SECRET: 'app-client-secret-test',
     GITHUB_APP_PRIVATE_KEY: '', GITHUB_WEBHOOK_SECRET: WEBHOOK_SECRET,
     VIRUSTOTAL_API_KEY: 'vt-test-key',
     MALWARE_SCANNER: 'virustotal',
@@ -639,6 +640,20 @@ function installStubs(env: any, opts: StubOpts = {}) {
       if (opts.assetStatus && opts.assetStatus !== 200) return new Response('gone', { status: opts.assetStatus });
       return new Response(bytes as unknown as BodyInit, { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
     }
+    // GitHub user authorization (App OAuth) + user installations
+    if (u === 'https://github.com/login/oauth/access_token') {
+      return new Response(JSON.stringify({ access_token: 'user-token', token_type: 'bearer' }), { status: 200 });
+    }
+    if (u.startsWith('https://api.github.com/user/installations/') && u.includes('/repositories')) {
+      return new Response(JSON.stringify({ repositories: [
+        { id: Number(REPO_ID), name: 'app', full_name: 'octo/app', private: false },
+        { id: 777001, name: 'secret-app', full_name: 'octo/secret-app', private: true },
+      ] }), { status: 200 });
+    }
+    if (u === 'https://api.github.com/user/installations?per_page=100') {
+      return new Response(JSON.stringify({ installations: [{ id: Number(INSTALLATION_ID), account: { login: 'octo', type: 'User' } }] }), { status: 200 });
+    }
+
     // VirusTotal hash lookup (the pipeline checks for an existing report first)
     if (/^https:\/\/www\.virustotal\.com\/api\/v3\/files\/[0-9a-f]{64}$/.test(u)) {
       if (vtVerdict === 'UNAVAILABLE') return new Response('boom', { status: 500 });
@@ -1568,4 +1583,96 @@ test('CONNECT FLOW: the install callback lands on the APP page (where the picker
   // Invalid state -> honest error redirect.
   const bad: any = await githubDevRoutes.callback(new Request('https://api.test/developers/github/callback?state=bogus&installation_id=1') as any, env);
   assert.match(String(bad.headers.get('Location')), /gh_error=invalid_state/);
+});
+
+// ---------------------------------------------------------------------------
+// CONNECT VIA USER AUTHORIZATION (App OAuth) — the reliable path
+// ---------------------------------------------------------------------------
+
+test('OAUTH connect: when App client credentials exist, connect returns the user-authorization URL', async () => {
+  const stubs = installStubs(env);
+  try {
+    const req = new Request(`https://api.test/developers/apps/${APP_ID}/github/connect`, { method: 'POST', headers: { 'User-Agent': 't' } });
+    (req as any).user = { userId: USER_ID };
+    const out: any = await githubDevRoutes.connect(req as any, env);
+    assert.ok(out.url, out.message);
+    const u = String(out.url);
+    assert.ok(u.startsWith('https://github.com/login/oauth/authorize?'), u);
+    assert.ok(u.includes('client_id=Iv1.rxstoreapp'), u);
+    assert.ok(u.includes('state='), u);
+    assert.ok(decodeURIComponent(u).includes('/developers/github/callback'), u);
+  } finally { stubs.restore(); }
+});
+
+test('OAUTH connect: without App client credentials it falls back to the install redirect (never a broken link)', async () => {
+  const noOauth = { ...env, GITHUB_APP_CLIENT_ID: '', GITHUB_APP_CLIENT_SECRET: '' };
+  const stubs = installStubs(noOauth);
+  try {
+    const req = new Request(`https://api.test/developers/apps/${APP_ID}/github/connect`, { method: 'POST', headers: { 'User-Agent': 't' } });
+    (req as any).user = { userId: USER_ID };
+    const out: any = await githubDevRoutes.connect(req as any, noOauth);
+    assert.ok(String(out.url).startsWith('https://github.com/apps/rx-store-releases/installations/new?state='), String(out.url));
+  } finally { stubs.restore(); }
+});
+
+test('OAUTH callback: renders the repository picker with PUBLIC repos only, then binds the chosen one', async () => {
+  const stubs = installStubs(env);
+  try {
+    const state = await issueOneTimeToken(env, 'state', { kind: 'github-oauth', userId: USER_ID, appId: APP_ID });
+    const res: any = await githubDevRoutes.callback(
+      new Request(`https://api.test/developers/github/callback?code=gh-code&state=${encodeURIComponent(state)}`) as any, env,
+    );
+    assert.ok(res instanceof Response);
+    assert.ok(String(res.headers.get('Content-Type')).includes('text/html'));
+    const html = await res.text();
+    assert.ok(html.includes('octo/app'), 'public repository listed');
+    assert.ok(!html.includes('secret-app'), 'private repositories are never offered');
+    const codeMatch = html.match(/name="code" value="([^"]+)"/);
+    const repoMatch = html.match(/name="repositoryId" value="([^"]+)"/);
+    assert.ok(codeMatch, 'picker embeds a completion code');
+    assert.ok(repoMatch, 'picker embeds the repository id');
+
+    const body = new URLSearchParams({ code: codeMatch![1], repositoryId: repoMatch![1] });
+    const bindRes: any = await githubOAuthRoutes.bind(
+      new Request('https://api.test/developers/github/oauth/bind', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() }) as any,
+      env,
+    );
+    const bindHtml = await bindRes.text();
+    assert.ok(bindHtml.includes('Repository connected'), bindHtml.slice(0, 200));
+    const conn = env.tables.github_repo_connections.find((c: any) => c.application_id === APP_ID);
+    assert.ok(conn, 'the app is now connected');
+    assert.equal(conn.repository_id, REPO_ID);
+  } finally { stubs.restore(); }
+});
+
+test('OAUTH bind: a repository OUTSIDE the authorization is refused (no arbitrary binding)', async () => {
+  const stubs = installStubs(env);
+  try {
+    const state = await issueOneTimeToken(env, 'state', { kind: 'github-oauth', userId: USER_ID, appId: APP_ID });
+    const res: any = await githubDevRoutes.callback(
+      new Request(`https://api.test/developers/github/callback?code=gh-code&state=${encodeURIComponent(state)}`) as any, env,
+    );
+    const html = await res.text();
+    const code = html.match(/name="code" value="([^"]+)"/)![1];
+    const body = new URLSearchParams({ code, repositoryId: '999999' });
+    const out: any = await githubOAuthRoutes.bind(
+      new Request('https://api.test/developers/github/oauth/bind', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() }) as any,
+      env,
+    );
+    const outHtml = await out.text();
+    assert.ok(outHtml.includes('not part of this authorization'), outHtml.slice(0, 200));
+    assert.equal(env.tables.github_repo_connections.length, 0);
+  } finally { stubs.restore(); }
+});
+
+test('OAUTH callback: an expired/unknown state is refused with a clear page (never a silent connect)', async () => {
+  const stubs = installStubs(env);
+  try {
+    const res: any = await githubDevRoutes.callback(
+      new Request('https://api.test/developers/github/callback?code=gh-code&state=bogus') as any, env,
+    );
+    assert.ok(res instanceof Response);
+    const html = await res.text();
+    assert.ok(/expired or was already used/i.test(html), html.slice(0, 200));
+  } finally { stubs.restore(); }
 });

@@ -162,6 +162,70 @@ function initDeepLinkScheme() {
   });
 }
 
+/** Is this an in-app (app://) destination? */
+function isAppUrl(url: string): boolean {
+  return /^app:\/\/rxstore(\/|$|\?)/i.test(url);
+}
+
+/**
+ * Open a NEW RX Store window.
+ *   - app:// destinations keep the privileged origin + preload (full desktop
+ *     APIs, same session as the main window).
+ *   - http(s) destinations open in an isolated partition with no preload and
+ *     no node access (they are third-party pages), but as an RX Store window
+ *     so the user never loses the app or has to hunt for a browser tab.
+ */
+function openChildWindow(url: string): BrowserWindow {
+  const appUrl = isAppUrl(url);
+  const child = new BrowserWindow({
+    width: 1200,
+    height: 860,
+    minWidth: 720,
+    minHeight: 520,
+    title: 'RX Store',
+    icon: path.join(app.getAppPath(), 'build/icon.png'),
+    backgroundColor: '#0F1419',
+    autoHideMenuBar: true,
+    webPreferences: appUrl
+      ? {
+          preload: path.join(__dirname, 'preload.cjs'),
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: false,
+          backgroundThrottling: false,
+        }
+      : {
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+          partition: 'persist:rx-external',
+        },
+  });
+  attachWindowOpenHandler(child);
+  child.loadURL(url).catch((err) => console.error('[rx-store] child window failed:', err));
+  return child;
+}
+
+/** Route every window.open()/target=_blank from any RX Store window. */
+function attachWindowOpenHandler(win: BrowserWindow) {
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (isAppUrl(url) || /^https?:\/\//i.test(url)) {
+      openChildWindow(url);
+      return { action: 'deny' };
+    }
+    return { action: 'deny' };
+  });
+  // A plain link to an external site must not replace the app UI in-place;
+  // send it to a new RX Store window instead.
+  win.webContents.on('will-navigate', (event, url) => {
+    const current = win.webContents.getURL();
+    if (/^https?:\/\//i.test(url) && !/^https?:\/\//i.test(current)) {
+      event.preventDefault();
+      openChildWindow(url);
+    }
+  });
+}
+
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
@@ -194,11 +258,14 @@ function createWindow(): BrowserWindow {
     });
   }
 
-  // External links open in the system browser, never in-app
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//.test(url)) shell.openExternal(url);
-    return { action: 'deny' };
-  });
+  // New-window behaviour (desktop): NEVER navigate the app window away and
+  // never dump the user into the system browser for in-app navigation.
+  //   app://rxstore/<path>  -> a NEW RX STORE WINDOW (same origin, same
+  //                            session, full desktop APIs) — "View live" etc.
+  //   http(s)://…           -> a NEW RX STORE WINDOW showing the external page
+  //                            (isolated partition, no node access), so the
+  //                            user keeps the app open and can go back/close.
+  attachWindowOpenHandler(win);
 
   win.once('ready-to-show', () => win.show());
   win.on('closed', () => {
@@ -881,6 +948,24 @@ function initIpc() {
     if (app.isPackaged) autoUpdater.quitAndInstall();
   });
   ipcMain.handle('app:version', () => app.getVersion());
+  // Renderer-initiated new window: { path } for in-app destinations (e.g.
+  // '/app/clinical-rx') or { url } for an external page.
+  ipcMain.handle('window:open', (_e, payload: any) => {
+    const pathOrUrl = String(payload?.path ?? payload?.url ?? '');
+    if (!pathOrUrl) return false;
+    const target = /^https?:\/\//i.test(pathOrUrl)
+      ? pathOrUrl
+      : `app://rxstore${pathOrUrl.startsWith('/') ? '' : '/'}${pathOrUrl}`;
+    if (!isAppUrl(target) && !/^https?:\/\//i.test(target)) return false;
+    openChildWindow(target);
+    return true;
+  });
+  // Explicit "open in the system browser" (used only where the OS browser is
+  // genuinely required, e.g. downloads the app itself can't handle).
+  ipcMain.handle('window:openExternal', (_e, url: any) => {
+    if (/^https?:\/\//i.test(String(url || ''))) { shell.openExternal(String(url)); return true; }
+    return false;
+  });
 }
 
 const gotLock = app.requestSingleInstanceLock();

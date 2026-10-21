@@ -14,6 +14,8 @@
 import { resolveMembership } from './developers.ts';
 import {
   githubAppConfig, githubConfigured, githubMissingSecrets, installationRepos,
+  githubAppOAuthConfigured, userAuthorizeUrl, exchangeUserCode,
+  userInstallations, userInstallationRepos, type UserRepo,
 } from '../services/github.ts';
 import {
   connectAppRepository, disconnectAppRepository, getConnectionForApp,
@@ -22,7 +24,7 @@ import {
   rejectGithubRelease, withdrawGithubRelease, syncAllConnections,
   adminOverview, adminQueue, adminAudit, verifyPendingDetections, ensureGithubTables,
 } from '../services/githubReleases.ts';
-import { issueOneTimeToken, consumeOneTimeToken, restoreOneTimeToken } from '../services/oauth.ts';
+import { issueOneTimeToken, consumeOneTimeToken, restoreOneTimeToken, apiCallbackBase } from '../services/oauth.ts';
 
 type Result = { code?: string; message?: string; [k: string]: any } | null | undefined;
 
@@ -97,6 +99,19 @@ export const githubDevRoutes = {
     }
     const existing = await getConnectionForApp(env, appId);
     if (existing && existing.status === 'active') return { code: 'CONFLICT', message: 'This application is already connected. Disconnect it first to change repositories.' };
+
+    // PREFERRED: user authorization with the GitHub App's own OAuth client.
+    // It lists only the installations/repos THIS user can access, survives the
+    // "already installed" case, and completes on a self-contained page (no
+    // RX Store session needed in the browser that finishes it).
+    if (githubAppOAuthConfigured(env)) {
+      const state = await issueOneTimeToken(env, 'state', { userId: org.userId, appId, kind: 'github-oauth' });
+      const redirectUri = `${apiCallbackBase(env, request)}/developers/github/callback`;
+      const url = userAuthorizeUrl(env, { state, redirectUri });
+      if (url) return { url };
+    }
+
+    // Fallback: GitHub App INSTALL redirect (needs a fresh install + state).
     const state = await issueOneTimeToken(env, 'state', { userId: org.userId, appId, kind: 'github-connect' });
     return { url: `https://github.com/apps/${cfg.appSlug}/installations/new?state=${encodeURIComponent(state)}` };
   },
@@ -113,7 +128,11 @@ export const githubDevRoutes = {
     const url = new URL(request.url);
     const state = url.searchParams.get('state') || '';
     const installationId = url.searchParams.get('installation_id') || '';
+    const oauthCode = url.searchParams.get('code') || '';
     const webBase = String(env?.RX_STORE_WEB_URL || 'https://rx-store-web.pages.dev').replace(/\/+$/, '');
+
+    // ---- USER-AUTHORIZATION callback: list the repos this user can access ----
+    if (oauthCode) return oauthPicketResponse(env, request, { code: oauthCode, state, webBase });
     if (!state || !installationId) {
       return Response.redirect(`${webBase}/developers?gh_error=missing_parameters`, 302);
     }
@@ -190,6 +209,137 @@ export const githubDevRoutes = {
     const out = await disconnectAppRepository(env, { appId, orgId: org.orgId, userId: org.userId });
     if (!out.ok) return { code: out.code, message: out.message };
     return { success: true };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// User-authorization completion (self-contained pages, no RX Store session)
+// ---------------------------------------------------------------------------
+
+function htmlPage(title: string, body: string): Response {
+  return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" /><title>${title}</title>
+<style>
+ :root{color-scheme:dark}
+ body{margin:0;background:#0f1419;color:#e6e8eb;font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+ .wrap{max-width:720px;margin:0 auto;padding:40px 20px}
+ h1{font-size:20px;margin:0 0 6px}
+ p.sub{color:#9aa4b2;margin:0 0 24px;font-size:13px}
+ .card{background:#1a2332;border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:16px;margin-bottom:10px;display:flex;align-items:center;gap:12px}
+ .card button{background:#ffd600;color:#0f1419;border:0;border-radius:10px;padding:8px 14px;font-weight:700;cursor:pointer;margin-left:auto}
+ .card button:disabled{opacity:.45;cursor:not-allowed}
+ .muted{color:#9aa4b2;font-size:12px}
+ .ok{background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.35)}
+ .err{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.35)}
+ .btn{display:inline-block;background:#ffd600;color:#0f1419;border:0;border-radius:10px;padding:10px 16px;font-weight:700;text-decoration:none}
+ .brand{font-weight:800;letter-spacing:.02em;margin-bottom:22px}
+ .brand span{color:#ffd600}
+</style></head><body><div class="wrap"><div class="brand">RX <span>Store</span></div>${body}</div></body></html>`,
+    { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY' } });
+}
+
+function errorPage(message: string, webBase: string): Response {
+  return htmlPage('RX Store — GitHub connection', `<div class="card err"><div><h1>Could not finish connecting</h1><p class="muted">${message}</p></div></div>
+    <a class="btn" href="${webBase}/developers/apps">Back to RX Store</a>`);
+}
+
+/**
+ * Exchange the user authorization code, list the installations/repositories
+ * THIS user can access, and render the picker. The completion code is a
+ * server-issued one-time token bound to {user, app, allowed repos} — the
+ * browser never decides what it may bind.
+ */
+async function oauthPicketResponse(env: any, request: Request, input: { code: string; state: string; webBase: string }): Promise<Response> {
+  if (!githubAppOAuthConfigured(env)) return errorPage('User authorization is not configured on this deployment.', input.webBase);
+  const payload = await consumeOneTimeToken(env, 'state', input.state);
+  if (!payload || payload.kind !== 'github-oauth' || !payload.userId || !payload.appId) {
+    return errorPage('This connection request expired or was already used. Start again from RX Store.', input.webBase);
+  }
+  const redirectUri = `${apiCallbackBase(env, request)}/developers/github/callback`;
+  const token = await exchangeUserCode(env, { code: input.code, redirectUri });
+  if (!token) return errorPage('GitHub did not return a valid authorization. Try again from RX Store.', input.webBase);
+
+  const installations = await userInstallations(token);
+  const repos: UserRepo[] = [];
+  for (const inst of installations) {
+    const list = await userInstallationRepos(token, inst.installationId);
+    repos.push(...list);
+    if (repos.length >= 300) break;
+  }
+  if (!repos.length) {
+    return errorPage('No repositories are available. Install the RX Store Releases app on a repository first, then start again.', input.webBase);
+  }
+  // Server-issued completion code: only these repo ids may be bound.
+  const completion = await issueOneTimeToken(env, 'code', {
+    kind: 'github-oauth-bind', userId: String(payload.userId), appId: String(payload.appId),
+    allowed: repos.map((r) => ({ id: r.repositoryId, installationId: r.installationId, fullName: r.fullName })),
+  });
+
+  const publicRepos = repos.filter((r) => !r.private);
+  const privateCount = repos.length - publicRepos.length;
+  const rows = publicRepos.map((r) => `
+    <form class="card" method="POST" action="/v1/developers/github/oauth/bind">
+      <input type="hidden" name="code" value="${escapeHtml(completion)}" />
+      <input type="hidden" name="repositoryId" value="${escapeHtml(r.repositoryId)}" />
+      <div><strong>${escapeHtml(r.fullName)}</strong><div class="muted">public repository</div></div>
+      <button type="submit">Connect</button>
+    </form>`).join('');
+  return htmlPage('RX Store — connect a repository', `
+    <h1>Choose the repository for your app</h1>
+    <p class="sub">RX Store Releases will read this repository's releases and release assets (read-only). Users download installers straight from GitHub.</p>
+    ${rows || '<div class="card"><div>No public repositories found.</div></div>'}
+    ${privateCount ? `<p class="muted">${privateCount} private repository(ies) are not listed — RX Store needs a public repository so users can download without credentials.</p>` : ''}
+    <p style="margin-top:24px"><a class="btn" href="${escapeHtml(input.webBase)}/developers/apps">Cancel</a></p>`);
+}
+
+function escapeHtml(v: string): string {
+  return String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+}
+
+export const githubOAuthRoutes = {
+  /** POST /developers/github/oauth/bind (public form post; the code is the proof). */
+  async bind(request: Request, env: any): Promise<Response> {
+    const webBase = String(env?.RX_STORE_WEB_URL || 'https://rx-store-web.pages.dev').replace(/\/+$/, '');
+    let code = '';
+    let repositoryId = '';
+    try {
+      const ct = String(request.headers.get('Content-Type') || '');
+      if (ct.includes('application/x-www-form-urlencoded') || ct.includes('multipart/form-data')) {
+        const fd: any = await request.formData();
+        code = String(fd.get('code') || '');
+        repositoryId = String(fd.get('repositoryId') || '');
+      } else {
+        const j: any = await request.json().catch(() => ({}));
+        code = String(j?.code || ''); repositoryId = String(j?.repositoryId || '');
+      }
+    } catch { /* handled below */ }
+    if (!code || !repositoryId) return errorPage('Missing connection details — start again from RX Store.', webBase);
+
+    const payload = await consumeOneTimeToken(env, 'code', code, { allowRetry: true });
+    if (!payload || payload.kind !== 'github-oauth-bind') return errorPage('This connection link expired or was already used — start again from RX Store.', webBase);
+    const allowed: Array<{ id: string; installationId: string; fullName: string }> = Array.isArray(payload.allowed) ? payload.allowed : [];
+    const match = allowed.find((r) => String(r.id) === String(repositoryId));
+    if (!match) {
+      await restoreOneTimeToken(env, code);
+      return errorPage('That repository is not part of this authorization. Pick one from the list.', webBase);
+    }
+    // Resolve the developer org from the user who STARTED the flow (server-side).
+    const { resolveMembership } = await import('./developers.ts');
+    const ms = await resolveMembership(env, String(payload.userId));
+    if (!ms?.developer?.id) return errorPage('Your RX Store developer account could not be found.', webBase);
+
+    const out = await connectAppRepository(env, {
+      appId: String(payload.appId), orgId: String(ms.developer.id), userId: String(payload.userId),
+      installationId: match.installationId, repositoryId: match.id,
+    });
+    if (!out.ok) {
+      await restoreOneTimeToken(env, code);
+      return errorPage(String(out.message || 'The repository could not be connected.'), webBase);
+    }
+    return htmlPage('RX Store — connected', `
+      <div class="card ok"><div><h1>Repository connected ✓</h1><p class="muted">${escapeHtml(match.fullName)} is now linked. Publish a GitHub Release there and it will appear in Admin → GitHub Releases for approval.</p></div></div>
+      <p class="muted">You can close this window — RX Store picks up the connection automatically.</p>
+      <p style="margin-top:20px"><a class="btn" href="${escapeHtml(webBase)}/developers/apps/${encodeURIComponent(String(payload.appId))}">Back to your app</a></p>`);
   },
 };
 

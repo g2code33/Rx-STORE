@@ -39,8 +39,12 @@ app through GitHub.
 6. Create the App, then on its page:
    * Note the **App ID** (numeric) → `GITHUB_APP_ID`
    * Note the **slug** in the URL (`https://github.com/apps/<slug>`) → `GITHUB_APP_SLUG`
-   * **Generate a private key** (bottom of the page) → download the `.pem`
+   * **Generate a private key** (Credentials → Key pairs → New key) → download the `.pem`
      → `GITHUB_APP_PRIVATE_KEY` (the full PEM including the BEGIN/END lines)
+   * Under **Identifying and authorizing users** copy the **Client ID** and
+     generate a **Client secret**, and set **Callback URL** to
+     `https://rx-store-api.calcitoninpay.workers.dev/v1/developers/github/callback`
+     (this enables the reliable user-authorization connect flow).
 
 > The domains above are the current production deployment. If you change the
 > Worker or Pages domains, update the App's URLs accordingly — they are
@@ -54,7 +58,18 @@ wrangler secret put GITHUB_APP_ID           --name rx-store-api
 wrangler secret put GITHUB_APP_SLUG         --name rx-store-api
 wrangler secret put GITHUB_APP_PRIVATE_KEY  --name rx-store-api   # paste the whole PEM
 wrangler secret put GITHUB_WEBHOOK_SECRET   --name rx-store-api   # the webhook secret from step 1.2
+
+# RECOMMENDED — the App's OWN OAuth client (Identifying and authorizing users).
+# Enables the reliable connect flow: it lists only the installations and
+# repositories the signed-in GitHub user can access, survives the
+# "already installed" case, and completes on a self-contained page.
+wrangler secret put GITHUB_APP_CLIENT_ID     --name rx-store-api
+wrangler secret put GITHUB_APP_CLIENT_SECRET --name rx-store-api
 ```
+
+Without the two OAuth secrets, connecting falls back to the install redirect
+(GitHub → Setup URL). That fallback requires a fresh install and can lose the
+state when the App is already installed on the account.
 
 Optional tunables (plain `[vars]` in `backend/wrangler.toml`, defaults shown):
 
