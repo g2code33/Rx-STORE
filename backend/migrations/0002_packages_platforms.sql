@@ -1,8 +1,13 @@
 -- 0002: packages — allow every upload platform (linux/linux_deb/linux_appimage/macos/ios)
 -- and one binary per (release, platform). Rebuilds the table; existing rows are kept.
--- Run once against production:
---   npx wrangler d1 execute rx-store-db --remote --file=backend/migrations/0002_packages_platforms.sql
-BEGIN TRANSACTION;
+--
+-- IMPORTANT: do NOT wrap D1 migrations in BEGIN TRANSACTION / COMMIT. The D1
+-- query API rejects explicit transaction statements
+-- ("To execute a transaction, please use state.storage.transaction() …
+--  instead of the SQL BEGIN TRANSACTION … [code: 7500]"), and the wrangler
+-- migration runner already applies each file atomically. Keeping the explicit
+-- BEGIN here made `wrangler d1 migrations apply` fail for every deployment
+-- that still had this migration pending (including a fresh database).
 CREATE TABLE IF NOT EXISTS packages_new (
   id TEXT PRIMARY KEY,
   application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
@@ -25,4 +30,3 @@ CREATE TABLE IF NOT EXISTS packages_new (
 INSERT OR IGNORE INTO packages_new SELECT * FROM packages;
 DROP TABLE packages;
 ALTER TABLE packages_new RENAME TO packages;
-COMMIT;
