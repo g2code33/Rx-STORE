@@ -125,7 +125,11 @@ export const githubDevRoutes = {
       kind: 'github-connect-complete', userId: String(payload.userId), appId: String(payload.appId),
       installationId: String(installationId),
     });
-    return Response.redirect(`${webBase}/developers?gh_connect=${encodeURIComponent(code)}`, 302);
+    // Land on the APP DETAIL page — that is where the connect panel (and the
+    // repository picker) lives. Redirecting to /developers left the completion
+    // code unconsumed: the panel never saw it, the bind never happened, and
+    // the user saw "Connect" again despite a successful GitHub installation.
+    return Response.redirect(`${webBase}/developers/apps/${encodeURIComponent(String(payload.appId))}?gh_connect=${encodeURIComponent(code)}`, 302);
   },
 
   /**

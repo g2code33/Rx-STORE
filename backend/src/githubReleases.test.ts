@@ -1556,3 +1556,16 @@ test('DIAGNOSTICS: githubMissingSecrets names exactly which required secrets are
   );
   assert.deepEqual(githubMissingSecrets({}), ['GITHUB_APP_ID', 'GITHUB_APP_SLUG', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_WEBHOOK_SECRET']);
 });
+
+test('CONNECT FLOW: the install callback lands on the APP page (where the picker lives), never the developer root', async () => {
+  const state = await issueOneTimeToken(env, 'state', { kind: 'github-connect', userId: USER_ID, appId: APP_ID });
+  const req = new Request(`https://api.test/developers/github/callback?state=${encodeURIComponent(state)}&installation_id=${INSTALLATION_ID}`);
+  const res: any = await githubDevRoutes.callback(req as any, env);
+  assert.ok(res instanceof Response && res.status === 302, 'callback redirects');
+  const loc = String(res.headers.get('Location'));
+  assert.ok(loc.includes(`/developers/apps/${APP_ID}?gh_connect=`), `redirects to the APP detail page with the completion code (got ${loc})`);
+  assert.ok(!loc.includes('/developers?'), 'never the bare developer root (the code went unconsumed there — "connected but showing Connect again")');
+  // Invalid state -> honest error redirect.
+  const bad: any = await githubDevRoutes.callback(new Request('https://api.test/developers/github/callback?state=bogus&installation_id=1') as any, env);
+  assert.match(String(bad.headers.get('Location')), /gh_error=invalid_state/);
+});

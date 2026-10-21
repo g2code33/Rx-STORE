@@ -34,6 +34,19 @@ export default function GithubConnectPanel({ app, onChanged }: Props) {
 
   useEffect(load, [load]);
 
+  // When the user returns from GitHub (desktop: back to the app window;
+  // web: back to this tab), re-check the connection — the bind may have been
+  // completed in the other window/tab.
+  useEffect(() => {
+    const onFocus = () => { if (!picker) load(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+  }, [load, picker]);
+
   // The GitHub App callback redirected back with ?gh_connect=<code> — finish
   // the flow by exchanging it for the server-resolved repository list.
   useEffect(() => {
@@ -64,7 +77,12 @@ export default function GithubConnectPanel({ app, onChanged }: Props) {
     setBusy(true);
     try {
       const { url } = await api.github.connect(app.id);
-      window.location.href = url; // leave to GitHub's install page
+      // Open GitHub in a NEW tab / the system browser — NEVER navigate this
+      // window away. In the desktop app the shell routes window.open(https)
+      // to the default browser, so the app (and its signed-in session) stays
+      // exactly where it is; on the web the RX Store tab stays open behind
+      // the GitHub tab. The panel refreshes when the window regains focus.
+      window.open(url, '_blank', 'noopener,noreferrer');
     } catch (e: any) {
       toast.error(e?.message || 'Could not start the GitHub connection.');
     } finally { setBusy(false); }
