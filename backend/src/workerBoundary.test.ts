@@ -379,3 +379,81 @@ test('manual-review decision: the admin identity is attached (worker-level ident
   assert.equal(j.data.manualReviewStatus, 'APPROVED');
   assert.equal(j.data.publicationAuthorization, 'MANUAL_APPROVAL');
 });
+
+// ---------------------------------------------------------------------------
+// ADMIN GITHUB ROUTING — every endpoint must actually reach its handler.
+// Production: 'Unknown GitHub admin route' on Delete all superseded, because
+// two separate `if` chains made the dispatch fall through to the 404 after a
+// match.
+// ---------------------------------------------------------------------------
+
+/** Binding whose DB answers just enough for the admin GitHub handlers. */
+function githubAdminEnv() {
+  const calls: string[] = [];
+  const db: any = { github_releases: [], github_audit_log: [], github_repo_connections: [], applications: [], releases: [], packages: [], github_release_assets: [] };
+  const DB = {
+    prepare(sql: string) {
+      const s = sql.replace(/\s+/g, ' ');
+      calls.push(s.slice(0, 60));
+      const self: any = {
+        _b: [] as any[],
+        bind(...a: any[]) { self._b = a; return self; },
+        async first() { return null; },
+        async all() { return { results: [] }; },
+        async run() { return { meta: { changes: 0 } }; },
+      };
+      return self;
+    },
+  };
+  return { DB, JWT_SECRET: JWT, ENVIRONMENT: 'production', CORS_ALLOWED_ORIGINS: ORIGIN, calls } as any;
+}
+
+function adminReq(method: string, path: string, body?: any) {
+  return new Request(`${ORIGIN}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json', Origin: ORIGIN },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+}
+
+test('ROUTING: every /admin/github endpoint reaches its handler (no stray 404)', async () => {
+  const env = githubAdminEnv();
+  const cases: Array<[string, string, any?]> = [
+    ['GET', '/v1/admin/github/overview'],
+    ['GET', '/v1/admin/github/releases'],
+    ['GET', '/v1/admin/github/connections'],
+    ['GET', '/v1/admin/github/audit'],
+    ['POST', '/v1/admin/github/releases/delete-superseded', {}],
+    ['DELETE', '/v1/admin/github/releases/rel_1', { reason: 'Clearing a stale record from the list.' }],
+    ['POST', '/v1/admin/github/releases/rel_1/retry', {}],
+    ['POST', '/v1/admin/github/releases/rel_1/reject', { reason: 'Release notes do not match the changelog.' }],
+    ['POST', '/v1/admin/github/connections/app_1/suspend', { reason: 'Suspicious activity reported by developers.' }],
+  ];
+  for (const [method, path, body] of cases) {
+    const res = await worker.fetch(adminReq(method, path, body) as any, env as any);
+    const json: any = await res.json().catch(() => null);
+    // A handler may legitimately answer 404 for a record that does not exist —
+    // what must never happen is the CATCH-ALL route 404 below.
+    assert.ok(!/Unknown GitHub admin route/i.test(String(json?.error?.message || '')),
+      `${method} ${path} fell through to the catch-all 404: ${JSON.stringify(json)}`);
+  }
+});
+
+test('ROUTING: Delete all superseded is dispatched with the admin token and reports a count', async () => {
+  const env = githubAdminEnv();
+  const res = await worker.fetch(adminReq('POST', '/v1/admin/github/releases/delete-superseded', {}) as any, env as any);
+  const json: any = await res.json().catch(() => null);
+  assert.equal(res.status, 200, JSON.stringify(json));
+  assert.equal(json?.success, true);
+  assert.equal(typeof json?.data?.deleted, 'number');
+});
+
+test('ROUTING: a non-admin cannot reach the GitHub delete endpoints', async () => {
+  const env = githubAdminEnv();
+  const userToken = await generateToken({ userId: 'u-1', role: 'user' }, JWT);
+  const res = await worker.fetch(new Request(`${ORIGIN}/v1/admin/github/releases/delete-superseded`, {
+    method: 'POST', headers: { Authorization: `Bearer ${userToken}`, 'Content-Type': 'application/json', Origin: ORIGIN }, body: '{}',
+  }) as any, env as any);
+  const json: any = await res.json().catch(() => null);
+  assert.equal(res.status, 401, JSON.stringify(json));
+});

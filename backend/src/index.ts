@@ -329,10 +329,12 @@ export default {
         else if (seg === 'releases') {
           const relId = path.split('/')[4] || '';
           const action = path.split('/')[5] || '';
+          // ONE chain (a second `if` used to fall through to the 404 even after
+          // a match — 'Unknown GitHub admin route' on Delete all superseded).
           if (relId === 'delete-superseded' && request.method === 'POST') data = await githubAdminRoutes.removeSuperseded(normalizedRequest as any, env);
           else if (relId && action === '' && request.method === 'DELETE') data = await githubAdminRoutes.remove(normalizedRequest as any, env);
           else if (relId && action === 'delete' && request.method === 'POST') data = await githubAdminRoutes.remove(normalizedRequest as any, env);
-          if (relId && action === 'publish' && request.method === 'POST') data = await githubAdminRoutes.publish(normalizedRequest as any, env, ctx);
+          else if (relId && action === 'publish' && request.method === 'POST') data = await githubAdminRoutes.publish(normalizedRequest as any, env, ctx);
           else if (relId && action === 'reject' && request.method === 'POST') data = await githubAdminRoutes.reject(normalizedRequest as any, env);
           else if (relId && action === 'withdraw' && request.method === 'POST') data = await githubAdminRoutes.withdraw(normalizedRequest as any, env);
           else if (relId && action === 'retry' && request.method === 'POST') data = await githubAdminRoutes.retry(normalizedRequest as any, env);
