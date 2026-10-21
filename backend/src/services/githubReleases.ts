@@ -207,11 +207,37 @@ export async function connectAppRepository(env: any, input: {
   const other: any = await env.DB.prepare(`SELECT id FROM github_repo_connections WHERE repository_id=? AND status='active'`).bind(String(repo.id)).first().catch(() => null);
   if (other) return { ok: false, code: 'CONFLICT', message: 'That repository is already connected to another application.' };
 
-  const id = `ghc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  await env.DB.prepare(
-    `INSERT INTO github_repo_connections (id, application_id, repository_id, repository_owner, repository_name, repository_full_name, installation_id, status, connected_by)
-     VALUES (?,?,?,?,?,?,?, 'active', ?)`
-  ).bind(id, input.appId, String(repo.id), String(repo.owner?.login || ''), String(repo.name || ''), String(repo.full_name || ''), String(input.installationId), input.userId).run();
+  // RECONNECT SAFELY: the table has UNIQUE(application_id) and
+  // UNIQUE(repository_id). A previous attempt can leave a row behind in a
+  // non-active state (disconnected/suspended/revoked), so an INSERT here used
+  // to violate the constraint and blow up the whole connect flow. Reuse the
+  // existing row and flip it back to active instead.
+  const id = existing?.id ? String(existing.id) : `ghc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    if (existing) {
+      await env.DB.prepare(
+        `UPDATE github_repo_connections
+            SET repository_id=?, repository_owner=?, repository_name=?, repository_full_name=?,
+                installation_id=?, status='active', connected_by=?, last_error=NULL, updated_at=datetime('now')
+          WHERE id=?`
+      ).bind(String(repo.id), String(repo.owner?.login || ''), String(repo.name || ''), String(repo.full_name || ''),
+        String(input.installationId), input.userId, id).run();
+    } else {
+      await env.DB.prepare(
+        `INSERT INTO github_repo_connections (id, application_id, repository_id, repository_owner, repository_name, repository_full_name, installation_id, status, connected_by)
+         VALUES (?,?,?,?,?,?,?, 'active', ?)`
+      ).bind(id, input.appId, String(repo.id), String(repo.owner?.login || ''), String(repo.name || ''), String(repo.full_name || ''), String(input.installationId), input.userId).run();
+    }
+  } catch (e: any) {
+    // A genuine race (another request bound this repo/app in the meantime) or
+    // a legacy row: answer with a clear conflict, never a 500.
+    const msg = String(e?.message || e);
+    console.error('[github] connect write failed:', msg.slice(0, 300), { appId: input.appId, repositoryId: String(repo.id) });
+    if (/UNIQUE/i.test(msg)) {
+      return { ok: false, code: 'CONFLICT', message: 'That repository (or this application) was connected a moment ago. Reload the page and try again.' };
+    }
+    return { ok: false, code: 'SERVICE_UNAVAILABLE', message: 'The connection could not be saved. Please try again.' };
+  }
   await env.DB.prepare('UPDATE github_repo_connections SET repository_private=? WHERE id=?')
     .bind(repo.private === true ? 1 : 0, id).run().catch(() => {});
 

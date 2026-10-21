@@ -25,7 +25,7 @@ import {
   connectAppRepository, disconnectAppRepository, processWebhook,
   verifyGithubRelease, publishGithubRelease, rejectGithubRelease,
   withdrawGithubRelease, syncAllConnections, ensureGithubTables,
-  bindRepositoryFromCode,
+  bindRepositoryFromCode, adminSetConnectionStatus,
 } from './services/githubReleases.ts';
 import { githubDevRoutes, githubAdminRoutes, githubOAuthRoutes } from './routes/githubIntegration.ts';
 import { issueOneTimeToken } from './services/oauth.ts';
@@ -72,8 +72,21 @@ function fakeEnv() {
           const T = (name: string) => tables[name];
           // ---- INSERTs (positional, matching the service code) ----
           if (s.includes('INSERT INTO github_repo_connections')) {
+            // REAL constraint: UNIQUE(application_id) and UNIQUE(repository_id).
+            if (T('github_repo_connections').some((c) => c.application_id === a[1] || c.repository_id === a[2])) {
+              const e: any = new Error('UNIQUE constraint failed: github_repo_connections.application_id');
+              return Promise.reject(e);
+            }
             T('github_repo_connections').push({ id: a[0], application_id: a[1], repository_id: a[2], repository_owner: a[3], repository_name: a[4], repository_full_name: a[5], installation_id: a[6], status: 'active', connected_by: a[7] });
             return { meta: { changes: 1 } };
+          }
+          if (s.includes('UPDATE github_repo_connections SET repository_id=?')) {
+            const c = T('github_repo_connections').find((x) => x.id === a[6]);
+            if (c) Object.assign(c, {
+              repository_id: a[0], repository_owner: a[1], repository_name: a[2], repository_full_name: a[3],
+              installation_id: a[4], status: 'active', connected_by: a[5], last_error: null,
+            });
+            return { meta: { changes: c ? 1 : 0 } };
           }
           if (s.includes('INSERT INTO github_release_events')) {
             T('github_release_events').push({ id: a[0], delivery_id: a[1], event: a[2], action: a[3], repository_id: a[4], status: a[5], detail: a[6], error: a[7] });
@@ -202,6 +215,12 @@ function fakeEnv() {
             return { meta: { changes: 1 } };
           }
           // ---- UPDATEs ----
+          if (s.includes('UPDATE github_repo_connections SET status=?, last_error=?')) {
+            // (status, last_error, id) — admin suspend / reinstate / disconnect
+            const c = T('github_repo_connections').find((x) => x.id === a[2]);
+            if (c) { c.status = a[0]; c.last_error = a[1]; }
+            return { meta: { changes: c ? 1 : 0 } };
+          }
           if (s.includes('UPDATE github_repo_connections SET status=\'disconnected\'')) {
             const c = T('github_repo_connections').find((x) => x.id === a[0]); if (c) c.status = 'disconnected';
             return { meta: { changes: c ? 1 : 0 } };
@@ -2239,4 +2258,63 @@ test('PICKER: a failing GitHub call renders an HTML page too', async () => {
   assert.match(String(out.headers.get('Content-Type')), /text\/html/);
   const html = await out.text();
   assert.match(html, /Could not finish connecting/);
+});
+
+// ---------------------------------------------------------------------------
+// RECONNECT — production failure "Could not finish connecting" with only a
+// reference id. github_repo_connections has UNIQUE(application_id), so a
+// leftover row in a non-active state (disconnected/suspended) made the connect
+// INSERT throw. Reconnecting must REUSE that row.
+// ---------------------------------------------------------------------------
+
+test('RECONNECT: a disconnected connection is reused, not re-inserted (no UNIQUE violation)', async () => {
+  const stubs = installStubs(env);
+  try {
+    // First connect, then disconnect (row stays with status 'disconnected').
+    const first = await connect();
+    assert.ok(first.ok, (first as any).message);
+    await disconnectAppRepository(env, { appId: APP_ID, orgId: ORG_ID, userId: USER_ID });
+    assert.equal(env.tables.github_repo_connections.length, 1);
+    assert.equal(env.tables.github_repo_connections[0].status, 'disconnected');
+
+    // Reconnect: previously this threw UNIQUE constraint failed and surfaced
+    // as 'Something went wrong' on the bind page.
+    const again = await connect();
+    assert.ok(again.ok, (again as any).message);
+    assert.equal(env.tables.github_repo_connections.length, 1, 'still exactly one row');
+    assert.equal(env.tables.github_repo_connections[0].status, 'active', 'the row is active again');
+    assert.equal(again.connection.repository_full_name, 'octo/app');
+  } finally { stubs.restore(); }
+});
+
+test('RECONNECT: a suspended connection is also restored (admin reinstate path stays consistent)', async () => {
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    await adminSetConnectionStatus(env, ADMIN, APP_ID, 'suspend', 'Suspicious activity reported by two developers.');
+    assert.equal(env.tables.github_repo_connections[0].status, 'revoked');
+    const out = await connect();
+    assert.ok(out.ok, (out as any).message);
+    assert.equal(env.tables.github_repo_connections[0].status, 'active');
+    assert.equal(env.tables.github_repo_connections.length, 1);
+  } finally { stubs.restore(); }
+});
+
+test('RECONNECT: a genuine race answers CONFLICT, never a 500-style crash', async () => {
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    // Simulate the race: the row appears between the guard and the write by
+    // pretending the app already has an ACTIVE row for a DIFFERENT app id.
+    env.tables.github_repo_connections.push({
+      id: 'ghc_other', application_id: 'app-other', repository_id: REPO_ID,
+      repository_owner: 'octo', repository_name: 'app', repository_full_name: 'octo/app',
+      installation_id: INSTALLATION_ID, status: 'active',
+    });
+    const out = await connectAppRepository(env, {
+      appId: APP_ID, orgId: ORG_ID, userId: USER_ID, installationId: INSTALLATION_ID, repositoryId: REPO_ID,
+    });
+    assert.equal(out.ok, false);
+    assert.equal((out as any).code, 'CONFLICT');
+  } finally { stubs.restore(); }
 });

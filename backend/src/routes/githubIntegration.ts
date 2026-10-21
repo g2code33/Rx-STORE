@@ -136,7 +136,7 @@ export const githubDevRoutes = {
     const webBase = String(env?.RX_STORE_WEB_URL || 'https://rx-store-web.pages.dev').replace(/\/+$/, '');
 
     // ---- USER-AUTHORIZATION callback: list the repos this user can access ----
-    if (oauthCode) return htmlGuard(webBase, 'github-oauth-picker', () => oauthPicketResponse(env, request, { code: oauthCode, state, webBase }));
+    if (oauthCode) return htmlGuard(env, webBase, 'github-oauth-picker', () => oauthPicketResponse(env, request, { code: oauthCode, state, webBase }));
     if (!state || !installationId) {
       return Response.redirect(`${webBase}/developers?gh_error=missing_parameters`, 302);
     }
@@ -268,14 +268,30 @@ function errorPage(message: string, webBase: string, requestId?: string): Respon
  * user must always get a readable page — with a reference id we can correlate
  * to the server log.
  */
-async function htmlGuard(webBase: string, label: string, fn: () => Promise<Response>): Promise<Response> {
+async function htmlGuard(env: any, webBase: string, label: string, fn: () => Promise<Response>): Promise<Response> {
   try {
     return await fn();
   } catch (e: any) {
     const requestId = `gh_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    console.error(`[${label}] ${requestId}:`, String(e?.stack || e?.message || e).slice(0, 800));
+    const raw = String(e?.message || e);
+    console.error(`[${label}] ${requestId}:`, String(e?.stack || raw).slice(0, 800));
+    // A short, sanitized reason so the operator can act without reading logs.
+    // Long opaque runs (tokens/ids) are redacted before anything is shown.
+    const reason = raw.replace(/[A-Za-z0-9_-]{24,}/g, '…').slice(0, 200).trim();
+    // Also raise it as an admin event — it lands in Admin → Notifications.
+    try {
+      const { notifyAdmin } = await import('../services/adminNotifications.ts');
+      await notifyAdmin(env, {
+        section: 'github', type: 'error',
+        title: 'GitHub connect failed',
+        message: `${label}: ${reason || 'unknown error'} (ref ${requestId})`,
+        link: '/admin?section=github-connect',
+        meta: { label, requestId },
+      });
+    } catch { /* best-effort */ }
     return errorPage(
-      'Something went wrong while finishing the GitHub connection. This is an RX Store-side problem — try again; if it persists, send the reference below to support.',
+      'Something went wrong while finishing the GitHub connection. This is an RX Store-side problem — try again; if it persists, send the reference below to support.'
+      + (reason ? `<br /><br /><span style="color:#9aa4b2">Reason:</span> ${escapeHtml(reason)}` : ''),
       webBase,
       requestId,
     );
@@ -399,7 +415,7 @@ export const githubOAuthRoutes = {
   /** POST /developers/github/oauth/bind (public form post; the code is the proof). */
   async bind(request: Request, env: any): Promise<Response> {
     const webBase = String(env?.RX_STORE_WEB_URL || 'https://rx-store-web.pages.dev').replace(/\/+$/, '');
-    return htmlGuard(webBase, 'github-oauth-bind', () => bindInner(request, env, webBase));
+    return htmlGuard(env, webBase, 'github-oauth-bind', () => bindInner(request, env, webBase));
   },
 };
 
