@@ -54,6 +54,7 @@ function fakeEnv() {
     github_repo_connections: [], github_release_events: [], github_releases: [],
     github_release_assets: [], github_audit_log: [], site_settings: [],
     oauth_tokens: [],
+    admin_events: [],
     package_security_results: [], package_manual_reviews: [], package_security_overrides: [],
     scanner_cache: [], audit_logs: [],
     developers: [{ id: ORG_ID, name: 'Org' }],
@@ -142,6 +143,11 @@ function fakeEnv() {
             T('package_security_overrides').push({ id: a[0], package_id: a[1], admin_user_id: a[2], reason: a[3], prior_state: a[4], prior_overall: a[5], sha256: a[6], invalidated_at: null, created_at: new Date().toISOString() });
             return { meta: { changes: 1 } };
           }
+          if (s.includes('INSERT INTO admin_events')) {
+            T('admin_events').push({ id: a[0], section: a[1], type: a[2], title: a[3], message: a[4], link: a[5], meta: a[6], actor_user_id: a[7], read_at: null, created_at: new Date().toISOString() });
+            return { meta: { changes: 1 } };
+          }
+          if (s.includes('CREATE TABLE IF NOT EXISTS admin_events') || s.includes('CREATE INDEX IF NOT EXISTS idx_admin_events')) return { meta: { changes: 0 } };
           if (s.includes('INSERT INTO audit_logs')) {
             T('audit_logs').push({ id: a[0], action: a[1], resource_type: a[2], resource_id: a[3], details: a[4] });
             return { meta: { changes: 1 } };
@@ -267,6 +273,13 @@ function fakeEnv() {
             return { meta: { changes: r ? 1 : 0 } };
           }
           if (s.includes('ALTER TABLE github_releases ADD COLUMN ignored_assets')) return { meta: { changes: 0 } };
+          if (s.includes("UPDATE github_releases SET status='superseded'")) {
+            const r = T('github_releases').find((x) => x.id === a[1]);
+            if (r && ['detected', 'verifying', 'pending_approval', 'verification_failed', 'blocked'].includes(r.status)) {
+              r.status = 'superseded'; r.block_reason = a[0];
+            }
+            return { meta: { changes: r ? 1 : 0 } };
+          }
           if (s.includes("UPDATE github_releases SET status='detected', block_reason=NULL")) {
             const r = T('github_releases').find((x) => x.id === a[0]);
             if (r && r.status === 'blocked') { r.status = 'detected'; r.block_reason = null; }
@@ -443,6 +456,9 @@ function fakeEnv() {
           const a = this._binds;
           const T = (name: string) => tables[name];
           if (s.includes('FROM github_release_assets WHERE release_id')) return { results: T('github_release_assets').filter((r) => r.release_id === a[0]) };
+          if (s.includes('FROM github_release_assets WHERE release_id=? AND platform=? AND architecture=? AND id<>?')) {
+            return { results: T('github_release_assets').filter((r) => r.release_id === a[0] && r.platform === a[1] && r.architecture === a[2] && r.id !== a[3]) };
+          }
           if (s.includes('FROM github_release_events WHERE repository_id=?')) return { results: T('github_release_events').filter((e) => String(e.repository_id) === String(a[0])).slice(0, 5) };
           if (s.includes('FROM package_security_results') && s.includes('SELECT MAX(id)')) {
             // latest per check_type for one package (a[0]); blockers variant adds a status filter
@@ -463,6 +479,15 @@ function fakeEnv() {
             return { results: T('packages').filter((x) => x.sha256 === a[0] && x.id !== a[1]).map((x) => ({ id: x.id, application_id: x.application_id, platform: x.platform, release_id: x.release_id, appId: x.application_id, release_version: null })) };
           }
           if (s.includes('FROM github_repo_connections WHERE status=\'active\'') || s.includes("FROM github_repo_connections WHERE status = 'active'")) return { results: T('github_repo_connections').filter((c) => c.status === 'active') };
+          if (s.includes('SELECT DISTINCT application_id FROM github_releases')) {
+            return { results: [...new Set(T('github_releases').map((r) => r.application_id))].map((application_id) => ({ application_id })) };
+          }
+          if (s.includes('SELECT id, version FROM github_releases WHERE application_id=?')) {
+            return { results: T('github_releases').filter((r) => r.application_id === a[0] && ['detected', 'verifying', 'pending_approval', 'verification_failed', 'blocked'].includes(r.status)) };
+          }
+          if (s.includes('SELECT id, version FROM github_releases') && s.includes('id<>?')) {
+            return { results: T('github_releases').filter((r) => r.application_id === a[0] && r.id !== a[1] && ['detected', 'verifying', 'pending_approval', 'verification_failed', 'blocked'].includes(r.status)) };
+          }
           if (s.includes('FROM github_releases WHERE status IN')) return { results: T('github_releases').filter((r) => ['detected', 'verifying'].includes(r.status)) };
           if (s.includes('SELECT COUNT(*)')) {
             // overview counts
@@ -2418,4 +2443,113 @@ test('DETECTION: an electron-builder release keeps ALL THREE platforms (apk + ex
     assert.ok(names.includes('latest-linux.yml'));
     assert.ok(names.includes('latest.yml'));
   } finally { stubs.restore(); }
+});
+
+// ---------------------------------------------------------------------------
+// LATEST ONLY — a sync must not import the whole release history.
+// Production: the queue filled with v1.0.60 … v1.0.68.
+// ---------------------------------------------------------------------------
+
+test('LATEST ONLY: an older undecided release is SUPERSEDED when a newer one is detected', async () => {
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    const old1 = ghReleasePayload();
+    old1.release.id = 4001; old1.release.tag_name = 'v1.0.60';
+    await signedDelivery(env, 'release', old1, 'd-old');
+    const older = env.tables.github_releases.find((r: any) => r.github_release_id === '4001');
+    assert.equal(older.status, 'detected');
+
+    const newer = ghReleasePayload();
+    newer.release.id = 4002; newer.release.tag_name = 'v1.0.68';
+    await signedDelivery(env, 'release', newer, 'd-new');
+    const newerRow = env.tables.github_releases.find((r: any) => r.github_release_id === '4002');
+    assert.equal(newerRow.status, 'detected');
+    assert.equal(older.status, 'superseded', 'the older undecided release leaves the queue');
+    assert.ok(String(older.block_reason).includes('Superseded by the newer GitHub release 1.0.68'), String(older.block_reason));
+
+    const pub = await publishGithubRelease(env, ADMIN, older.id, {});
+    assert.equal(pub.ok, false);
+  } finally { stubs.restore(); }
+});
+
+test('LATEST ONLY: an ALREADY PUBLISHED older release is never superseded', async () => {
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-pub-old');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    await verifyGithubRelease(env, rel.id);
+    const published = await publishGithubRelease(env, ADMIN, rel.id, {});
+    assert.ok(published.ok, (published as any).message);
+    assert.equal(rel.status, 'published');
+
+    const newer = ghReleasePayload();
+    newer.release.id = 5002; newer.release.tag_name = 'v1.13.0';
+    await signedDelivery(env, 'release', newer, 'd-newer');
+    assert.equal(rel.status, 'published', 'a live release stays live');
+  } finally { stubs.restore(); }
+});
+
+test('LATEST ONLY: sync imports ONLY the newest non-draft release and archives the backlog', async () => {
+  const stubs = installStubs(env);
+  const original = globalThis.fetch;
+  try {
+    await connect();
+    for (const [id, ver] of [['6001', 'v1.0.60'], ['6002', 'v1.0.61'], ['6003', 'v1.0.62']]) {
+      env.tables.github_releases.push({
+        id: `ghr_${id}`, application_id: APP_ID, connection_id: env.tables.github_repo_connections[0].id,
+        github_release_id: id, tag_name: ver, version: ver.slice(1), status: 'detected', detected_at: '2026-10-21',
+      });
+    }
+    (globalThis.fetch as any) = (async (url: any, init?: any) => {
+      const u = String(url);
+      if (u.startsWith('https://api.github.com/repos/octo/app/releases?per_page=10')) {
+        return new Response(JSON.stringify([
+          { id: 7001, tag_name: 'v1.0.68', draft: false, prerelease: false, body: '', assets: [
+            { id: 7500, name: 'clinical-rx_1.0.68_amd64.deb', size: 10, browser_download_url: 'https://github.com/octo/app/releases/download/v1.0.68/clinical-rx_1.0.68_amd64.deb' },
+          ] },
+          { id: 7000, tag_name: 'v1.0.67', draft: false, prerelease: false, body: '', assets: [] },
+        ]), { status: 200 });
+      }
+      return (original as any)(url, init);
+    });
+    const out = await syncAllConnections(env, ADMIN);
+    assert.ok(out.detected >= 1, JSON.stringify(out));
+
+    const live = env.tables.github_releases.filter((r: any) =>
+      ['detected', 'verifying', 'pending_approval'].includes(r.status));
+    assert.equal(live.length, 1, JSON.stringify(live.map((r: any) => r.version)));
+    assert.equal(live[0].version, '1.0.68');
+    const superseded = env.tables.github_releases.filter((r: any) => r.status === 'superseded');
+    assert.ok(superseded.length >= 3, 'the historical backlog is archived, not queued');
+  } finally { globalThis.fetch = original; stubs.restore(); }
+});
+
+test('SECURITY NOTIFICATIONS: verification success and failure both raise an admin event', async () => {
+  const stubs = installStubs(env, { vtVerdict: 'CLEAN' });
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-sec-1');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const v = await verifyGithubRelease(env, rel.id);
+    assert.ok(v.ok, v.message);
+    const events = env.tables.admin_events.filter((e: any) => e.section === 'security');
+    assert.ok(events.some((e: any) => /verification passed/i.test(e.title)), JSON.stringify(events.map((e: any) => e.title)));
+  } finally { stubs.restore(); }
+
+  env = fakeEnv();
+  env.GITHUB_APP_PRIVATE_KEY = TEST_PEM;
+  await ensureGithubTables(env);
+  const stubs2 = installStubs(env, { assetStatus: 404 });
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-sec-2');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const v = await verifyGithubRelease(env, rel.id);
+    assert.equal(v.ok, false);
+    const events = env.tables.admin_events.filter((e: any) => e.section === 'security');
+    assert.ok(events.some((e: any) => /verification failed/i.test(e.title)), JSON.stringify(events.map((e: any) => e.title)));
+    assert.ok(events.some((e: any) => e.type === 'error'));
+  } finally { stubs2.restore(); }
 });

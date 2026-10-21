@@ -23,6 +23,7 @@ const STATUS_STYLES: Record<string, string> = {
   rejected: 'bg-white/10 text-rx-gray-medium',
   withdrawn: 'bg-white/10 text-rx-gray-medium',
   published: 'bg-green-500/15 text-green-300',
+  superseded: 'bg-white/5 text-rx-gray-medium/70',
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -186,7 +187,7 @@ export default function GithubReleasesPanel() {
       {!loading && !error && tab === 'queue' && (
         <>
           <div className="flex flex-wrap gap-2 items-center">
-            {['', 'pending_approval', 'verifying', 'detected', 'blocked', 'verification_failed', 'published', 'rejected', 'withdrawn'].map((s) => (
+            {['', 'pending_approval', 'verifying', 'detected', 'blocked', 'verification_failed', 'published', 'rejected', 'withdrawn', 'superseded'].map((s) => (
               <button key={s || 'all'} onClick={() => setFilter(s)}
                 className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${filter === s ? 'text-rx-yellow border-rx-yellow/40 bg-rx-yellow/10' : 'text-rx-gray-medium border-white/10 bg-white/5 hover:text-white'}`}>
                 {s ? s.replace(/_/g, ' ') : 'all'}
@@ -216,7 +217,9 @@ export default function GithubReleasesPanel() {
                 {expanded === rel.id && (
                   <div className="border-t border-white/5 p-4 md:p-5 space-y-4">
                     {rel.block_reason && (
-                      <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-xs text-red-200">⚠ {rel.block_reason}</div>
+                      rel.status === 'superseded'
+                        ? <div className="p-3 rounded-xl bg-white/5 border border-white/10 text-xs text-rx-gray-medium">{rel.block_reason} It stays here as history — only the newest release is reviewed.</div>
+                        : <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-xs text-red-200">⚠ {rel.block_reason}</div>
                     )}
                     {rel.decision_reason && (
                       <div className="p-3 rounded-xl bg-white/5 border border-white/10 text-xs text-rx-gray-medium">Decision note: {rel.decision_reason}</div>

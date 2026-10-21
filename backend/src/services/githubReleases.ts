@@ -97,6 +97,11 @@ export async function ensureGithubTables(env: any): Promise<void> {
   await env.DB.prepare('ALTER TABLE packages ADD COLUMN external_private INTEGER DEFAULT 0').run().catch(() => {});
   await env.DB.prepare('ALTER TABLE github_release_assets ADD COLUMN arch_assumed INTEGER DEFAULT 0').run().catch(() => {});
   await env.DB.prepare('ALTER TABLE packages ADD COLUMN arch_assumed INTEGER DEFAULT 0').run().catch(() => {});
+  // 'superseded' is a NEW status value. SQLite cannot alter a CHECK constraint
+  // in place, so this only matters for databases created by migration 0023 —
+  // the migration below rebuilds that constraint. A write with the new value on
+  // an old table would fail, so it is wrapped in .catch() at the call sites and
+  // re-tried by migration 0029.
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS github_release_assets (
     id TEXT PRIMARY KEY, release_id TEXT NOT NULL, github_asset_id TEXT NOT NULL,
     name TEXT NOT NULL, platform TEXT NOT NULL, architecture TEXT NOT NULL,
@@ -408,7 +413,10 @@ export async function processWebhook(env: any, input: {
  * are quarantined as blocked (stable-only initial workflow); deleted/edited
  * actions only refresh metadata.
  */
-export async function detectRelease(env: any, conn: any, ghRelease: any, action: string): Promise<{ status: string; releaseId?: string; latestVersion?: string }> {
+export async function detectRelease(
+  env: any, conn: any, ghRelease: any, action: string,
+  opts: { source?: 'webhook' | 'sync' } = {},
+): Promise<{ status: string; releaseId?: string; latestVersion?: string }> {
   await ensureGithubTables(env);
   if (!ghRelease || typeof ghRelease !== 'object') return { status: 'ignored' };
 
@@ -522,6 +530,36 @@ export async function detectRelease(env: any, conn: any, ghRelease: any, action:
       repoIsPrivate ? 1 : 0,
       m.assumed ? 1 : 0,
     ).run().catch(() => {});
+  }
+
+  // ---- LATEST ONLY -------------------------------------------------------
+  // Old releases piled up as separate pending rows (a sync imported every
+  // historical tag). Older candidates that nobody has decided on are marked
+  // 'superseded': they stay in the table as history but never appear in the
+  // approval queue, never notify and can never be published.
+  // An older release that was ALREADY published is untouched (it is live).
+  {
+    const older: any = await env.DB.prepare(
+      `SELECT id, version FROM github_releases
+        WHERE application_id=? AND id<>? AND status IN ('detected','verifying','pending_approval','verification_failed','blocked')`
+    ).bind(conn.application_id, id).all().catch(() => ({ results: [] }));
+    const { compareSemver } = await import('./releases.ts');
+    let superseded = 0;
+    for (const row of older?.results || []) {
+      if (compareSemver(row.version, version) < 0) {
+        await env.DB.prepare(
+          `UPDATE github_releases SET status='superseded', block_reason=? WHERE id=? AND status IN ('detected','verifying','pending_approval','verification_failed','blocked')`
+        ).bind(`Superseded by the newer GitHub release ${version}.`, row.id).run().catch(() => {});
+        superseded++;
+      }
+    }
+    if (superseded > 0) {
+      await audit(env, {
+        action: 'superseded', actorId: 'system', actorLabel: 'rx-store',
+        appId: conn.application_id, releaseId: id, repositoryId: conn.repository_id,
+        details: { newerVersion: version, superseded, source: opts.source || 'webhook' },
+      });
+    }
   }
 
   // Awareness: a new GitHub release was detected (Admin → GitHub Releases badge).
@@ -770,11 +808,42 @@ export async function verifyGithubRelease(env: any, releaseId: string): Promise<
   }
 
   if (failures > 0) {
+    const reason = `${failures} asset(s) failed verification: ${failureReasons.slice(0, 5).join(' | ')}`;
     await env.DB.prepare(`UPDATE github_releases SET status='verification_failed', block_reason=? WHERE id=?`)
-      .bind(`${failures} asset(s) failed verification: ${failureReasons.slice(0, 5).join(' | ')}`, releaseId).run();
+      .bind(reason, releaseId).run();
+    // SECURITY EVENTS ARE NOT SILENT: a failed verification is an admin alert.
+    try {
+      const { notifyAdmin } = await import('./adminNotifications.ts');
+      await notifyAdmin(env, {
+        section: 'security', type: 'error',
+        title: `Security verification failed — ${rel.version}`,
+        message: reason.slice(0, 400),
+        link: '/admin?section=github', meta: { releaseId, appId: rel.application_id, version: rel.version },
+      });
+    } catch { /* best-effort */ }
     return { ok: false, status: 'verification_failed', message: 'One or more assets failed verification.' };
   }
   await env.DB.prepare(`UPDATE github_releases SET status='pending_approval', verified_at=datetime('now') WHERE id=?`).bind(releaseId).run();
+  // SECURITY EVENT: verification finished and the release is ready to approve.
+  try {
+    const { notifyAdmin } = await import('./adminNotifications.ts');
+    const scanners: any = await env.DB.prepare(
+      `SELECT SUM(CASE WHEN scanner_status='CLEAN' THEN 1 ELSE 0 END) AS clean,
+              SUM(CASE WHEN scanner_status IS NULL OR scanner_status<>'CLEAN' THEN 1 ELSE 0 END) AS other
+         FROM github_release_assets WHERE release_id=?`
+    ).bind(releaseId).first().catch(() => null);
+    const other = Number(scanners?.other || 0);
+    await notifyAdmin(env, {
+      section: 'security', type: other > 0 ? 'warning' : 'success',
+      title: other > 0
+        ? `Verification finished with warnings — ${rel.version}`
+        : `Security verification passed — ${rel.version}`,
+      message: other > 0
+        ? `${other} asset(s) have no clean scanner verdict — review before approving.`
+        : 'Every asset verified (hash + malware scan). Ready for your approval.',
+      link: '/admin?section=github', meta: { releaseId, appId: rel.application_id, version: rel.version },
+    });
+  } catch { /* best-effort */ }
   return { ok: true, status: 'pending_approval' };
 }
 
@@ -1059,9 +1128,13 @@ export async function syncAllConnections(env: any, actor: { userId: string; labe
     try {
       const res = await ghApi(env, `/repos/${conn.repository_full_name}/releases?per_page=10`, { installationId: conn.installation_id });
       if (!res.ok || !Array.isArray(res.json)) { failures++; continue; }
-      for (const r of res.json) {
-        if (r.draft) continue;
-        const outcome = await detectRelease(env, conn, r, 'published');
+      // LATEST ONLY: a sync is a reconciliation, not an import of history.
+      // GitHub returns newest-first; take the newest non-draft, non-prerelease
+      // release and ignore the backlog (old tags are not actionable and used to
+      // flood the approval queue).
+      const newest = (res.json as any[]).find((r) => !r.draft && !r.prerelease);
+      if (newest) {
+        const outcome = await detectRelease(env, conn, newest, 'published', { source: 'sync' });
         if (outcome.status === 'detected') detected++;
       }
       await env.DB.prepare(`UPDATE github_repo_connections SET last_sync_at=datetime('now'), last_error=NULL WHERE id=?`).bind(conn.id).run();
@@ -1070,6 +1143,27 @@ export async function syncAllConnections(env: any, actor: { userId: string; labe
       await env.DB.prepare(`UPDATE github_repo_connections SET last_error=? WHERE id=?`).bind(String(e?.message || e).slice(0, 300), conn.id).run().catch(() => {});
     }
   }
+  // Clean up the historical backlog: for every app, keep only the newest
+  // undecided candidate; older ones become 'superseded' (history, no queue).
+  try {
+    const { compareSemver } = await import('./releases.ts');
+    const apps: any = await env.DB.prepare(
+      `SELECT DISTINCT application_id FROM github_releases WHERE status IN ('detected','verifying','pending_approval','verification_failed','blocked')`
+    ).all().catch(() => ({ results: [] }));
+    for (const row of apps?.results || []) {
+      const list: any = await env.DB.prepare(
+        `SELECT id, version FROM github_releases WHERE application_id=? AND status IN ('detected','verifying','pending_approval','verification_failed','blocked')`
+      ).bind(row.application_id).all().catch(() => ({ results: [] }));
+      const items = list?.results || [];
+      if (items.length < 2) continue;
+      const newest = items.reduce((a: any, b: any) => (compareSemver(b.version, a.version) > 0 ? b : a), items[0]);
+      for (const it of items) {
+        if (it.id === newest.id) continue;
+        await env.DB.prepare(`UPDATE github_releases SET status='superseded', block_reason=? WHERE id=?`)
+          .bind(`Superseded by the newer GitHub release ${newest.version}.`, it.id).run().catch(() => {});
+      }
+    }
+  } catch { /* best-effort */ }
   await audit(env, { action: 'sync', actorId: actor.userId, actorLabel: actor.label, details: { checked: conns?.results?.length || 0, detected, failures } });
   return { checked: conns?.results?.length || 0, detected, failures };
 }
@@ -1131,7 +1225,7 @@ export async function adminQueue(env: any, filters: { status?: string; appId?: s
      JOIN github_repo_connections c ON c.id = g.connection_id
      LEFT JOIN applications a ON a.id = g.application_id
      WHERE ${where.join(' AND ')}
-     ORDER BY CASE g.status WHEN 'pending_approval' THEN 0 WHEN 'verifying' THEN 1 WHEN 'detected' THEN 2 ELSE 3 END, g.detected_at DESC
+     ORDER BY CASE g.status WHEN 'pending_approval' THEN 0 WHEN 'verifying' THEN 1 WHEN 'detected' THEN 2 WHEN 'superseded' THEN 9 ELSE 3 END, g.detected_at DESC
      LIMIT 100`
   ).bind(...binds).all().catch(() => ({ results: [] }));
   const out = [];
