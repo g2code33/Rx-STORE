@@ -2195,3 +2195,48 @@ test('PRIVATE DOWNLOAD: the manifest points at the RX Store asset proxy, never t
   assert.equal(manifest.url, 'https://api.test/v1/github-assets/pkg_private_1');
   assert.ok(!manifest.url.includes('api.github.com'), 'the token-requiring API URL must never reach a client');
 });
+
+// ---------------------------------------------------------------------------
+// FORM POSTS MUST NEVER RETURN RAW JSON
+// Production: a developer's bind form post answered
+//   {"success":false,"error":{"code":"INTERNAL", ...}}
+// because an exception escaped the handler into the API's JSON boundary.
+// A browser form post must always receive a readable HTML page.
+// ---------------------------------------------------------------------------
+
+test('BIND: an unexpected exception renders an HTML page with a reference — never raw JSON', async () => {
+  // A database that explodes on every statement (schema drift, D1 outage…).
+  const broken = {
+    DB: { prepare() { throw new Error('D1_ERROR: no such column: repository_private'); } },
+    RX_STORE_WEB_URL: 'https://web.test',
+  };
+  const body = new URLSearchParams({ code: 'o_whatever', repositoryId: '123' }).toString();
+  const out: any = await githubOAuthRoutes.bind(
+    new Request('https://api.test/developers/github/oauth/bind', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body,
+    }) as any,
+    broken,
+  );
+  assert.ok(out instanceof Response, 'a Response is always returned');
+  assert.ok(String(out.headers.get('Content-Type')).includes('text/html'), 'HTML, not JSON');
+  const html = await out.text();
+  assert.ok(!html.trimStart().startsWith('{"success"'), 'must not be the JSON error envelope');
+  assert.match(html, /Reference:/, 'the page carries a reference id for the log');
+  assert.match(html, /Could not finish connecting/);
+});
+
+test('PICKER: a failing GitHub call renders an HTML page too', async () => {
+  const broken = {
+    DB: { prepare() { throw new Error('D1 down'); } },
+    RX_STORE_WEB_URL: 'https://web.test',
+    GITHUB_APP_ID: '1', GITHUB_APP_SLUG: 's', GITHUB_APP_PRIVATE_KEY: 'k', GITHUB_WEBHOOK_SECRET: 'w',
+    GITHUB_APP_CLIENT_ID: 'Iv1.x', GITHUB_APP_CLIENT_SECRET: 'sec',
+  };
+  const out: any = await githubDevRoutes.callback(
+    new Request('https://api.test/developers/github/callback?code=abc&state=xyz') as any, broken,
+  );
+  assert.ok(out instanceof Response);
+  assert.match(String(out.headers.get('Content-Type')), /text\/html/);
+  const html = await out.text();
+  assert.match(html, /Could not finish connecting/);
+});

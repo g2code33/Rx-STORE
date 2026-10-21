@@ -136,7 +136,7 @@ export const githubDevRoutes = {
     const webBase = String(env?.RX_STORE_WEB_URL || 'https://rx-store-web.pages.dev').replace(/\/+$/, '');
 
     // ---- USER-AUTHORIZATION callback: list the repos this user can access ----
-    if (oauthCode) return oauthPicketResponse(env, request, { code: oauthCode, state, webBase });
+    if (oauthCode) return htmlGuard(webBase, 'github-oauth-picker', () => oauthPicketResponse(env, request, { code: oauthCode, state, webBase }));
     if (!state || !installationId) {
       return Response.redirect(`${webBase}/developers?gh_error=missing_parameters`, 302);
     }
@@ -256,9 +256,30 @@ function htmlPage(title: string, body: string): Response {
     { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY' } });
 }
 
-function errorPage(message: string, webBase: string): Response {
-  return htmlPage('RX Store — GitHub connection', `<div class="card err"><div><h1>Could not finish connecting</h1><p class="muted">${message}</p></div></div>
+function errorPage(message: string, webBase: string, requestId?: string): Response {
+  const ref = requestId ? `<p class="muted" style="margin-top:8px">Reference: <code>${escapeHtml(requestId)}</code></p>` : '';
+  return htmlPage('RX Store — GitHub connection', `<div class="card err"><div><h1>Could not finish connecting</h1><p class="muted">${message}</p>${ref}</div></div>
     <a class="btn" href="${webBase}/developers/apps">Back to RX Store</a>`);
+}
+
+/**
+ * Run a user-facing GitHub page renderer so it can NEVER fall through to the
+ * JSON API error boundary. A form post from GitHub lands in a browser, so the
+ * user must always get a readable page — with a reference id we can correlate
+ * to the server log.
+ */
+async function htmlGuard(webBase: string, label: string, fn: () => Promise<Response>): Promise<Response> {
+  try {
+    return await fn();
+  } catch (e: any) {
+    const requestId = `gh_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    console.error(`[${label}] ${requestId}:`, String(e?.stack || e?.message || e).slice(0, 800));
+    return errorPage(
+      'Something went wrong while finishing the GitHub connection. This is an RX Store-side problem — try again; if it persists, send the reference below to support.',
+      webBase,
+      requestId,
+    );
+  }
 }
 
 /**
@@ -378,6 +399,12 @@ export const githubOAuthRoutes = {
   /** POST /developers/github/oauth/bind (public form post; the code is the proof). */
   async bind(request: Request, env: any): Promise<Response> {
     const webBase = String(env?.RX_STORE_WEB_URL || 'https://rx-store-web.pages.dev').replace(/\/+$/, '');
+    return htmlGuard(webBase, 'github-oauth-bind', () => bindInner(request, env, webBase));
+  },
+};
+
+/** The actual bind work (always called inside htmlGuard). */
+async function bindInner(request: Request, env: any, webBase: string): Promise<Response> {
     let code = '';
     let repositoryId = '';
     try {
@@ -459,8 +486,8 @@ export const githubOAuthRoutes = {
       <div class="card ok"><div><h1>Repository connected ✓</h1><p class="muted">${escapeHtml(match.fullName)} is now linked. Publish a GitHub Release there and it will appear in Admin → GitHub Releases for approval.</p></div></div>
       <p class="muted">You can close this window — RX Store picks up the connection automatically.</p>
       <p style="margin-top:20px"><a class="btn" href="${escapeHtml(webBase)}/developers/apps/${encodeURIComponent(String(payload.appId))}">Back to your app</a></p>`);
-  },
-};
+}
+
 
 // ---------------------------------------------------------------------------
 // Admin routes (behind the /admin gate; role re-checked here)
