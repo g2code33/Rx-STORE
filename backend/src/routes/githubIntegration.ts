@@ -23,7 +23,7 @@ import {
   processWebhook, verifyGithubRelease, publishGithubRelease,
   rejectGithubRelease, withdrawGithubRelease, syncAllConnections,
   adminOverview, adminQueue, adminAudit, verifyPendingDetections, ensureGithubTables,
-  adminConnectionsOverview, adminSetConnectionStatus,
+  adminConnectionsOverview, adminSetConnectionStatus, appIsFree,
 } from '../services/githubReleases.ts';
 import { issueOneTimeToken, consumeOneTimeToken, restoreOneTimeToken } from '../services/oauth.ts';
 
@@ -259,6 +259,9 @@ async function oauthPicketResponse(env: any, request: Request, input: { code: st
   if (!payload || payload.kind !== 'github-oauth' || !payload.userId || !payload.appId) {
     return errorPage('This connection request expired or was already used. Start again from RX Store.', input.webBase);
   }
+  // An ADMIN-started flow is authorized by the /admin gate that created the
+  // state token: admins have no developer org, and they may connect any app.
+  const adminInitiated = payload.adminInitiated === true;
   const redirectUri = githubAppCallbackUrl(env, request);
   const token = await exchangeUserCode(env, { code: input.code, redirectUri });
   if (!token) return errorPage('GitHub did not return a valid authorization. Try again from RX Store.', input.webBase);
@@ -276,17 +279,29 @@ async function oauthPicketResponse(env: any, request: Request, input: { code: st
   // Server-issued completion code: only these repo ids may be bound.
   const completion = await issueOneTimeToken(env, 'code', {
     kind: 'github-oauth-bind', userId: String(payload.userId), appId: String(payload.appId),
+    adminInitiated,
     allowed: repos.map((r) => ({ id: r.repositoryId, installationId: r.installationId, fullName: r.fullName })),
   });
+
+  // ADMIN-started flow: hand the completion code straight back to the Admin
+  // Panel, which renders its own picker (an admin has no developer page).
+  if (adminInitiated) {
+    return Response.redirect(
+      `${input.webBase}/admin?section=github-connect&gh_admin_connect=${encodeURIComponent(completion)}&app=${encodeURIComponent(String(payload.appId))}`,
+      302,
+    );
+  }
 
   // Verify the person who started the flow can actually own this app's
   // connection — otherwise every Connect click would fail. Fail here with an
   // actionable page instead of a button that cannot work.
-  const { resolveMembership } = await import('./developers.ts');
+  // An ADMIN-started flow is authorized by the /admin gate that created the
+  // state token: admins have no developer org, and they may connect any app.
   const starterId = String(payload.userId);
   const appRow: any = await env.DB.prepare('SELECT * FROM applications WHERE id=?').bind(String(payload.appId)).first().catch(() => null);
   if (!appRow) return errorPage('That application no longer exists. Start again from RX Store.', input.webBase);
-  {
+  if (!adminInitiated) {
+    const { resolveMembership } = await import('./developers.ts');
     const ms = await resolveMembership(env, starterId).catch(() => null);
     const memOrg = ms?.developer?.id ? String(ms.developer.id) : null;
     const appOrg = appRow?.developer_org_id ? String(appRow.developer_org_id) : null;
@@ -298,8 +313,10 @@ async function oauthPicketResponse(env: any, request: Request, input: { code: st
 
   const publicRepos = repos.filter((r) => !r.private);
   const privateCount = repos.length - publicRepos.length;
+  const adminActionBase = `/v1/admin/github/connections/${encodeURIComponent(String(payload.appId))}/bind`;
+  const bindAction = adminInitiated ? adminActionBase : '/v1/developers/github/oauth/bind';
   const rows = publicRepos.map((r) => `
-    <form class="card" method="POST" action="/v1/developers/github/oauth/bind">
+    <form class="card" method="POST" action="${bindAction}">
       <input type="hidden" name="code" value="${escapeHtml(completion)}" />
       <input type="hidden" name="repositoryId" value="${escapeHtml(r.repositoryId)}" />
       <div><strong>${escapeHtml(r.fullName)}</strong><div class="muted">public repository</div></div>
@@ -338,6 +355,7 @@ export const githubOAuthRoutes = {
 
     const payload = await consumeOneTimeToken(env, 'code', code, { allowRetry: true });
     if (!payload || payload.kind !== 'github-oauth-bind') return errorPage('This connection link expired or was already used — start again from RX Store.', webBase);
+    if (payload.adminInitiated) return errorPage('This connection was started by an administrator and must be finished in the Admin Panel.', webBase);
     const allowed: Array<{ id: string; installationId: string; fullName: string }> = Array.isArray(payload.allowed) ? payload.allowed : [];
     const match = allowed.find((r) => String(r.id) === String(repositoryId));
     if (!match) {
@@ -500,6 +518,100 @@ export const githubAdminRoutes = {
     const admin = requireAdmin(request);
     if ('error' in admin) return { code: 'UNAUTHORIZED', message: admin.error };
     return adminConnectionsOverview(env);
+  },
+
+  /**
+   * POST /admin/github/connections/:appId/connect
+   * Start the GitHub authorization on the app owner's behalf. The resulting
+   * state token carries `adminInitiated: true`, so the callback renders the
+   * picker WITHOUT requiring an RX Store session and the bind uses the app's
+   * own organization instead of the admin's (admins have none).
+   */
+  async connectStart(request: Request, env: any) {
+    const admin = requireAdmin(request);
+    if ('error' in admin) return { code: 'UNAUTHORIZED', message: admin.error };
+    const cfg = githubAppConfig(env);
+    if (!cfg) return { code: 'NOT_IMPLEMENTED', message: 'The GitHub integration is not configured on this deployment. An administrator must complete the GitHub App setup (docs/GITHUB_RELEASES.md).' };
+    const appId = new URL(request.url).pathname.split('/')[4] || '';
+    const app: any = await env.DB.prepare('SELECT * FROM applications WHERE id=?').bind(appId).first().catch(() => null);
+    if (!app) return { code: 'NOT_FOUND', message: 'Application not found.' };
+    if (!appIsFree(app)) return { code: 'FORBIDDEN', message: 'GitHub distribution is available for FREE applications only. Paid applications use the manual admin upload channel.' };
+    const existing = await getConnectionForApp(env, appId);
+    if (existing && existing.status === 'active') return { code: 'CONFLICT', message: 'This application is already connected. Disconnect it first to change repositories.' };
+    if (!githubAppOAuthConfigured(env)) {
+      return { code: 'NOT_IMPLEMENTED', message: 'The GitHub App OAuth client is not configured (GITHUB_APP_CLIENT_ID / GITHUB_APP_CLIENT_SECRET), so an administrator cannot connect a repository on the developer\'s behalf. Ask the developer to connect it from their Developer Center, or set the two secrets.' };
+    }
+    const state = await issueOneTimeToken(env, 'state', { kind: 'github-oauth', userId: admin.userId, appId, adminInitiated: true });
+    const url = userAuthorizeUrl(env, { state, redirectUri: githubAppCallbackUrl(env, request) });
+    if (!url) return { code: 'NOT_IMPLEMENTED', message: 'Could not build the GitHub authorization URL.' };
+    return { url };
+  },
+
+  /**
+   * POST /admin/github/connections/:appId/repos {code}
+   * The repositories carried by an ADMIN-started completion code, so the admin
+   * panel can render the picker without the developer page.
+   */
+  async connectRepos(request: Request, env: any) {
+    const admin = requireAdmin(request);
+    if ('error' in admin) return { code: 'UNAUTHORIZED', message: admin.error };
+    const appId = new URL(request.url).pathname.split('/')[4] || '';
+    let body: any = {};
+    try { body = await request.json(); } catch {}
+    const code = String(body?.code || '');
+    if (!code) return { code: 'VALIDATION_ERROR', message: 'code is required.' };
+    const payload = await consumeOneTimeToken(env, 'code', code, { allowRetry: true });
+    if (!payload || payload.kind !== 'github-oauth-bind' || !payload.adminInitiated) {
+      return { code: 'INVALID_TOKEN', message: 'This connection request is invalid or has expired. Start again.' };
+    }
+    if (String(payload.appId) !== appId) {
+      await restoreOneTimeToken(env, code);
+      return { code: 'FORBIDDEN', message: 'This connection request was started for a different application.' };
+    }
+    await restoreOneTimeToken(env, code); // stays usable for the bind step
+    const allowed: Array<{ id: string; installationId: string; fullName: string }> = Array.isArray(payload.allowed) ? payload.allowed : [];
+    return { apps: [], repos: allowed.map((r) => ({ id: r.id, fullName: r.fullName, private: false })) };
+  },
+
+  /** POST /admin/github/connections/:appId/bind {code, repositoryId} — finish an admin-started connect. */
+  async connectFinish(request: Request, env: any) {
+    const admin = requireAdmin(request);
+    if ('error' in admin) return { code: 'UNAUTHORIZED', message: admin.error };
+    const appId = new URL(request.url).pathname.split('/')[4] || '';
+    let body: any = {};
+    try { body = await request.json(); } catch {}
+    const code = String(body?.code || '');
+    const repositoryId = String(body?.repositoryId || '');
+    if (!code || !repositoryId) return { code: 'VALIDATION_ERROR', message: 'code and repositoryId are required.' };
+
+    const payload = await consumeOneTimeToken(env, 'code', code, { allowRetry: true });
+    if (!payload || payload.kind !== 'github-oauth-bind' || !payload.adminInitiated) {
+      return { code: 'INVALID_TOKEN', message: 'This connection request is invalid or has expired. Start again.' };
+    }
+    if (String(payload.appId) !== appId) {
+      await restoreOneTimeToken(env, code);
+      return { code: 'FORBIDDEN', message: 'This connection request was started for a different application.' };
+    }
+    const allowed: Array<{ id: string; installationId: string; fullName: string }> = Array.isArray(payload.allowed) ? payload.allowed : [];
+    const match = allowed.find((r) => String(r.id) === repositoryId);
+    if (!match) {
+      await restoreOneTimeToken(env, code);
+      return { code: 'FORBIDDEN', message: 'That repository is not part of this authorization.' };
+    }
+    const app: any = await env.DB.prepare('SELECT * FROM applications WHERE id=?').bind(appId).first().catch(() => null);
+    if (!app) return { code: 'NOT_FOUND', message: 'Application not found.' };
+    const out = await connectAppRepository(env, {
+      appId, orgId: String(app.developer_org_id || ''), userId: admin.userId,
+      installationId: match.installationId, repositoryId: match.id,
+      verifiedRepo: { repositoryId: match.id, installationId: match.installationId, fullName: match.fullName },
+      byAdmin: true,
+    });
+    if (!out.ok) {
+      console.warn('[github-admin-connect] failed:', out.code, out.message, { appId, repositoryId: match.id });
+      await restoreOneTimeToken(env, code);
+      return { code: out.code, message: out.message };
+    }
+    return { connection: out.connection };
   },
 
   /** POST /admin/github/connections/:appId/suspend|reinstate|disconnect {reason} */

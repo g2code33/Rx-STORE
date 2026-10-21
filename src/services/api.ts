@@ -1031,6 +1031,22 @@ export const api = {
     connections() {
       return request<{ configured: boolean; totals: any; apps: any[] }>('/admin/github/connections');
     },
+    /** Begin a GitHub authorization for an app, on the owner's behalf (admin). */
+    connectStart(appId: string) {
+      return request<{ url: string }>(`/admin/github/connections/${encodeURIComponent(appId)}/connect`, { method: 'POST', body: '{}' });
+    },
+    /** Repositories carried by an admin-started completion code. */
+    connectRepos(appId: string, code: string) {
+      return request<{ repos: Array<{ id: string; fullName: string; private?: boolean }> }>(`/admin/github/connections/${encodeURIComponent(appId)}/repos`, {
+        method: 'POST', body: JSON.stringify({ code }),
+      });
+    },
+    /** Finish an admin-started connection with the completion code + repo. */
+    connectFinish(appId: string, code: string, repositoryId: string) {
+      return request<{ connection: any }>(`/admin/github/connections/${encodeURIComponent(appId)}/bind`, {
+        method: 'POST', body: JSON.stringify({ code, repositoryId }),
+      });
+    },
     connectionAction(appId: string, action: 'suspend' | 'reinstate' | 'disconnect', reason = '') {
       return request<{ success: true; status: string }>(`/admin/github/connections/${encodeURIComponent(appId)}/${action}`, {
         method: 'POST', body: JSON.stringify({ reason }),

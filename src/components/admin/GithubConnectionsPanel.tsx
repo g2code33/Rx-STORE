@@ -63,6 +63,57 @@ export default function GithubConnectionsPanel() {
     return q ? byFilter.filter((r) => r.name.toLowerCase().includes(q) || r.slug.toLowerCase().includes(q)) : byFilter;
   }, [data, filter, query]);
 
+  /**
+   * ADMIN connect: authorizes GitHub (new tab), then returns to this page with
+   * a one-time completion code in the URL to pick the repository. The developer
+   * does not have to be involved.
+   */
+  const startConnect = async (row: Row) => {
+    setBusy(row.appId);
+    try {
+      const { url } = await api.githubAdmin.connectStart(row.appId);
+      sessionStorage.setItem('rx-gh-admin-connect-app', row.appId);
+      window.open(url, '_blank', 'noopener,noreferrer');
+      toast('Authorize RX Store in the GitHub tab that just opened, then come back here to pick the repository.', { icon: '🔗', duration: 8000 });
+    } catch (e: any) {
+      toast.error(e?.message || 'Could not start the GitHub connection.', { duration: 9000 });
+    } finally { setBusy(null); }
+  };
+
+  // Returning from GitHub: finish the admin-started connection.
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('gh_admin_connect');
+    const appId = params.get('app') || sessionStorage.getItem('rx-gh-admin-connect-app') || '';
+    if (!code || !appId) return;
+    window.history.replaceState({}, '', window.location.pathname);
+    // List the repositories the admin just authorized and let them pick.
+    fetchReposForAdminBind(appId, code);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const [picker, setPicker] = React.useState<{ appId: string; code: string; repos: Array<{ id: string; fullName: string; private?: boolean }> } | null>(null);
+
+  async function fetchReposForAdminBind(appId: string, code: string) {
+    try {
+      const r = await api.githubAdmin.connectRepos(appId, code);
+      setPicker({ appId, code, repos: r.repos || [] });
+    } catch (e: any) {
+      toast.error(e?.message || 'Could not read the authorized repositories.');
+    }
+  }
+
+  const finishBind = async (repositoryId: string) => {
+    if (!picker) return;
+    setBusy(picker.appId);
+    try {
+      await api.githubAdmin.connectFinish(picker.appId, picker.code, repositoryId);
+      toast.success('Repository connected — GitHub releases will now be detected for that app.');
+      setPicker(null);
+      load();
+    } catch (e: any) { toast.error(e?.message || 'Could not connect the repository.', { duration: 9000 }); }
+    finally { setBusy(null); }
+  };
+
   const act = async (row: Row, action: 'suspend' | 'reinstate' | 'disconnect') => {
     let reason = '';
     if (action !== 'reinstate') {
@@ -143,6 +194,31 @@ export default function GithubConnectionsPanel() {
         </div>
       </div>
 
+      {picker && (
+        <div className="card p-4 border-rx-yellow/30">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <p className="text-sm font-semibold text-white">Pick the repository</p>
+              <p className="text-xs text-rx-gray-medium">These are the repositories your GitHub authorization can access. Private ones are not offered — users download without credentials.</p>
+            </div>
+            <button onClick={() => setPicker(null)} className="text-xs text-rx-gray-medium hover:text-white">Cancel</button>
+          </div>
+          <div className="mt-3 space-y-2">
+            {picker.repos.length === 0 && <p className="text-xs text-amber-300">No public repositories were found for this authorization.</p>}
+            {picker.repos.map((r) => (
+              <div key={r.id} className="flex items-center gap-3 p-3 rounded-xl bg-rx-dark border border-white/10">
+                <Github className="w-4 h-4 text-rx-gray-medium shrink-0" />
+                <p className="text-sm text-white truncate flex-1">{r.fullName}</p>
+                <button onClick={() => finishBind(r.id)} disabled={busy === picker.appId}
+                  className="btn-primary text-xs px-3 py-1.5 flex items-center gap-1.5 disabled:opacity-50">
+                  {busy === picker.appId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link2 className="w-3.5 h-3.5" />} Connect
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {error && <div className="card p-6 text-center text-sm text-red-300">{error}</div>}
       {loading && !data && <div className="card p-8 text-center text-sm text-rx-gray-medium">Loading connections…</div>}
 
@@ -179,10 +255,10 @@ export default function GithubConnectionsPanel() {
                       </button>
                     )}
                     {!c && !row.isPaid && (
-                      <a href={`/developers/apps/${encodeURIComponent(row.appId)}`}
-                        className="text-xs px-2.5 py-1.5 rounded-lg text-rx-yellow hover:bg-rx-yellow/10 flex items-center gap-1.5">
-                        <Link2 className="w-3.5 h-3.5" /> Connect
-                      </a>
+                      <button onClick={() => startConnect(row)} disabled={busy === row.appId}
+                        className="text-xs px-2.5 py-1.5 rounded-lg text-rx-yellow hover:bg-rx-yellow/10 flex items-center gap-1.5 disabled:opacity-50">
+                        {busy === row.appId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link2 className="w-3.5 h-3.5" />} Connect
+                      </button>
                     )}
                   </div>
                 </div>

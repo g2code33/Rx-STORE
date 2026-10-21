@@ -145,6 +145,13 @@ export async function getConnectionForApp(env: any, appId: string): Promise<any 
 export async function connectAppRepository(env: any, input: {
   appId: string; orgId: string; userId: string; installationId: string; repositoryId: string;
   /**
+   * True when an ADMIN connects on the app owner's behalf (Connect to GitHub
+   * tab). The org is derived from the app itself and the access check is
+   * bypassed — an admin is authorized for every app by definition. The audit
+   * row records who did it.
+   */
+  byAdmin?: boolean;
+  /**
    * Repository identity ALREADY VERIFIED SERVER-SIDE by the OAuth flow
    * (GitHub's /user/installations/:id/repositories with the user's token).
    * Used when the App-credential path is unavailable (e.g. a private key that
@@ -157,7 +164,9 @@ export async function connectAppRepository(env: any, input: {
   if (!githubConfigured(env)) return { ok: false, code: 'NOT_IMPLEMENTED', message: 'The GitHub integration is not configured on this deployment. An administrator must complete the GitHub App setup (see docs/GITHUB_RELEASES.md).' };
   const app: any = await env.DB.prepare(`SELECT * FROM applications WHERE id=?`).bind(input.appId).first().catch(() => null);
   if (!app) return { ok: false, code: 'NOT_FOUND', message: 'Application not found' };
-  if (String(app.developer_org_id || '') !== String(input.orgId)) return { ok: false, code: 'NOT_FOUND', message: 'Application not found' };
+  if (!input.byAdmin && String(app.developer_org_id || '') !== String(input.orgId)) {
+    return { ok: false, code: 'NOT_FOUND', message: 'Application not found' };
+  }
   if (!appIsFree(app)) return { ok: false, code: 'FORBIDDEN', message: 'GitHub distribution is available for FREE applications only. Paid applications use the manual admin upload channel.' };
   const existing = await getConnectionForApp(env, input.appId);
   if (existing && existing.status === 'active') return { ok: false, code: 'CONFLICT', message: 'This application is already connected to a GitHub repository. Disconnect it first.' };
@@ -198,7 +207,13 @@ export async function connectAppRepository(env: any, input: {
      VALUES (?,?,?,?,?,?,?, 'active', ?)`
   ).bind(id, input.appId, String(repo.id), String(repo.owner?.login || ''), String(repo.name || ''), String(repo.full_name || ''), String(input.installationId), input.userId).run();
 
-  await audit(env, { action: 'connect', actorId: input.userId, appId: input.appId, repositoryId: String(repo.id), details: { repo: repo.full_name, installation: input.installationId } });
+  await audit(env, {
+    action: input.byAdmin ? 'admin_connect' : 'connect',
+    actorId: input.userId, actorLabel: input.byAdmin ? `admin:${String(input.userId).slice(0, 8)}` : undefined,
+    appId: input.appId, repositoryId: String(repo.id),
+    reason: input.byAdmin ? 'Connected by an administrator on the app owner\'s behalf' : undefined,
+    details: { repo: repo.full_name, installation: input.installationId, byAdmin: !!input.byAdmin },
+  });
   const connection = await getConnectionForApp(env, input.appId);
   return { ok: true, connection };
 }

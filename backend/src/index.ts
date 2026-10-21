@@ -316,7 +316,13 @@ export default {
         const seg = path.split('/')[3] || '';
         if (seg === 'overview' && request.method === 'GET') data = await githubAdminRoutes.overview(normalizedRequest as any, env);
         else if (seg === 'connections' && request.method === 'GET') data = await githubAdminRoutes.connections(normalizedRequest as any, env);
-        else if (seg === 'connections' && request.method === 'POST') data = await githubAdminRoutes.connectionAction(normalizedRequest as any, env);
+        else if (seg === 'connections' && request.method === 'POST') {
+          const connAction = path.split('/')[5] || '';
+          if (connAction === 'connect') data = await githubAdminRoutes.connectStart(normalizedRequest as any, env);
+          else if (connAction === 'repos') data = await githubAdminRoutes.connectRepos(normalizedRequest as any, env);
+          else if (connAction === 'bind') data = await githubAdminRoutes.connectFinish(normalizedRequest as any, env);
+          else data = await githubAdminRoutes.connectionAction(normalizedRequest as any, env);
+        }
         else if (seg === 'releases' && request.method === 'GET') data = await githubAdminRoutes.releases(normalizedRequest as any, env);
         else if (seg === 'audit' && request.method === 'GET') data = await githubAdminRoutes.audit(normalizedRequest as any, env);
         else if (seg === 'sync' && request.method === 'POST') data = await githubAdminRoutes.sync(normalizedRequest as any, env, ctx);

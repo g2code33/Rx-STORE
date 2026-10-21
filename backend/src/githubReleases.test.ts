@@ -72,7 +72,7 @@ function fakeEnv() {
           const T = (name: string) => tables[name];
           // ---- INSERTs (positional, matching the service code) ----
           if (s.includes('INSERT INTO github_repo_connections')) {
-            T('github_repo_connections').push({ id: a[0], application_id: a[1], repository_id: a[2], repository_owner: a[3], repository_name: a[4], repository_full_name: a[5], installation_id: a[6], status: 'active', connected_by: a[8] });
+            T('github_repo_connections').push({ id: a[0], application_id: a[1], repository_id: a[2], repository_owner: a[3], repository_name: a[4], repository_full_name: a[5], installation_id: a[6], status: 'active', connected_by: a[7] });
             return { meta: { changes: 1 } };
           }
           if (s.includes('INSERT INTO github_release_events')) {
@@ -1950,4 +1950,113 @@ test('MAPPING: a blocked release RECOVERS on re-detection once the mapping is cl
     const after = env.tables.github_releases.find((r) => r.github_release_id === '5001');
     assert.equal(after.status, 'detected', 'a blocked release is re-evaluated, not stuck forever');
   } finally { globalThis.fetch = original; stubs.restore(); }
+});
+
+// ---------------------------------------------------------------------------
+// ADMIN-INITIATED CONNECT — 'admin connect is not working' (production).
+// The Connect button used to send the admin to the DEVELOPER page, which
+// requires developer-org membership an admin does not have, so nothing could
+// ever happen. Admins connect on the owner's behalf instead.
+// ---------------------------------------------------------------------------
+
+function adminReq(path: string, body: any = {}): Request {
+  const r = new Request(`https://api.test${path}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': 't' },
+    body: JSON.stringify(body),
+  });
+  (r as any).user = { userId: 'admin-1', role: 'admin' };
+  return r;
+}
+
+test('ADMIN CONNECT: start returns the GitHub authorization URL (admin needs no developer org)', async () => {
+  const stubs = installStubs(env);
+  try {
+    // No developer_members row for the admin — exactly the production state.
+    const out: any = await githubAdminRoutes.connectStart(adminReq(`/admin/github/connections/${APP_ID}/connect`), env);
+    assert.ok(out.url, out.message);
+    assert.ok(String(out.url).startsWith('https://github.com/login/oauth/authorize?'), String(out.url));
+  } finally { stubs.restore(); }
+});
+
+test('ADMIN CONNECT: a non-admin cannot start or finish an admin connection', async () => {
+  const userReq = new Request(`https://api.test/admin/github/connections/${APP_ID}/connect`, { method: 'POST', headers: { 'User-Agent': 't' }, body: '{}' });
+  (userReq as any).user = { userId: 'u1', role: 'user' };
+  assert.equal(((await githubAdminRoutes.connectStart(userReq as any, env)) as any).code, 'UNAUTHORIZED');
+  const anon = new Request(`https://api.test/admin/github/connections/${APP_ID}/connect`, { method: 'POST' });
+  assert.equal(((await githubAdminRoutes.connectStart(anon as any, env)) as any).code, 'UNAUTHORIZED');
+});
+
+test('ADMIN CONNECT: full flow — authorize, list repos, bind (org taken from the app, audited as admin)', async () => {
+  const stubs = installStubs(env);
+  try {
+    const start: any = await githubAdminRoutes.connectStart(adminReq(`/admin/github/connections/${APP_ID}/connect`), env);
+    assert.ok(start.url);
+    // GitHub redirects back with the state from the URL.
+    const state = decodeURIComponent(String(start.url)).match(/state=([^&]+)/)![1];
+    const cb: any = await githubDevRoutes.callback(
+      new Request(`https://api.test/developers/github/callback?code=gh-code&state=${encodeURIComponent(state)}`) as any, env,
+    );
+    assert.ok(cb instanceof Response);
+    assert.equal((cb as Response).status, 302);
+    const loc = String((cb as Response).headers.get('Location'));
+    assert.ok(loc.includes('/admin?section=github-connect'), loc);
+    assert.ok(loc.includes(`app=${APP_ID}`), loc);
+    const code = decodeURIComponent(loc).match(/gh_admin_connect=([^&]+)/)![1];
+
+    // The admin panel asks for the repos carried by that code.
+    const repos: any = await githubAdminRoutes.connectRepos(adminReq(`/admin/github/connections/${APP_ID}/repos`, { code }), env);
+    assert.ok(!repos.code, repos.message);
+    // The OAuth authorization returned octo/app (public) and octo/secret-app
+    // (private); both are carried so the picker opens, but the panel never
+    // offers a private repository for binding.
+    const names = (repos.repos || []).map((r: any) => r.fullName);
+    assert.ok(names.includes('octo/app'), JSON.stringify(names));
+
+    // …then binds one.
+    const bind: any = await githubAdminRoutes.connectFinish(
+      adminReq(`/admin/github/connections/${APP_ID}/bind`, { code, repositoryId: REPO_ID }), env,
+    );
+    assert.ok(!bind.code, bind.message);
+    const conn = env.tables.github_repo_connections.find((c: any) => c.application_id === APP_ID);
+    assert.ok(conn, 'the app is connected');
+    assert.equal(conn.connected_by, 'admin-1');
+    assert.equal(conn.repository_full_name, 'octo/app');
+    // Audited as an ADMIN action on the owner's behalf.
+    assert.ok(env.tables.github_audit_log.some((e: any) => e.action === 'admin_connect'));
+  } finally { stubs.restore(); }
+});
+
+test('ADMIN CONNECT: the public bind endpoint refuses an admin-started code (no cross-flow abuse)', async () => {
+  const stubs = installStubs(env);
+  try {
+    const start: any = await githubAdminRoutes.connectStart(adminReq(`/admin/github/connections/${APP_ID}/connect`), env);
+    const state = decodeURIComponent(String(start.url)).match(/state=([^&]+)/)![1];
+    const cb: any = await githubDevRoutes.callback(
+      new Request(`https://api.test/developers/github/callback?code=gh-code&state=${encodeURIComponent(state)}`) as any, env,
+    );
+    const code = decodeURIComponent(String((cb as Response).headers.get('Location'))).match(/gh_admin_connect=([^&]+)/)![1];
+    const out: any = await githubOAuthRoutes.bind(
+      new Request('https://api.test/developers/github/oauth/bind', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ code, repositoryId: REPO_ID }).toString(),
+      }) as any, env,
+    );
+    const html = await out.text();
+    assert.ok(/must be finished in the Admin Panel/i.test(html), html.slice(0, 200));
+  } finally { stubs.restore(); }
+});
+
+test('ADMIN CONNECT: paid apps and already-connected apps are refused with clear reasons', async () => {
+  const stubs = installStubs(env);
+  try {
+    env.tables.applications[0].price_type = 'paid';
+    env.tables.applications[0].price_amount = 20;
+    const paid: any = await githubAdminRoutes.connectStart(adminReq(`/admin/github/connections/${APP_ID}/connect`), env);
+    assert.equal(paid.code, 'FORBIDDEN');
+    env.tables.applications[0].price_type = 'free';
+    env.tables.applications[0].price_amount = 0;
+    await connect();
+    const again: any = await githubAdminRoutes.connectStart(adminReq(`/admin/github/connections/${APP_ID}/connect`), env);
+    assert.equal(again.code, 'CONFLICT');
+  } finally { stubs.restore(); }
 });
