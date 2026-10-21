@@ -486,6 +486,12 @@ export function validateAssetUrl(raw: unknown): { ok: true; url: string } | { ok
 export interface AssetMapping {
   platform: string;
   architecture: string;
+  /**
+   * True when the filename carried no architecture marker and we defaulted to
+   * x64. The verification pass reads the REAL architecture from the bytes and
+   * corrects (or rejects) the assumption — see detectArchitectureFromBytes.
+   */
+  assumed?: boolean;
 }
 
 /**
@@ -580,19 +586,40 @@ export function mapAssetFilename(name: string): AssetMapping | null {
     if (/x86(?!_64)/.test(n)) return { platform: 'android', architecture: 'x86' };
     return { platform: 'android', architecture: 'universal' };
   }
-  if (n.endsWith('.exe') || n.endsWith('.msi')) return { platform: 'windows', architecture: arm64 ? 'arm64' : 'x64' };
+  if (n.endsWith('.exe') || n.endsWith('.msi')) {
+    // No marker -> x64 assumed (the binary decides during verification).
+    return arm64
+      ? { platform: 'windows', architecture: 'arm64' }
+      : x64
+        ? { platform: 'windows', architecture: 'x64' }
+        : { platform: 'windows', architecture: 'x64', assumed: true };
+  }
+  // Linux installers often ship WITHOUT an architecture marker
+  // (RX-Store-1.7.6.deb / .AppImage — electron-builder's default names). They
+  // used to be dropped as 'not a recognised installer type', so a release with
+  // an APK + EXE silently lost its Linux packages. Default to x64 (by far the
+  // most common) and mark it ASSUMED: verification reads the real machine type
+  // from the binary and corrects the record — never a guess that survives.
   if (n.endsWith('.deb')) {
     if (arm64) return { platform: 'linux_deb', architecture: 'arm64' };
     if (x64) return { platform: 'linux_deb', architecture: 'x64' };
     if (arm) return { platform: 'linux_deb', architecture: 'arm' };
-    return null; // ambiguous architecture — never guessed
+    return { platform: 'linux_deb', architecture: 'x64', assumed: true };
   }
   if (n.endsWith('.appimage')) {
     if (arm64) return { platform: 'linux_appimage', architecture: 'arm64' };
     if (x64) return { platform: 'linux_appimage', architecture: 'x64' };
-    return null;
+    return { platform: 'linux_appimage', architecture: 'x64', assumed: true };
   }
-  if (n.endsWith('.dmg') || n.endsWith('.pkg')) return { platform: 'macos', architecture: arm64 ? 'arm64' : 'universal' };
+  if (n.endsWith('.rpm')) {
+    if (arm64) return { platform: 'linux', architecture: 'arm64' };
+    return { platform: 'linux', architecture: 'x64', assumed: !x64 };
+  }
+  if (n.endsWith('.dmg') || n.endsWith('.pkg')) {
+    return arm64
+      ? { platform: 'macos', architecture: 'arm64' }
+      : { platform: 'macos', architecture: 'universal' };
+  }
   return null;
 }
 

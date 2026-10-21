@@ -514,6 +514,60 @@ export async function certificateInfo(cert: Uint8Array): Promise<CertInfo | null
   return info;
 }
 
+/**
+ * The REAL architecture of a package, read from its bytes.
+ *
+ * Filenames lie or omit the architecture entirely (electron-builder emits
+ * `RX-Store-1.7.6.deb` / `.AppImage`), so the asset mapping defaults to x64 and
+ * marks it ASSUMED — this function supplies the truth during verification:
+ *   - ELF (AppImage / Linux binary): e_machine at offset 18
+ *   - .deb: the `Architecture:` field of control.tar.gz
+ *   - PE (Windows): the PE machine type
+ * Returns null when it cannot be determined (caller keeps the assumption and
+ * says so — never a silent guess).
+ */
+export async function detectArchitectureFromBytes(platform: string, bytes: PackageBytes): Promise<'x64' | 'arm64' | 'arm' | 'x86' | 'universal' | null> {
+  try {
+    if (platform === 'linux_appimage' || platform === 'linux') {
+      const h = bytes.head;
+      if (h.length < 20 || h[0] !== 0x7f || h[1] !== 0x45 || h[2] !== 0x4c || h[3] !== 0x46) return null;
+      const machine = h[18] | (h[19] << 8); // little-endian e_machine
+      if (machine === 0x3e) return 'x64';
+      if (machine === 0xb7) return 'arm64';
+      if (machine === 0x28) return 'arm';
+      if (machine === 0x03) return 'x86';
+      return null;
+    }
+    if (platform === 'linux_deb') {
+      const members = parseAr(bytes);
+      if (!members) return null;
+      const control = members.find((m) => /^control\.tar/.test(m.name));
+      if (!control) return null;
+      const raw = sliceBytes(bytes, control.offset, Math.min(control.size, 8 * 1024 * 1024));
+      if (!raw) return null;
+      let tar: Uint8Array | null = null;
+      try { tar = raw[0] === 0x1f && raw[1] === 0x8b ? await gunzip(raw) : raw; } catch { return null; }
+      if (!tar) return null;
+      const text = new TextDecoder('latin1').decode(tar.subarray(0, Math.min(tar.length, 200_000))).toLowerCase();
+      if (/architecture:\s*(amd64|x86_64|x64)/.test(text)) return 'x64';
+      if (/architecture:\s*(arm64|aarch64)/.test(text)) return 'arm64';
+      if (/architecture:\s*(armhf|armel|arm)/.test(text)) return 'arm';
+      if (/architecture:\s*(i386|i686|x86)/.test(text)) return 'x86';
+      if (/architecture:\s*all/.test(text)) return 'universal';
+      return null;
+    }
+    if (platform === 'windows') {
+      const pe = parsePe(bytes);
+      if (!pe) return null;
+      if (pe.machineName === 'x64') return 'x64';
+      if (pe.machineName === 'arm64') return 'arm64';
+      if (pe.machineName === 'x86') return 'x86';
+      return null;
+    }
+  } catch { /* unknown */ }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // CHECK 1 — structure (real content vs platform/format expectations)
 // ---------------------------------------------------------------------------

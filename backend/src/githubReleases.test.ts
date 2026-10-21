@@ -102,7 +102,7 @@ function fakeEnv() {
             return { meta: { changes: 1 } };
           }
           if (s.includes('INSERT INTO github_release_assets')) {
-            const row = { id: a[0], release_id: a[1], github_asset_id: a[2], name: a[3], platform: a[4], architecture: a[5], download_url: a[6], state: 'detected', declared_sha256: a[8], is_private: a[9] ?? 0, size_bytes: null as any, sha256: null as any, scanner_status: null as any, scanner_detail: null as any, error: null as any };
+            const row = { id: a[0], release_id: a[1], github_asset_id: a[2], name: a[3], platform: a[4], architecture: a[5], download_url: a[6], state: 'detected', declared_sha256: a[8], is_private: a[9] ?? 0, arch_assumed: a[10] ?? 0, size_bytes: null as any, sha256: null as any, scanner_status: null as any, scanner_detail: null as any, error: null as any };
             const dup = T('github_release_assets').find((r) => r.release_id === row.release_id && r.platform === row.platform && r.architecture === row.architecture);
             if (dup) { const e: any = new Error('UNIQUE constraint failed: github_release_assets'); return Promise.reject(e); }
             T('github_release_assets').push(row);
@@ -124,7 +124,7 @@ function fakeEnv() {
             // detection shape: (id, app, release, platform, arch, filename, storage_key,
             // file_size, mime, sha256, version, external_url, github_asset_id) with
             // status 'stored' + QUARANTINED in the SQL literal.
-            const pkgRow: any = { id: a[0], application_id: a[1], release_id: a[2], platform: a[3], architecture: a[4], filename: a[5], storage_key: a[6], file_size: a[7], sha256: a[9], version: a[10], provider: 'github', external_url: a[11], github_asset_id: a[12], external_private: a[13] ?? 0, status: s.includes("'stored'") ? 'stored' : 'published', security_state: 'QUARANTINED', overall_security: 'PENDING', quarantine_key: null, deployment_url: null, security_scan_status: 'pending', signature_status: 'pending' };
+            const pkgRow: any = { id: a[0], application_id: a[1], release_id: a[2], platform: a[3], architecture: a[4], filename: a[5], storage_key: a[6], file_size: a[7], sha256: a[9], version: a[10], provider: 'github', external_url: a[11], github_asset_id: a[12], external_private: a[13] ?? 0, arch_assumed: a[14] ?? 0, status: s.includes("'stored'") ? 'stored' : 'published', security_state: 'QUARANTINED', overall_security: 'PENDING', quarantine_key: null, deployment_url: null, security_scan_status: 'pending', signature_status: 'pending' };
             const dup = T('packages').find((x) => x.release_id === pkgRow.release_id && x.platform === pkgRow.platform && x.architecture === pkgRow.architecture);
             if (dup) { const e: any = new Error('UNIQUE constraint failed: packages.release_id'); return Promise.reject(e); }
             T('packages').push(pkgRow);
@@ -172,6 +172,17 @@ function fakeEnv() {
             return { meta: { changes: pkg ? 1 : 0 } };
           }
           // verify pass 1 records the hash: UPDATE packages SET sha256=?, file_size=? WHERE release_id=? AND platform=? AND architecture=? AND provider='github'
+          if (s.includes('UPDATE packages SET architecture=?')) {
+            // (architecture, release_id, platform, old_architecture)
+            const pkgs = T('packages').filter((x) => x.release_id === a[1] && x.platform === a[2] && x.architecture === a[3] && x.provider === 'github');
+            for (const pkg of pkgs) { pkg.architecture = a[0]; pkg.arch_assumed = 0; }
+            return { meta: { changes: pkgs.length } };
+          }
+          if (s.includes('UPDATE github_release_assets SET architecture=?')) {
+            const r = T('github_release_assets').find((x) => x.id === a[1]);
+            if (r) { r.architecture = a[0]; r.arch_assumed = 0; }
+            return { meta: { changes: r ? 1 : 0 } };
+          }
           if (s.includes('UPDATE packages SET sha256=?, file_size=?')) {
             const pkgs = T('packages').filter((x) => x.release_id === a[2] && x.platform === a[3] && x.architecture === a[4] && x.provider === 'github');
             for (const pkg of pkgs) { pkg.sha256 = a[0]; pkg.file_size = a[1]; }
@@ -940,12 +951,13 @@ test('ambiguous or empty asset mappings are blocked', async () => {
     }), 'd-dup');
     assert.equal(out.body.data.status, 'blocked_ambiguous');
 
-    // .deb without an architecture in the filename is unmapped (never guessed)
+    // .deb without an architecture marker is now MAPPED (x64 assumed, verified
+    // from the binary during verification) — it is no longer dropped.
     out = await signedDelivery(env, 'release', ghReleasePayload({
       id: 6003, tag_name: 'v2.2.0',
       assets: [{ id: 4, name: 'app.deb', browser_download_url: 'https://github.com/octo/app/releases/download/v2.2.0/app.deb' }],
     }), 'd-nodebarch');
-    assert.equal(out.body.data.status, 'blocked_no_assets');
+    assert.equal(out.body.data.status, 'detected');
   } finally { stubs.restore(); }
 });
 
@@ -1205,11 +1217,11 @@ test('admin-triggered reconciliation detects releases without a webhook', async 
 
 test('deterministic asset filename mapping (documented rules only, never guessed)', () => {
   assert.deepEqual(mapAssetFilename('app-1.2.3.apk'), { platform: 'android', architecture: 'universal' });
-  assert.deepEqual(mapAssetFilename('Setup.exe'), { platform: 'windows', architecture: 'x64' });
+  assert.deepEqual(mapAssetFilename('Setup.exe'), { platform: 'windows', architecture: 'x64', assumed: true });
   assert.deepEqual(mapAssetFilename('app-arm64.exe'), { platform: 'windows', architecture: 'arm64' });
   assert.deepEqual(mapAssetFilename('app_1.2.3_amd64.deb'), { platform: 'linux_deb', architecture: 'x64' });
   assert.deepEqual(mapAssetFilename('app_arm64.deb'), { platform: 'linux_deb', architecture: 'arm64' });
-  assert.equal(mapAssetFilename('app.deb'), null); // ambiguous arch -> null
+  assert.deepEqual(mapAssetFilename('app.deb'), { platform: 'linux_deb', architecture: 'x64', assumed: true }); // no marker -> x64, verified from the binary later
   assert.deepEqual(mapAssetFilename('App-x86_64.AppImage'), { platform: 'linux_appimage', architecture: 'x64' });
   assert.equal(mapAssetFilename('sources.zip'), null);
   assert.equal(mapAssetFilename('checksums.txt'), null);
@@ -1506,21 +1518,44 @@ test('GATE unsigned Windows exe: WARNING (needs review) → publish ONLY via byt
   } finally { stubs.restore(); }
 });
 
-test('GATE architecture mismatch: arm64 binary recorded as x64 → structure FAILED', async () => {
-  const stubs = installStubs(env, { asset: 'pe-arm64', vtVerdict: 'CLEAN' });
-  try {
-    await connect();
-    const payload = ghReleasePayload();
-    payload.release.assets = [{ id: 555001, name: 'clinical-rx-1.12.0.exe', size: peBytes(0xaa64).byteLength, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/clinical-rx-1.12.0.exe' }];
-    await signedDelivery(env, 'release', payload, 'd-gate-arch');
-    const rel = env.tables.github_releases.find((r) => r.github_release_id === '5001');
-    const v = await verifyGithubRelease(env, rel.id);
-    assert.equal(v.ok, false);
-    const structure = env.tables.package_security_results.find((r: any) => r.check_type === 'structure');
-    assert.equal(structure.status, 'FAILED');
-    assert.match(structure.result, /architecture mismatch/i);
-    assert.equal(rel.status, 'verification_failed');
-  } finally { stubs.restore(); }
+test('GATE architecture: a DECLARED mismatch blocks, while an UNMARKED binary is corrected from the bytes', async () => {
+  // (a) filename SAYS arm64 but the binary is x64 -> hard failure.
+  {
+    const stubs = installStubs(env, { asset: 'pe-x64', ghAssetName: 'clinical-rx-1.12.0-arm64.exe', vtVerdict: 'CLEAN' });
+    try {
+      await connect();
+      const payload = ghReleasePayload();
+      payload.release.assets = [{ id: 555001, name: 'clinical-rx-1.12.0-arm64.exe', size: peBytes(0x8664).byteLength, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/a.exe' }];
+      await signedDelivery(env, 'release', payload, 'd-gate-arch-a');
+      const rel = env.tables.github_releases.find((r) => r.github_release_id === '5001');
+      const v = await verifyGithubRelease(env, rel.id);
+      assert.equal(v.ok, false, 'a declared architecture the binary contradicts must not pass');
+      assert.equal(rel.status, 'verification_failed');
+      const asset = env.tables.github_release_assets[0];
+      assert.match(String(asset.error), /filename says arm64 but the binary is x64/i);
+    } finally { stubs.restore(); }
+  }
+  // (b) no marker at all (RXStore-Setup-1.7.6.exe) -> x64 assumed, then the
+  //     BINARY wins: an arm64 build is recorded as arm64 and verified.
+  {
+    env = fakeEnv();
+    env.GITHUB_APP_PRIVATE_KEY = TEST_PEM;
+    await ensureGithubTables(env);
+    const stubs = installStubs(env, { asset: 'pe-arm64', ghAssetName: 'RXStore-Setup-1.12.0.exe', vtVerdict: 'CLEAN' });
+    try {
+      await connect();
+      const payload = ghReleasePayload();
+      payload.release.assets = [{ id: 555001, name: 'RXStore-Setup-1.12.0.exe', size: peBytes(0xaa64).byteLength, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/setup.exe' }];
+      await signedDelivery(env, 'release', payload, 'd-gate-arch-b');
+      const rel = env.tables.github_releases.find((r) => r.github_release_id === '5001');
+      const v = await verifyGithubRelease(env, rel.id);
+      assert.ok(v.ok, v.message);
+      const asset = env.tables.github_release_assets[0];
+      assert.equal(asset.architecture, 'arm64', 'the truth comes from the binary, not the missing marker');
+      const structure = env.tables.package_security_results.find((r: any) => r.check_type === 'structure');
+      assert.equal(structure.status, 'PASSED', 'no false architecture failure');
+    } finally { stubs.restore(); }
+  }
 });
 
 test('GATE scanner never completes (timeout): honest SCANNING — never clean; publication blocked; review path open', async () => {
@@ -2316,5 +2351,71 @@ test('RECONNECT: a genuine race answers CONFLICT, never a 500-style crash', asyn
     });
     assert.equal(out.ok, false);
     assert.equal((out as any).code, 'CONFLICT');
+  } finally { stubs.restore(); }
+});
+
+// ---------------------------------------------------------------------------
+// LINUX INSTALLERS WITHOUT AN ARCHITECTURE MARKER
+// Production: 'RX-Store-1.7.6.deb' and 'RX-Store-1.7.6.AppImage' were skipped
+// as 'not a recognised installer type', so the release lost its Linux packages.
+// ---------------------------------------------------------------------------
+
+test('MAPPING: .deb/.AppImage without an architecture marker are MAPPED (x64 assumed, flagged)', async () => {
+  const { mapAssetFilename } = await import('./services/github.ts');
+  assert.deepEqual(mapAssetFilename('RX-Store-1.7.6.deb'), { platform: 'linux_deb', architecture: 'x64', assumed: true });
+  assert.deepEqual(mapAssetFilename('RX-Store-1.7.6.AppImage'), { platform: 'linux_appimage', architecture: 'x64', assumed: true });
+  // Declared architectures are NOT assumed.
+  assert.equal((mapAssetFilename('app_arm64.deb') as any).assumed, undefined);
+  assert.equal((mapAssetFilename('app_amd64.deb') as any).assumed, undefined);
+});
+
+test('VERIFY: the architecture is read from the BINARY and corrects an assumed x64', async () => {
+  const { detectArchitectureFromBytes } = await import('./services/packageSecurity.ts');
+  // A minimal ELF header for AArch64 (e_machine 0xB7) in a head window.
+  const elf = (machine: number) => {
+    const b = new Uint8Array(64);
+    b.set([0x7f, 0x45, 0x4c, 0x46], 0);
+    b[18] = machine & 0xff;
+    b[19] = (machine >> 8) & 0xff;
+    return { size: 64, head: b, headOffset: 0, tail: b, tailOffset: 0, full: b } as any;
+  };
+  assert.equal(await detectArchitectureFromBytes('linux_appimage', elf(0x3e)), 'x64');
+  assert.equal(await detectArchitectureFromBytes('linux_appimage', elf(0xb7)), 'arm64');
+  assert.equal(await detectArchitectureFromBytes('linux_appimage', elf(0x28)), 'arm');
+  // A real .deb declares its architecture in control.tar.gz.
+  assert.equal(await detectArchitectureFromBytes('linux_deb', {
+    size: DEB_FIXTURE.length, head: DEB_FIXTURE, headOffset: 0,
+    tail: DEB_FIXTURE, tailOffset: 0, full: DEB_FIXTURE,
+  } as any), 'x64', 'the fixture declares Architecture: amd64');
+});
+
+test('DETECTION: an electron-builder release keeps ALL THREE platforms (apk + exe + deb + appimage)', async () => {
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    const payload = ghReleasePayload();
+    payload.release.assets = [
+      { id: 1, name: 'rx-store-1.7.6.apk', size: 10, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/rx-store.apk' },
+      { id: 2, name: 'RXStore-Setup-1.7.6.exe', size: 10, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/setup.exe' },
+      { id: 3, name: 'RX-Store-1.7.6.deb', size: 10, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/rx.deb' },
+      { id: 4, name: 'RX-Store-1.7.6.AppImage', size: 10, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/rx.AppImage' },
+      { id: 5, name: 'latest-linux.yml', size: 1, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/latest-linux.yml' },
+      { id: 6, name: 'latest.yml', size: 1, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/latest.yml' },
+    ];
+    const out = await signedDelivery(env, 'release', payload, 'd-linux');
+    assert.equal(out.body.data.status, 'detected', JSON.stringify(out.body));
+
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const assets = env.tables.github_release_assets.filter((a: any) => a.release_id === rel.id);
+    const slots = assets.map((a: any) => `${a.platform}/${a.architecture}`).sort();
+    assert.deepEqual(slots, ['android/universal', 'linux_appimage/x64', 'linux_deb/x64', 'windows/x64']);
+    // The Linux ones are flagged as inferred, so the admin sees it.
+    const deb = assets.find((a: any) => a.platform === 'linux_deb');
+    assert.equal(Number(deb.arch_assumed), 1, 'x64 was inferred from the binary later — flagged for review');
+    // The updater feeds are still skipped (they are not installers).
+    const ignored = JSON.parse(rel.ignored_assets || '{}');
+    const names = (ignored.ignored || []).map((i: any) => i.name);
+    assert.ok(names.includes('latest-linux.yml'));
+    assert.ok(names.includes('latest.yml'));
   } finally { stubs.restore(); }
 });

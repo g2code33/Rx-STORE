@@ -95,6 +95,8 @@ export async function ensureGithubTables(env: any): Promise<void> {
   await env.DB.prepare('ALTER TABLE github_repo_connections ADD COLUMN repository_private INTEGER').run().catch(() => {});
   await env.DB.prepare('ALTER TABLE github_release_assets ADD COLUMN is_private INTEGER DEFAULT 0').run().catch(() => {});
   await env.DB.prepare('ALTER TABLE packages ADD COLUMN external_private INTEGER DEFAULT 0').run().catch(() => {});
+  await env.DB.prepare('ALTER TABLE github_release_assets ADD COLUMN arch_assumed INTEGER DEFAULT 0').run().catch(() => {});
+  await env.DB.prepare('ALTER TABLE packages ADD COLUMN arch_assumed INTEGER DEFAULT 0').run().catch(() => {});
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS github_release_assets (
     id TEXT PRIMARY KEY, release_id TEXT NOT NULL, github_asset_id TEXT NOT NULL,
     name TEXT NOT NULL, platform TEXT NOT NULL, architecture TEXT NOT NULL,
@@ -458,7 +460,7 @@ export async function detectRelease(env: any, conn: any, ghRelease: any, action:
   // recorded with state 'unmapped' so the admin sees WHY a release is blocked).
   const assets: any[] = Array.isArray(ghRelease.assets) ? ghRelease.assets : [];
   const manifest = parseRxManifest(notes);
-  const candidates: Array<{ asset: any; platform: string; architecture: string; score: number }> = [];
+  const candidates: Array<{ asset: any; platform: string; architecture: string; score: number; assumed?: boolean }> = [];
   const ignored: Array<{ name: string; reason: string }> = [];
   const unmapped: Array<{ name: string }> = [];
   for (const a of assets) {
@@ -473,7 +475,7 @@ export async function detectRelease(env: any, conn: any, ghRelease: any, action:
     if (noise) { ignored.push({ name, reason: noise }); continue; }
     const mapping = manifestEntry || mapAssetFilename(name);
     if (!mapping) { unmapped.push({ name }); continue; } // unknown artefact — never guessed
-    candidates.push({ asset: a, platform: mapping.platform, architecture: mapping.architecture, score: assetPreference(name) });
+    candidates.push({ asset: a, platform: mapping.platform, architecture: mapping.architecture, score: assetPreference(name), assumed: mapping.assumed });
   }
 
   // Prefer ONE candidate per (platform, architecture). A real installer beats
@@ -486,12 +488,12 @@ export async function detectRelease(env: any, conn: any, ghRelease: any, action:
     list.push(c);
     bySlot.set(key, list);
   }
-  const mapped: Array<{ asset: any; platform: string; architecture: string }> = [];
+  const mapped: Array<{ asset: any; platform: string; architecture: string; assumed?: boolean }> = [];
   const ambiguous: string[] = [];
   for (const [slot, list] of bySlot) {
     list.sort((a, b) => b.score - a.score || String(a.asset.name).localeCompare(String(b.asset.name)));
     const best = list[0];
-    mapped.push({ asset: best.asset, platform: best.platform, architecture: best.architecture });
+    mapped.push({ asset: best.asset, platform: best.platform, architecture: best.architecture, assumed: best.assumed });
     for (const loser of list.slice(1)) {
       if (loser.score === best.score) {
         ambiguous.push(`${slot}: "${best.asset.name}" vs "${loser.asset.name}"`);
@@ -511,13 +513,14 @@ export async function detectRelease(env: any, conn: any, ghRelease: any, action:
       ? { ok: true as const, url: githubAssetApiUrl(conn.repository_full_name, String(m.asset.id ?? '')) }
       : validateAssetUrl(m.asset.browser_download_url);
     await env.DB.prepare(
-      `INSERT INTO github_release_assets (id, release_id, github_asset_id, name, platform, architecture, download_url, state, declared_sha256, is_private)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`
+      `INSERT INTO github_release_assets (id, release_id, github_asset_id, name, platform, architecture, download_url, state, declared_sha256, is_private, arch_assumed)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(
       `gha_${id}_${m.platform}_${m.architecture}`, id, String(m.asset.id ?? ''), String(m.asset.name || '').slice(0, 200),
       m.platform, m.architecture, url.ok ? url.url : String(m.asset.browser_download_url || ''), 'detected',
       String(m.asset.digest || '').replace(/^sha256:/, '').slice(0, 64) || null,
       repoIsPrivate ? 1 : 0,
+      m.assumed ? 1 : 0,
     ).run().catch(() => {});
   }
 
@@ -559,12 +562,12 @@ export async function detectRelease(env: any, conn: any, ghRelease: any, action:
     for (const m of mapped) {
       const url = validateAssetUrl(m.asset.browser_download_url);
       await env.DB.prepare(
-        `INSERT INTO packages (id, application_id, release_id, platform, architecture, filename, storage_key, file_size, mime_type, sha256, version, package_type, provider, external_url, github_asset_id, external_private, security_state, overall_security, status, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?, 'installer', 'github', ?, ?, ?, 'QUARANTINED','PENDING','stored',datetime('now'))`
+        `INSERT INTO packages (id, application_id, release_id, platform, architecture, filename, storage_key, file_size, mime_type, sha256, version, package_type, provider, external_url, github_asset_id, external_private, arch_assumed, security_state, overall_security, status, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?, 'installer', 'github', ?, ?, ?, ?, 'QUARANTINED','PENDING','stored',datetime('now'))`
       ).bind(
         `pkg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, conn.application_id, canonicalId,
         m.platform, m.architecture, String(m.asset.name || '').slice(0, 200), '', 0, 'application/octet-stream', '',
-        version, url.ok ? url.url : String(m.asset.browser_download_url || ''), String(m.asset.id ?? ''), repoIsPrivate ? 1 : 0
+        version, url.ok ? url.url : String(m.asset.browser_download_url || ''), String(m.asset.id ?? ''), repoIsPrivate ? 1 : 0, m.assumed ? 1 : 0
       ).run();
     }
   } catch (e: any) {
@@ -685,6 +688,42 @@ export async function verifyGithubRelease(env: any, releaseId: string): Promise<
         failures++; failureReasons.push(`${a.name}: declared checksum mismatch`);
         continue;
       }
+      // 2b. ARCHITECTURE from the actual bytes. The filename may have omitted
+      // the architecture (mapping assumed x64). Correct the record from the
+      // binary; a DECLARED marker that contradicts the binary blocks the asset.
+      {
+        const { detectArchitectureFromBytes } = await import('./packageSecurity.ts');
+        const real = await detectArchitectureFromBytes(a.platform, ext).catch(() => null);
+        const recordedArch = String(a.architecture); // captured BEFORE any update
+        if (real && real !== 'universal' && real !== recordedArch) {
+          if (a.arch_assumed === 1) {
+            // Nothing was declared — adopt the truth.
+            const clash: any = await env.DB.prepare(
+              `SELECT id FROM github_release_assets WHERE release_id=? AND platform=? AND architecture=? AND id<>?`
+            ).bind(releaseId, a.platform, real, a.id).first().catch(() => null);
+            if (clash) {
+              await env.DB.prepare(`UPDATE github_release_assets SET state='mismatch', error=? WHERE id=?`)
+                .bind(`The binary is ${real} but the release already has a ${a.platform}/${real} package. Remove one.`, a.id).run();
+              failures++; failureReasons.push(`${a.name}: architecture ${real} collides with another asset`);
+              continue;
+            }
+            console.warn(`[github] ${a.name}: architecture assumed x64 from the filename, binary is ${real} — correcting`);
+            await env.DB.prepare(`UPDATE github_release_assets SET architecture=?, arch_assumed=0 WHERE id=?`)
+              .bind(real, a.id).run();
+            await env.DB.prepare(
+              `UPDATE packages SET architecture=?, arch_assumed=0 WHERE release_id=? AND platform=? AND architecture=? AND provider='github'`
+            ).bind(real, canonical.id, a.platform, recordedArch).run().catch(() => {});
+            a.architecture = real;
+          } else {
+            // The filename claimed an architecture; the bytes disagree.
+            await env.DB.prepare(`UPDATE github_release_assets SET state='mismatch', error=? WHERE id=?`)
+              .bind(`The filename says ${recordedArch} but the binary is ${real}. Rename the asset or rebuild for the declared architecture.`, a.id).run();
+            failures++; failureReasons.push(`${a.name}: architecture mismatch (filename ${recordedArch}, binary ${real})`);
+            continue;
+          }
+        }
+      }
+
       // 3. Record the VERIFIED size + SHA-256 (bound to the exact asset
       //    identity: repository, release, asset id, version, platform, arch).
       await env.DB.prepare(`UPDATE github_release_assets SET state='verified', size_bytes=?, sha256=?, error=NULL, verified_at=datetime('now') WHERE id=?`)

@@ -82,8 +82,31 @@
     @apply badge bg-blue-500/20 text-blue-400;
   }
 
+  /*
+   * Yellow gradient text with a SAFE FALLBACK.
+   *
+   * `bg-clip-text text-transparent` only works where background-clip:text is
+   * honoured (and prefixed). Where it is not — older WebKit/Gecko builds, some
+   * embedded WebViews, or a browser that drops the unprefixed property — the
+   * gradient paints the WHOLE box and the transparent text disappears, leaving
+   * a solid yellow rectangle. That is the "whole heading is a yellow block"
+   * symptom reported on one browser.
+   *
+   * Strategy: colour the text yellow FIRST (readable everywhere), then clip the
+   * gradient over it only when the browser proves it supports clipping.
+   */
   .gradient-text {
-    @apply bg-gradient-to-r from-rx-yellow to-rx-yellow-light bg-clip-text text-transparent;
+    color: rgb(var(--rx-yellow, 255 214 0));
+    -webkit-text-fill-color: rgb(var(--rx-yellow, 255 214 0));
+    background-image: linear-gradient(to right, rgb(var(--rx-yellow, 255 214 0)), rgb(var(--rx-yellow-light, 255 224 51)));
+  }
+  @supports ((background-clip: text) or (-webkit-background-clip: text)) {
+    .gradient-text {
+      background-clip: text;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      color: transparent;
+    }
   }
 
   .glass {
