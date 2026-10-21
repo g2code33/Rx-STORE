@@ -41,10 +41,21 @@ app through GitHub.
    * Note the **slug** in the URL (`https://github.com/apps/<slug>`) → `GITHUB_APP_SLUG`
    * **Generate a private key** (Credentials → Key pairs → New key) → download the `.pem`
      → `GITHUB_APP_PRIVATE_KEY` (the full PEM including the BEGIN/END lines)
-   * Under **Identifying and authorizing users** copy the **Client ID** and
-     generate a **Client secret**, and set **Callback URL** to
-     `https://rx-store-api.calcitoninpay.workers.dev/v1/developers/github/callback`
-     (this enables the reliable user-authorization connect flow).
+   * Under **Identifying and authorizing users**:
+     - **Callback URL** (required — GitHub refuses to save the app with
+       "This GitHub App must be configured with a callback URL" when
+       "Request user authorization (OAuth) during installation" is ticked and
+       this is empty):
+       `https://rx-store-api.calcitoninpay.workers.dev/v1/developers/github/callback`
+       The `/v1` prefix is part of the public API base — the Worker builds the
+       same value, so both must match exactly.
+     - Copy the **Client ID** and click **Generate a new client secret**
+       (this enables the reliable user-authorization connect flow).
+     - "Request user authorization (OAuth) during installation" may stay
+       un-ticked (the connect button performs its own authorization), but if
+       you tick it the Callback URL above is mandatory.
+     - Override the callback with the `GITHUB_APP_CALLBACK_URL` variable if
+       the deployment lives on another domain.
 
 > The domains above are the current production deployment. If you change the
 > Worker or Pages domains, update the App's URLs accordingly — they are

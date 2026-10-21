@@ -155,6 +155,25 @@ export default function GithubConnectPanel({ app, onChanged }: Props) {
                 Missing or empty Worker secret{status.missing.length === 1 ? '' : 's'}: <span className="font-mono">{status.missing.join(', ')}</span> — set with <span className="font-mono">npx wrangler secret put &lt;name&gt; --name rx-store-api</span>
               </p>
             )}
+            {(status?.callbackUrl || status?.webhookUrl) && (
+              <div className="mt-2 space-y-1">
+                <p className="text-[11px] text-rx-gray-medium">Register these EXACT values on the GitHub App:</p>
+                {status?.callbackUrl && (
+                  <p className="text-[11px] text-white/80">
+                    <span className="text-rx-gray-medium">Callback URL:</span>{' '}
+                    <button type="button" onClick={() => { navigator.clipboard?.writeText(String(status.callbackUrl)).then(() => toast.success('Callback URL copied')).catch(() => {}); }}
+                      className="font-mono text-rx-yellow hover:underline break-all text-left">{status.callbackUrl}</button>
+                  </p>
+                )}
+                {status?.webhookUrl && (
+                  <p className="text-[11px] text-white/80">
+                    <span className="text-rx-gray-medium">Webhook URL:</span>{' '}
+                    <button type="button" onClick={() => { navigator.clipboard?.writeText(String(status.webhookUrl)).then(() => toast.success('Webhook URL copied')).catch(() => {}); }}
+                      className="font-mono text-rx-yellow hover:underline break-all text-left">{status.webhookUrl}</button>
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

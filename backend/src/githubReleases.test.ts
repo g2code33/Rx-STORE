@@ -1676,3 +1676,30 @@ test('OAUTH callback: an expired/unknown state is refused with a clear page (nev
     assert.ok(/expired or was already used/i.test(html), html.slice(0, 200));
   } finally { stubs.restore(); }
 });
+
+test('CALLBACK URL: the OAuth redirect includes the /v1 API prefix (must match the registered GitHub App URL)', async () => {
+  const { githubAppCallbackUrl } = await import('./services/github.ts');
+  // Request URLs are dispatched with /v1 stripped, but the PUBLIC callback is
+  // registered under /v1 — a redirect_uri without it is rejected by GitHub
+  // ("redirect_uri MUST match the registered callback URL").
+  assert.equal(
+    githubAppCallbackUrl({}, new Request('https://rx-store-api.calcitoninpay.workers.dev/v1/developers/apps/x/github/connect')),
+    'https://rx-store-api.calcitoninpay.workers.dev/v1/developers/github/callback',
+  );
+  // Explicit override wins (custom deployments).
+  assert.equal(
+    githubAppCallbackUrl({ GITHUB_APP_CALLBACK_URL: 'https://api.example.com/v1/developers/github/callback/' }, new Request('https://x.test/developers/apps/x/github/connect')),
+    'https://api.example.com/v1/developers/github/callback',
+  );
+});
+
+test('CALLBACK URL: connect sends exactly the canonical callback URL to GitHub', async () => {
+  const stubs = installStubs(env);
+  try {
+    const req = new Request(`https://api.test/developers/apps/${APP_ID}/github/connect`, { method: 'POST', headers: { 'User-Agent': 't' } });
+    (req as any).user = { userId: USER_ID };
+    const out: any = await githubDevRoutes.connect(req as any, env);
+    const decoded = decodeURIComponent(String(out.url));
+    assert.ok(decoded.includes('redirect_uri=https://api.test/v1/developers/github/callback'), decoded);
+  } finally { stubs.restore(); }
+});

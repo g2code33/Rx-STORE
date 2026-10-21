@@ -47,6 +47,26 @@ export function githubConfigured(env: any): boolean {
   return githubAppConfig(env) !== null;
 }
 
+/**
+ * The OAuth callback URL that MUST be registered on the GitHub App
+ * (Identifying and authorizing users → Callback URL).
+ *
+ * IMPORTANT: the Worker serves the public API under `/v1` (VITE_API_URL is
+ * `https://…workers.dev/v1`), but routes are dispatched on the path AFTER that
+ * prefix is stripped. Building the URL from the incoming request origin alone
+ * therefore produced `…/developers/github/callback` — which does NOT match the
+ * documented registration (`…/v1/developers/github/callback`) and makes GitHub
+ * answer "redirect_uri must match the registered callback URL".
+ *
+ * Override with GITHUB_APP_CALLBACK_URL when the deployment lives elsewhere.
+ */
+export function githubAppCallbackUrl(env: any, request?: Request): string {
+  const explicit = String(env?.GITHUB_APP_CALLBACK_URL || '').trim();
+  if (explicit) return explicit.replace(/\/+$/, '');
+  const origin = request ? new URL(request.url).origin : 'https://rx-store-api.calcitoninpay.workers.dev';
+  return `${origin}/v1/developers/github/callback`;
+}
+
 // ---------------------------------------------------------------------------
 // User-to-server OAuth (GitHub App's own client credentials)
 //

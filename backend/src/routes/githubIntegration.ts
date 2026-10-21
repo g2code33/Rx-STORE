@@ -13,7 +13,7 @@
  */
 import { resolveMembership } from './developers.ts';
 import {
-  githubAppConfig, githubConfigured, githubMissingSecrets, installationRepos,
+  githubAppConfig, githubConfigured, githubMissingSecrets, installationRepos, githubAppCallbackUrl,
   githubAppOAuthConfigured, userAuthorizeUrl, exchangeUserCode,
   userInstallations, userInstallationRepos, type UserRepo,
 } from '../services/github.ts';
@@ -25,7 +25,7 @@ import {
   adminOverview, adminQueue, adminAudit, verifyPendingDetections, ensureGithubTables,
   adminConnectionsOverview, adminSetConnectionStatus,
 } from '../services/githubReleases.ts';
-import { issueOneTimeToken, consumeOneTimeToken, restoreOneTimeToken, apiCallbackBase } from '../services/oauth.ts';
+import { issueOneTimeToken, consumeOneTimeToken, restoreOneTimeToken } from '../services/oauth.ts';
 
 type Result = { code?: string; message?: string; [k: string]: any } | null | undefined;
 
@@ -75,6 +75,9 @@ export const githubDevRoutes = {
       // Honest diagnostics: which required secrets are missing/empty (names
       // only — values are never exposed). Empty when everything is set.
       missing: githubConfigured(env) ? [] : githubMissingSecrets(env),
+      // Exactly what must be registered on the GitHub App (callback + webhook).
+      callbackUrl: githubAppCallbackUrl(env, request),
+      webhookUrl: `${new URL(request.url).origin}/v1/webhooks/github`,
       setupHint: githubConfigured(env) ? null : 'An administrator must complete the GitHub App setup (docs/GITHUB_RELEASES.md) before repositories can be connected.',
       app: { id: (app as any).id, name: (app as any).name, priceType: (app as any).price_type },
       connection,
@@ -107,7 +110,7 @@ export const githubDevRoutes = {
     // RX Store session needed in the browser that finishes it).
     if (githubAppOAuthConfigured(env)) {
       const state = await issueOneTimeToken(env, 'state', { userId: org.userId, appId, kind: 'github-oauth' });
-      const redirectUri = `${apiCallbackBase(env, request)}/developers/github/callback`;
+      const redirectUri = githubAppCallbackUrl(env, request);
       const url = userAuthorizeUrl(env, { state, redirectUri });
       if (url) return { url };
     }
@@ -256,7 +259,7 @@ async function oauthPicketResponse(env: any, request: Request, input: { code: st
   if (!payload || payload.kind !== 'github-oauth' || !payload.userId || !payload.appId) {
     return errorPage('This connection request expired or was already used. Start again from RX Store.', input.webBase);
   }
-  const redirectUri = `${apiCallbackBase(env, request)}/developers/github/callback`;
+  const redirectUri = githubAppCallbackUrl(env, request);
   const token = await exchangeUserCode(env, { code: input.code, redirectUri });
   if (!token) return errorPage('GitHub did not return a valid authorization. Try again from RX Store.', input.webBase);
 
