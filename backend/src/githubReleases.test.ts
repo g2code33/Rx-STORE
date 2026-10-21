@@ -89,7 +89,7 @@ function fakeEnv() {
             return { meta: { changes: 1 } };
           }
           if (s.includes('INSERT INTO github_release_assets')) {
-            const row = { id: a[0], release_id: a[1], github_asset_id: a[2], name: a[3], platform: a[4], architecture: a[5], download_url: a[6], state: 'detected', declared_sha256: a[8], size_bytes: null as any, sha256: null as any, scanner_status: null as any, scanner_detail: null as any, error: null as any };
+            const row = { id: a[0], release_id: a[1], github_asset_id: a[2], name: a[3], platform: a[4], architecture: a[5], download_url: a[6], state: 'detected', declared_sha256: a[8], is_private: a[9] ?? 0, size_bytes: null as any, sha256: null as any, scanner_status: null as any, scanner_detail: null as any, error: null as any };
             const dup = T('github_release_assets').find((r) => r.release_id === row.release_id && r.platform === row.platform && r.architecture === row.architecture);
             if (dup) { const e: any = new Error('UNIQUE constraint failed: github_release_assets'); return Promise.reject(e); }
             T('github_release_assets').push(row);
@@ -111,7 +111,7 @@ function fakeEnv() {
             // detection shape: (id, app, release, platform, arch, filename, storage_key,
             // file_size, mime, sha256, version, external_url, github_asset_id) with
             // status 'stored' + QUARANTINED in the SQL literal.
-            const pkgRow: any = { id: a[0], application_id: a[1], release_id: a[2], platform: a[3], architecture: a[4], filename: a[5], storage_key: a[6], file_size: a[7], sha256: a[9], version: a[10], provider: 'github', external_url: a[11], github_asset_id: a[12], status: s.includes("'stored'") ? 'stored' : 'published', security_state: 'QUARANTINED', overall_security: 'PENDING', quarantine_key: null, deployment_url: null, security_scan_status: 'pending', signature_status: 'pending' };
+            const pkgRow: any = { id: a[0], application_id: a[1], release_id: a[2], platform: a[3], architecture: a[4], filename: a[5], storage_key: a[6], file_size: a[7], sha256: a[9], version: a[10], provider: 'github', external_url: a[11], github_asset_id: a[12], external_private: a[13] ?? 0, status: s.includes("'stored'") ? 'stored' : 'published', security_state: 'QUARANTINED', overall_security: 'PENDING', quarantine_key: null, deployment_url: null, security_scan_status: 'pending', signature_status: 'pending' };
             const dup = T('packages').find((x) => x.release_id === pkgRow.release_id && x.platform === pkgRow.platform && x.architecture === pkgRow.architecture);
             if (dup) { const e: any = new Error('UNIQUE constraint failed: packages.release_id'); return Promise.reject(e); }
             T('packages').push(pkgRow);
@@ -204,6 +204,11 @@ function fakeEnv() {
           // ---- UPDATEs ----
           if (s.includes('UPDATE github_repo_connections SET status=\'disconnected\'')) {
             const c = T('github_repo_connections').find((x) => x.id === a[0]); if (c) c.status = 'disconnected';
+            return { meta: { changes: c ? 1 : 0 } };
+          }
+          if (s.includes('UPDATE github_repo_connections SET repository_private=?')) {
+            const c = T('github_repo_connections').find((x) => x.id === a[1]);
+            if (c) c.repository_private = a[0];
             return { meta: { changes: c ? 1 : 0 } };
           }
           if (s.includes('UPDATE github_repo_connections SET last_event_at')) {
@@ -661,6 +666,16 @@ function installStubs(env: any, opts: StubOpts = {}) {
         { id: 777001, name: 'secret-app', full_name: 'octo/secret-app', private: true },
       ] }), { status: 200 });
     }
+    if (u.startsWith('https://api.github.com/user/repos?')) {
+      return new Response(JSON.stringify([
+        { id: Number(REPO_ID), name: 'app', full_name: 'octo/app', private: false, owner: { login: 'octo' } },
+        { id: 777001, name: 'secret-app', full_name: 'octo/secret-app', private: true, owner: { login: 'octo' } },
+        { id: 888002, name: 'uninstalled', full_name: 'octo/uninstalled', private: false, owner: { login: 'octo' } },
+      ]), { status: 200 });
+    }
+    if (u === 'https://api.github.com/repos/octo/secret-app') {
+      return new Response(JSON.stringify({ id: 777001, full_name: 'octo/secret-app', private: true }), { status: 200 });
+    }
     if (u === 'https://api.github.com/user/installations?per_page=100') {
       return new Response(JSON.stringify({ installations: [{ id: Number(INSTALLATION_ID), account: { login: 'octo', type: 'User' } }] }), { status: 200 });
     }
@@ -782,20 +797,21 @@ test('paid apps cannot connect to the GitHub distribution channel', async () => 
   } finally { stubs.restore(); }
 });
 
-test('private repositories are refused (users must download without credentials)', async () => {
+test('private repositories are SUPPORTED and flagged (assets stream through RX Store with a token)', async () => {
   const stubs = installStubs(env);
   const original = globalThis.fetch;
-  (globalThis.fetch as any) = (async (url: any) => {
+  (globalThis.fetch as any) = (async (url: any, init?: any) => {
     const u = String(url);
     if (u === 'https://api.github.com/installation/repositories?per_page=100') {
       return new Response(JSON.stringify({ repositories: [{ id: Number(REPO_ID), name: 'app', full_name: 'octo/app', owner: { login: 'octo' }, private: true }] }), { status: 200 });
     }
-    return (original as any)(url);
+    return (original as any)(url, init);
   });
   try {
     const out = await connect();
-    assert.equal(out.ok, false);
-    assert.match((out as any).message, /PUBLIC/i);
+    assert.ok(out.ok, (out as any).message);
+    const row = env.tables.github_repo_connections.find((c: any) => c.application_id === APP_ID);
+    assert.equal(Number(row.repository_private), 1, 'the connection records that it is private');
   } finally { globalThis.fetch = original; stubs.restore(); }
 });
 
@@ -1626,7 +1642,7 @@ test('OAUTH connect: without App client credentials it falls back to the install
   } finally { stubs.restore(); }
 });
 
-test('OAUTH callback: renders the repository picker with PUBLIC repos only, then binds the chosen one', async () => {
+test('OAUTH callback: renders the repository picker (public + private), then binds the chosen repo', async () => {
   const stubs = installStubs(env);
   try {
     const state = await issueOneTimeToken(env, 'state', { kind: 'github-oauth', userId: USER_ID, appId: APP_ID });
@@ -1637,7 +1653,7 @@ test('OAUTH callback: renders the repository picker with PUBLIC repos only, then
     assert.ok(String(res.headers.get('Content-Type')).includes('text/html'));
     const html = await res.text();
     assert.ok(html.includes('octo/app'), 'public repository listed');
-    assert.ok(!html.includes('secret-app'), 'private repositories are never offered');
+    assert.ok(html.includes('secret-app'), 'private repositories are offered too');
     const codeMatch = html.match(/name="code" value="([^"]+)"/);
     const repoMatch = html.match(/name="repositoryId" value="([^"]+)"/);
     assert.ok(codeMatch, 'picker embeds a completion code');
@@ -1671,7 +1687,7 @@ test('OAUTH bind: a repository OUTSIDE the authorization is refused (no arbitrar
       env,
     );
     const outHtml = await out.text();
-    assert.ok(outHtml.includes('not part of this authorization'), outHtml.slice(0, 200));
+    assert.ok(/does not have access to that repository/i.test(outHtml), outHtml.slice(0, 200));
     assert.equal(env.tables.github_repo_connections.length, 0);
   } finally { stubs.restore(); }
 });
@@ -2059,4 +2075,123 @@ test('ADMIN CONNECT: paid apps and already-connected apps are refused with clear
     const again: any = await githubAdminRoutes.connectStart(adminReq(`/admin/github/connections/${APP_ID}/connect`), env);
     assert.equal(again.code, 'CONFLICT');
   } finally { stubs.restore(); }
+});
+
+// ---------------------------------------------------------------------------
+// ALL REPOSITORIES (public + private) — 'admin sees only one repo'.
+// The picker used to list only repositories the App was already installed on,
+// and dropped private ones entirely.
+// ---------------------------------------------------------------------------
+
+test('PICKER: lists EVERY repository the account can see — public AND private — with access state', async () => {
+  const stubs = installStubs(env);
+  try {
+    const state = await issueOneTimeToken(env, 'state', { kind: 'github-oauth', userId: USER_ID, appId: APP_ID });
+    const res: any = await githubDevRoutes.callback(
+      new Request(`https://api.test/developers/github/callback?code=gh-code&state=${encodeURIComponent(state)}`) as any, env,
+    );
+    const html = await res.text();
+    assert.ok(html.includes('octo/app'), 'public + installed repo is listed');
+    assert.ok(html.includes('octo/secret-app'), 'PRIVATE repo is listed');
+    assert.ok(html.includes('octo/uninstalled'), 'repo the App is not installed on is still listed');
+    assert.match(html, /Grant access/, 'repos without access offer the one-click grant path');
+    assert.match(html, /private repository/, 'private repos are labelled');
+  } finally { stubs.restore(); }
+});
+
+test('PICKER: binding a repository the App has no access to is REFUSED (never a phantom connection)', async () => {
+  const stubs = installStubs(env);
+  try {
+    const state = await issueOneTimeToken(env, 'state', { kind: 'github-oauth', userId: USER_ID, appId: APP_ID });
+    const res: any = await githubDevRoutes.callback(
+      new Request(`https://api.test/developers/github/callback?code=gh-code&state=${encodeURIComponent(state)}`) as any, env,
+    );
+    const html = await res.text();
+    const code = html.match(/name="code" value="([^"]+)"/)![1];
+    // 888002 = octo/uninstalled (listed, but no installation access)
+    const out: any = await githubOAuthRoutes.bind(
+      new Request('https://api.test/developers/github/oauth/bind', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ code, repositoryId: '888002' }).toString(),
+      }) as any, env,
+    );
+    const outHtml = await out.text();
+    assert.match(outHtml, /does not have access to that repository/i);
+    assert.equal(env.tables.github_repo_connections.length, 0);
+  } finally { stubs.restore(); }
+});
+
+test('PRIVATE REPO: detection records the authenticated API URL + private flags and verification streams with a token', async () => {
+  const stubs = installStubs(env);
+  const original = globalThis.fetch;
+  const seen: string[] = [];
+  try {
+    // Connect the PRIVATE repo (stub marks octo/secret-app private).
+    const originalFetch = globalThis.fetch;
+    (globalThis.fetch as any) = (async (url: any, init?: any) => {
+      const u = String(url);
+      if (u === 'https://api.github.com/installation/repositories?per_page=100') {
+        return new Response(JSON.stringify({ repositories: [
+          { id: 777001, name: 'secret-app', full_name: 'octo/secret-app', owner: { login: 'octo' }, private: true },
+        ] }), { status: 200 });
+      }
+      return (originalFetch as any)(url, init);
+    });
+    const conn = await connectAppRepository(env, {
+      appId: APP_ID, orgId: ORG_ID, userId: USER_ID, installationId: INSTALLATION_ID, repositoryId: '777001',
+    });
+    (globalThis.fetch as any) = original;
+    assert.ok(conn.ok, (conn as any).message);
+
+    // A release from that private repo: assets are fetched through the API.
+    (globalThis.fetch as any) = (async (url: any, init?: any) => {
+      const u = String(url);
+      const auth = String(init?.headers?.Authorization || '');
+      if (u.startsWith('https://api.github.com/repos/octo/secret-app/releases/assets/')) {
+        assert.ok(auth.startsWith('Bearer '), 'private asset metadata requires an installation token');
+        return new Response(JSON.stringify({ id: 555001, name: 'clinical-rx_1.12.0_amd64.deb', size: DEB_FIXTURE.byteLength }), { status: 200 });
+      }
+      if (u.startsWith('https://api.github.com/repos/octo/secret-app')) {
+        return new Response(JSON.stringify({ id: 777001, full_name: 'octo/secret-app', private: true }), { status: 200 });
+      }
+      if (u === 'https://api.github.com/app/installations/777/access_tokens') return new Response(JSON.stringify({ token: 'inst-token', expires_at: new Date(Date.now() + 3600_000).toISOString() }), { status: 200 });
+      seen.push(u);
+      return (original as any)(url, init);
+    });
+
+    const payload = ghReleasePayload();
+    payload.repository = { id: 777001, full_name: 'octo/secret-app' };
+    payload.release.assets = [{
+      id: 555001, name: 'clinical-rx_1.12.0_amd64.deb', size: DEB_FIXTURE.byteLength,
+      browser_download_url: 'https://github.com/octo/secret-app/releases/download/v1.12.0/clinical-rx_1.12.0_amd64.deb',
+    }];
+    const out = await signedDelivery(env, 'release', payload, 'd-private');
+    assert.equal(out.body.data.status, 'detected', JSON.stringify(out.body));
+
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const asset = env.tables.github_release_assets.find((a: any) => a.release_id === rel.id);
+    assert.equal(Number(asset.is_private), 1, 'the asset is marked private');
+    assert.ok(String(asset.download_url).startsWith('https://api.github.com/repos/octo/secret-app/releases/assets/'),
+      'a private asset is recorded by its authenticated API URL, never the public one');
+    const canonical = env.tables.releases.find((r2: any) => r2.application_id === APP_ID && r2.version === '1.12.0');
+    assert.ok(canonical, 'the canonical (unpublished) release row exists');
+    const pkg = env.tables.packages.find((p2: any) => p2.release_id === canonical.id);
+    assert.ok(pkg, 'the canonical package row exists');
+    assert.equal(Number(pkg.external_private), 1, 'the canonical package is marked private');
+  } finally { globalThis.fetch = original; stubs.restore(); }
+});
+
+test('PRIVATE DOWNLOAD: the manifest points at the RX Store asset proxy, never the API URL', async () => {
+  const { buildManifest } = await import('./services/releases.ts');
+  const manifest = buildManifest({
+    pkg: {
+      id: 'pkg_private_1', provider: 'github', external_private: 1,
+      external_url: 'https://api.github.com/repos/octo/secret-app/releases/assets/555001',
+      storage_key: '', filename: 'a.deb', file_size: 10, sha256: 'b'.repeat(64), version: '1.0.0',
+      platform: 'linux_deb', architecture: 'x64',
+    } as any,
+    matchedPlatform: 'linux_deb', matchedArchitecture: 'x64' as any, origin: 'https://api.test',
+  });
+  assert.equal(manifest.url, 'https://api.test/v1/github-assets/pkg_private_1');
+  assert.ok(!manifest.url.includes('api.github.com'), 'the token-requiring API URL must never reach a client');
 });

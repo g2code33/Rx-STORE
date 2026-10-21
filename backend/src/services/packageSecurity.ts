@@ -134,15 +134,31 @@ export interface ExternalPackageBytes extends PackageBytes {
   finalUrl: string;
 }
 
-export async function loadExternalPackageBytes(url: string, opts: { maxBytes: number; timeoutMs?: number }): Promise<ExternalPackageBytes | null> {
+export async function loadExternalPackageBytes(url: string, opts: {
+  maxBytes: number; timeoutMs?: number;
+  /**
+   * Authenticated GitHub API asset fetch (PRIVATE repositories). The URL is
+   * https://api.github.com/repos/<owner>/<repo>/releases/assets/<id>, which is
+   * not on the public asset allowlist — it is only reachable through this
+   * explicit, server-built path with an installation token, and the redirect
+   * target is GitHub's own CDN.
+   */
+  authHeaders?: Record<string, string>;
+}): Promise<ExternalPackageBytes | null> {
+  const authenticated = !!opts.authHeaders;
+  if (authenticated && !/^https:\/\/api\.github\.com\/repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/releases\/assets\/\d+$/.test(String(url))) {
+    return null; // never let an arbitrary URL ride the authenticated path
+  }
   let current = url;
   let resp: Response | null = null;
   for (let hop = 0; hop <= 3; hop++) {
-    const check = validateAssetUrl(current);
-    if (!check.ok) return null;
+    if (!authenticated) {
+      const check = validateAssetUrl(current);
+      if (!check.ok) return null;
+    }
     resp = await fetch(current, {
       redirect: 'manual',
-      headers: { 'User-Agent': 'rx-store-github', Accept: 'application/octet-stream' },
+      headers: { 'User-Agent': 'rx-store-github', Accept: 'application/octet-stream', ...(opts.authHeaders || {}) },
       signal: AbortSignal.timeout(opts.timeoutMs || 60_000),
     });
     if (resp.status >= 300 && resp.status < 400) {

@@ -91,7 +91,10 @@ export default function GithubConnectionsPanel() {
     fetchReposForAdminBind(appId, code);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const [picker, setPicker] = React.useState<{ appId: string; code: string; repos: Array<{ id: string; fullName: string; private?: boolean }> } | null>(null);
+  const [picker, setPicker] = React.useState<{
+    appId: string; code: string;
+    repos: Array<{ id: string; fullName: string; private?: boolean; installed?: boolean }>;
+  } | null>(null);
 
   async function fetchReposForAdminBind(appId: string, code: string) {
     try {
@@ -204,18 +207,32 @@ export default function GithubConnectionsPanel() {
             <button onClick={() => setPicker(null)} className="text-xs text-rx-gray-medium hover:text-white">Cancel</button>
           </div>
           <div className="mt-3 space-y-2">
-            {picker.repos.length === 0 && <p className="text-xs text-amber-300">No public repositories were found for this authorization.</p>}
+            {picker.repos.length === 0 && <p className="text-xs text-amber-300">No repositories were found for this GitHub authorization.</p>}
             {picker.repos.map((r) => (
               <div key={r.id} className="flex items-center gap-3 p-3 rounded-xl bg-rx-dark border border-white/10">
                 <Github className="w-4 h-4 text-rx-gray-medium shrink-0" />
-                <p className="text-sm text-white truncate flex-1">{r.fullName}</p>
-                <button onClick={() => finishBind(r.id)} disabled={busy === picker.appId}
-                  className="btn-primary text-xs px-3 py-1.5 flex items-center gap-1.5 disabled:opacity-50">
-                  {busy === picker.appId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link2 className="w-3.5 h-3.5" />} Connect
-                </button>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-white truncate">{r.fullName}</p>
+                  <p className="text-[11px] text-rx-gray-medium">
+                    {r.private ? 'private repository — streamed securely through RX Store' : 'public repository — downloads straight from GitHub'}
+                    {r.installed === false && ' · RX Store has no access yet'}
+                  </p>
+                </div>
+                {r.installed === false ? (
+                  <a href="https://github.com/settings/installations" target="_blank" rel="noreferrer"
+                    className="text-xs px-3 py-1.5 rounded-lg bg-white/10 text-white hover:bg-white/20 flex items-center gap-1.5">
+                    <ExternalLink className="w-3.5 h-3.5" /> Grant access
+                  </a>
+                ) : (
+                  <button onClick={() => finishBind(r.id)} disabled={busy === picker.appId}
+                    className="btn-primary text-xs px-3 py-1.5 flex items-center gap-1.5 disabled:opacity-50">
+                    {busy === picker.appId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link2 className="w-3.5 h-3.5" />} Connect
+                  </button>
+                )}
               </div>
             ))}
           </div>
+          <p className="text-[11px] text-rx-gray-medium mt-2">After granting access on GitHub, click Connect again on this app to refresh the list.</p>
         </div>
       )}
 

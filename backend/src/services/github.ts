@@ -152,6 +152,103 @@ export async function userInstallations(userToken: string): Promise<UserInstalla
 
 export interface UserRepo { repositoryId: string; installationId: string; fullName: string; name: string; private: boolean }
 
+export interface AccessibleRepo {
+  repositoryId: string;
+  installationId: string | null;
+  fullName: string;
+  name: string;
+  owner: string;
+  private: boolean;
+  /** Is the GitHub App already installed on this repository? */
+  installed: boolean;
+}
+
+/**
+ * EVERY repository the authorizing user can access — public AND private.
+ *
+ * /user/installations/:id/repositories only returns repositories the App is
+ * already installed on, which is why the picker showed a single repo when the
+ * App was installed on "only select repositories". Admins/developers must be
+ * able to connect any app they own, so the picker lists their whole account
+ * and the chosen repository is ADDED to the installation on demand
+ * (see addRepositoryToInstallation).
+ */
+export async function userAccessibleRepos(userToken: string, installations: UserInstallation[]): Promise<AccessibleRepo[]> {
+  // Which repos are already covered by an installation?
+  const installedByRepo = new Map<string, string>(); // repositoryId -> installationId
+  for (const inst of installations) {
+    const repos = await userInstallationRepos(userToken, inst.installationId).catch(() => [] as UserRepo[]);
+    for (const r of repos) installedByRepo.set(String(r.repositoryId), inst.installationId);
+  }
+  // The full account list the user can see (owner / collaborator / org member).
+  const out = new Map<string, AccessibleRepo>();
+  try {
+    for (let page = 1; page <= 3; page++) {
+      const res = await fetch(
+        `https://api.github.com/user/repos?per_page=100&page=${page}&sort=updated&affiliation=owner,collaborator,organization_member`,
+        { headers: { Authorization: `Bearer ${userToken}`, Accept: 'application/vnd.github+json', 'User-Agent': 'rx-store-github' }, signal: AbortSignal.timeout(15000) },
+      );
+      if (!res.ok) break;
+      const list: any = await res.json().catch(() => null);
+      if (!Array.isArray(list)) break;
+      for (const r of list) {
+        const id = String(r?.id ?? '');
+        if (!id) continue;
+        const owner = String(r?.owner?.login ?? '');
+        const installed = installedByRepo.get(id) || null;
+        out.set(id, {
+          repositoryId: id,
+          installationId: installed,
+          fullName: String(r?.full_name ?? ''),
+          name: String(r?.name ?? ''),
+          owner,
+          private: r?.private === true,
+          installed: !!installed,
+        });
+      }
+      if (list.length < 100) break;
+    }
+  } catch { /* fall through with whatever the installation lists gave us */ }
+  // Include installation repos that /user/repos did not return (e.g. org repos
+  // where the user is only an App installer).
+  for (const inst of installations) {
+    const repos = await userInstallationRepos(userToken, inst.installationId).catch(() => [] as UserRepo[]);
+    for (const r of repos) {
+      if (out.has(String(r.repositoryId))) continue;
+      const [owner] = String(r.fullName || '').split('/');
+      out.set(String(r.repositoryId), {
+        repositoryId: String(r.repositoryId), installationId: inst.installationId,
+        fullName: r.fullName, name: r.name, owner: owner || '', private: r.private === true, installed: true,
+      });
+    }
+  }
+  return [...out.values()].sort((a, b) => a.fullName.localeCompare(b.fullName));
+}
+
+/**
+ * Add a repository to an existing App installation (user-to-server token).
+ * GitHub requires the user to have admin rights on the repository — otherwise
+ * it answers 403/404 and we surface an actionable message.
+ */
+export async function addRepositoryToInstallation(userToken: string, installationId: string, repositoryId: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+  try {
+    const res = await fetch(
+      `https://api.github.com/user/installations/${encodeURIComponent(installationId)}/repositories/${encodeURIComponent(repositoryId)}`,
+      {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${userToken}`, Accept: 'application/vnd.github+json', 'User-Agent': 'rx-store-github' },
+        signal: AbortSignal.timeout(15000),
+      },
+    );
+    if (res.status === 204 || res.ok) return { ok: true };
+    if (res.status === 403) return { ok: false, reason: 'You need admin rights on that repository to grant RX Store access.' };
+    if (res.status === 404) return { ok: false, reason: 'That repository was not found for this GitHub App installation.' };
+    return { ok: false, reason: `GitHub answered ${res.status} while granting access.` };
+  } catch (e: any) {
+    return { ok: false, reason: `Could not reach GitHub: ${String(e?.message || e).slice(0, 120)}` };
+  }
+}
+
 /** Repositories of ONE installation that the USER can access. */
 export async function userInstallationRepos(userToken: string, installationId: string): Promise<UserRepo[]> {
   try {
@@ -429,6 +526,15 @@ const IGNORED_ASSET_PATTERNS: Array<{ re: RegExp; reason: string }> = [
   { re: /^.*-debug\.apk$/i, reason: 'debug build — release builds only are distributed' },
   { re: /^.*(symbols|sources)\.(zip|tar\.gz)$/i, reason: 'debug symbols' },
 ];
+
+/**
+ * The authenticated API URL for a release asset. PRIVATE repositories cannot
+ * use browser_download_url (it 404s without credentials), so their assets are
+ * fetched through the API with a short-lived installation token.
+ */
+export function githubAssetApiUrl(repoFullName: string, assetId: string): string {
+  return `https://api.github.com/repos/${repoFullName}/releases/assets/${encodeURIComponent(assetId)}`;
+}
 
 /** Why an asset is deliberately skipped, or null when it is a candidate. */
 export function ignoredAssetReason(name: string): string | null {

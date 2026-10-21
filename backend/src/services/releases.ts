@@ -363,12 +363,16 @@ export function buildManifest(input: {
 }): ReleaseManifest {
   const { pkg, matchedPlatform, matchedArchitecture, app, origin } = input;
   // GitHub-channel packages point straight at the VERIFIED public GitHub asset
-  // URL (RX Store never proxies or stores the binary). Everything else uses
-  // the protected /r2/ path.
+  // URL (RX Store never proxies or stores the binary). PRIVATE repositories
+  // have no public asset URL, so they are streamed through RX Store's
+  // short-lived proxy (still no copy stored anywhere). Everything else uses the
+  // protected /r2/ path.
   const url = pkg.deployment_url
     ? pkg.deployment_url
     : pkg.provider === 'github' && pkg.external_url
-      ? String(pkg.external_url)
+      ? (Number(pkg.external_private) === 1
+        ? `${String(origin).replace(/\/$/, '')}/v1/github-assets/${encodeURIComponent(String(pkg.id))}`
+        : String(pkg.external_url))
       : `${String(origin).replace(/\/$/, '')}/r2/${pkg.storage_key}`;
   return {
     app: app || {},

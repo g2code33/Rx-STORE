@@ -31,6 +31,7 @@ import {
   githubAppConfig, githubConfigured, installationRepos, verifyWebhookSignature,
   mapAssetFilename, parseRxManifest, versionFromTag, validateAssetUrl,
   streamAssetHash, ghApi, ignoredAssetReason, assetPreference,
+  githubAssetApiUrl, installationToken,
 } from './github.ts';
 import {
   runSecurityPipeline, publicationSecurityGate, latestCheckStatus,
@@ -91,6 +92,9 @@ export async function ensureGithubTables(env: any): Promise<void> {
   // Migration 0026 adds this to EXISTING databases; the no-op ALTER keeps a
   // fresh/lazy-created table in sync without requiring the migration first.
   await env.DB.prepare('ALTER TABLE github_releases ADD COLUMN ignored_assets TEXT').run().catch(() => {});
+  await env.DB.prepare('ALTER TABLE github_repo_connections ADD COLUMN repository_private INTEGER').run().catch(() => {});
+  await env.DB.prepare('ALTER TABLE github_release_assets ADD COLUMN is_private INTEGER DEFAULT 0').run().catch(() => {});
+  await env.DB.prepare('ALTER TABLE packages ADD COLUMN external_private INTEGER DEFAULT 0').run().catch(() => {});
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS github_release_assets (
     id TEXT PRIMARY KEY, release_id TEXT NOT NULL, github_asset_id TEXT NOT NULL,
     name TEXT NOT NULL, platform TEXT NOT NULL, architecture TEXT NOT NULL,
@@ -196,7 +200,9 @@ export async function connectAppRepository(env: any, input: {
     repo = { id: verified.repositoryId, name: repoName || verified.fullName, full_name: verified.fullName, owner: { login: ownerName || '' }, private: false };
   }
   if (!repo) return { ok: false, code: 'NOT_FOUND', message: 'That repository is not accessible to this GitHub installation.' };
-  if (repo.private === true) return { ok: false, code: 'FORBIDDEN', message: 'Only PUBLIC repositories are supported — users download release assets directly from GitHub without credentials.' };
+  // PRIVATE repositories are supported: their assets are verified and served
+  // through RX Store with short-lived installation tokens (no public URL, no
+  // copy stored anywhere). Public repos keep the direct GitHub download path.
 
   const other: any = await env.DB.prepare(`SELECT id FROM github_repo_connections WHERE repository_id=? AND status='active'`).bind(String(repo.id)).first().catch(() => null);
   if (other) return { ok: false, code: 'CONFLICT', message: 'That repository is already connected to another application.' };
@@ -206,6 +212,8 @@ export async function connectAppRepository(env: any, input: {
     `INSERT INTO github_repo_connections (id, application_id, repository_id, repository_owner, repository_name, repository_full_name, installation_id, status, connected_by)
      VALUES (?,?,?,?,?,?,?, 'active', ?)`
   ).bind(id, input.appId, String(repo.id), String(repo.owner?.login || ''), String(repo.name || ''), String(repo.full_name || ''), String(input.installationId), input.userId).run();
+  await env.DB.prepare('UPDATE github_repo_connections SET repository_private=? WHERE id=?')
+    .bind(repo.private === true ? 1 : 0, id).run().catch(() => {});
 
   await audit(env, {
     action: input.byAdmin ? 'admin_connect' : 'connect',
@@ -469,15 +477,21 @@ export async function detectRelease(env: any, conn: any, ghRelease: any, action:
   const duplicate = ambiguous.length > 0;
 
   await env.DB.prepare(`DELETE FROM github_release_assets WHERE release_id=?`).bind(id).run().catch(() => {});
+  // A PRIVATE repository's assets are only reachable with an installation
+  // token, so their verified/recorded URL is the GitHub API asset endpoint.
+  const repoIsPrivate = await isPrivateRepo(env, conn).catch(() => false);
   for (const m of mapped) {
-    const url = validateAssetUrl(m.asset.browser_download_url);
+    const url = repoIsPrivate
+      ? { ok: true as const, url: githubAssetApiUrl(conn.repository_full_name, String(m.asset.id ?? '')) }
+      : validateAssetUrl(m.asset.browser_download_url);
     await env.DB.prepare(
-      `INSERT INTO github_release_assets (id, release_id, github_asset_id, name, platform, architecture, download_url, state, declared_sha256)
-       VALUES (?,?,?,?,?,?,?,?,?)`
+      `INSERT INTO github_release_assets (id, release_id, github_asset_id, name, platform, architecture, download_url, state, declared_sha256, is_private)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`
     ).bind(
       `gha_${id}_${m.platform}_${m.architecture}`, id, String(m.asset.id ?? ''), String(m.asset.name || '').slice(0, 200),
       m.platform, m.architecture, url.ok ? url.url : String(m.asset.browser_download_url || ''), 'detected',
       String(m.asset.digest || '').replace(/^sha256:/, '').slice(0, 64) || null,
+      repoIsPrivate ? 1 : 0,
     ).run().catch(() => {});
   }
 
@@ -519,12 +533,12 @@ export async function detectRelease(env: any, conn: any, ghRelease: any, action:
     for (const m of mapped) {
       const url = validateAssetUrl(m.asset.browser_download_url);
       await env.DB.prepare(
-        `INSERT INTO packages (id, application_id, release_id, platform, architecture, filename, storage_key, file_size, mime_type, sha256, version, package_type, provider, external_url, github_asset_id, security_state, overall_security, status, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?, 'installer', 'github', ?, ?, 'QUARANTINED','PENDING','stored',datetime('now'))`
+        `INSERT INTO packages (id, application_id, release_id, platform, architecture, filename, storage_key, file_size, mime_type, sha256, version, package_type, provider, external_url, github_asset_id, external_private, security_state, overall_security, status, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?, 'installer', 'github', ?, ?, ?, 'QUARANTINED','PENDING','stored',datetime('now'))`
       ).bind(
         `pkg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, conn.application_id, canonicalId,
         m.platform, m.architecture, String(m.asset.name || '').slice(0, 200), '', 0, 'application/octet-stream', '',
-        version, url.ok ? url.url : String(m.asset.browser_download_url || ''), String(m.asset.id ?? '')
+        version, url.ok ? url.url : String(m.asset.browser_download_url || ''), String(m.asset.id ?? ''), repoIsPrivate ? 1 : 0
       ).run();
     }
   } catch (e: any) {
@@ -626,7 +640,7 @@ export async function verifyGithubRelease(env: any, releaseId: string): Promise<
       }
       // 2. PASS 1 — stream the ACTUAL bytes (validated redirects, hashed
       //    in-stream, head/tail windows captured). Never persisted.
-      const ext = await loadExternalPackageBytes(a.download_url, { maxBytes: assetMaxBytes(env) });
+      const ext = await loadExternalPackageBytes(a.download_url, { maxBytes: assetMaxBytes(env), authHeaders: await assetAuthHeaders(env, conn, a.is_private === 1) });
       if (!ext) {
         await env.DB.prepare(`UPDATE github_release_assets SET state='failed', error=? WHERE id=?`)
           .bind(`The asset could not be streamed for verification (unreachable, redirect-rejected, or above the ${Math.floor(assetMaxBytes(env) / 1048576)}MB cap).`, a.id).run();
@@ -703,7 +717,7 @@ export async function verifyGithubRelease(env: any, releaseId: string): Promise<
 // Publication — the ONLY bridge into the canonical tables. Admin-gated.
 // ---------------------------------------------------------------------------
 
-export async function publishGithubRelease(env: any, actor: { userId: string; label: string }, releaseId: string, opts: { overrideSecurity?: boolean; reason?: string }): Promise<{ ok: true; version: string } | { ok: false; code: string; message: string }> {
+export async function publishGithubRelease(env: any, actor: { userId: string; label: string }, releaseId: string, opts: { overrideSecurity?: boolean; reason?: string; origin?: string }): Promise<{ ok: true; version: string } | { ok: false; code: string; message: string }> {
   await ensureGithubTables(env);
   const rel: any = await env.DB.prepare(`SELECT * FROM github_releases WHERE id=?`).bind(releaseId).first().catch(() => null);
   if (!rel) return { ok: false, code: 'NOT_FOUND', message: 'Release not found.' };
@@ -751,7 +765,7 @@ export async function publishGithubRelease(env: any, actor: { userId: string; la
       return { ok: false, code: 'CONFLICT', message: `Asset ${a.name} changed on GitHub after review. The release was blocked — re-verify and approve again.` };
     }
     try {
-      const ext = await loadExternalPackageBytes(a.download_url, { maxBytes: assetMaxBytes(env) });
+      const ext = await loadExternalPackageBytes(a.download_url, { maxBytes: assetMaxBytes(env), authHeaders: await assetAuthHeaders(env, conn, a.is_private === 1) });
       if (!ext || ext.sha256 !== a.sha256 || ext.size !== Number(a.size_bytes)) {
         await env.DB.prepare(`UPDATE github_releases SET status='blocked', block_reason=? WHERE id=?`)
           .bind(`Asset ${a.name} bytes changed after review (hash mismatch) — re-verify and re-approve.`, releaseId).run();
@@ -828,8 +842,18 @@ export async function publishGithubRelease(env: any, actor: { userId: string; la
     // external URLs, never an /r2/ path (there is no RX Store object).
     {
       const files: Record<string, any> = {};
+      const apiOrigin = String(opts.origin || env?.API_PUBLIC_ORIGIN || 'https://rx-store-api.calcitoninpay.workers.dev').replace(/\/+$/, '');
       for (const a of rows) {
-        const entry = { url: a.download_url, fileUrl: a.download_url, fileName: a.name, size: Number(a.size_bytes), checksum: a.sha256, sha256: a.sha256 };
+        // Public repo -> direct GitHub URL. Private repo -> the RX Store proxy
+        // (the API URL requires a token and must never reach a client).
+        const pkgRow: any = await env.DB.prepare(
+          `SELECT id FROM packages WHERE release_id=? AND platform=? AND architecture=? AND provider='github'`
+        ).bind(canonicalId, a.platform, a.architecture).first().catch(() => null);
+        const publicUrl = a.download_url;
+        const url = Number(a.is_private) === 1 && pkgRow?.id
+          ? `${apiOrigin}/v1/github-assets/${encodeURIComponent(String(pkgRow.id))}`
+          : publicUrl;
+        const entry = { url, fileUrl: url, fileName: a.name, size: Number(a.size_bytes), checksum: a.sha256, sha256: a.sha256 };
         files[a.platform] = entry;
         if (a.platform === 'linux_deb') files['linux'] = entry;
       }
@@ -929,6 +953,32 @@ export async function withdrawGithubRelease(env: any, actor: { userId: string; l
   await env.DB.prepare(`UPDATE github_releases SET status='withdrawn', decision_reason=?, reviewed_by=?, reviewed_at=datetime('now') WHERE id=?`).bind(trimmed, actor.userId, releaseId).run();
   await audit(env, { action: 'withdraw', actorId: actor.userId, actorLabel: actor.label, appId: rel.application_id, releaseId, reason: trimmed, details: { canonicalReleaseId: canonical?.id || null } });
   return { ok: true };
+}
+
+/**
+ * Is the connected repository private? Known from the connection row when the
+ * connect flow recorded it; otherwise asked of the GitHub API once.
+ */
+export async function isPrivateRepo(env: any, conn: any): Promise<boolean> {
+  if (conn?.repository_private === 1 || conn?.repository_private === true) return true;
+  if (conn?.repository_private === 0) return false;
+  try {
+    const res = await ghApi(env, `/repos/${conn.repository_full_name}`, { installationId: conn.installation_id });
+    const priv = res.ok && res.json?.private === true;
+    await env.DB.prepare('UPDATE github_repo_connections SET repository_private=? WHERE id=?')
+      .bind(priv ? 1 : 0, conn.id).run().catch(() => {});
+    conn.repository_private = priv ? 1 : 0;
+    return priv;
+  } catch {
+    return false;
+  }
+}
+
+/** Authenticated headers for a PRIVATE repository's assets (null otherwise). */
+async function assetAuthHeaders(env: any, conn: any, isPrivate: boolean): Promise<Record<string, string> | undefined> {
+  if (!isPrivate) return undefined;
+  const token = await installationToken(env, String(conn.installation_id));
+  return { Authorization: `Bearer ${token}` };
 }
 
 // ---------------------------------------------------------------------------

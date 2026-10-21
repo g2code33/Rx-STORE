@@ -15,7 +15,7 @@ import { resolveMembership } from './developers.ts';
 import {
   githubAppConfig, githubConfigured, githubMissingSecrets, installationRepos, githubAppCallbackUrl,
   githubAppOAuthConfigured, userAuthorizeUrl, exchangeUserCode,
-  userInstallations, userInstallationRepos, type UserRepo,
+  userInstallations, userInstallationRepos, userAccessibleRepos, type UserRepo,
 } from '../services/github.ts';
 import {
   connectAppRepository, disconnectAppRepository, getConnectionForApp,
@@ -216,6 +216,20 @@ export const githubDevRoutes = {
   },
 };
 
+/**
+ * A repository may only be bound when the App installation actually covers it
+ * (GitHub granted read access). A repository that merely appears in the user's
+ * account list is NOT bindable — that would promise access RX Store does not
+ * have, and verification/downloads would fail later.
+ */
+function bindableRepo(allowed: any[] | undefined, repositoryId: string): { id: string; installationId: string; fullName: string } | null {
+  const list = Array.isArray(allowed) ? allowed : [];
+  const match = list.find((r) => String(r?.id) === String(repositoryId));
+  if (!match) return null;
+  if (!match.installed || !match.installationId) return null;
+  return { id: String(match.id), installationId: String(match.installationId), fullName: String(match.fullName || '') };
+}
+
 // ---------------------------------------------------------------------------
 // User-authorization completion (self-contained pages, no RX Store session)
 // ---------------------------------------------------------------------------
@@ -267,20 +281,27 @@ async function oauthPicketResponse(env: any, request: Request, input: { code: st
   if (!token) return errorPage('GitHub did not return a valid authorization. Try again from RX Store.', input.webBase);
 
   const installations = await userInstallations(token);
-  const repos: UserRepo[] = [];
-  for (const inst of installations) {
-    const list = await userInstallationRepos(token, inst.installationId);
-    repos.push(...list);
-    if (repos.length >= 300) break;
+  // EVERY repository this account can see — public AND private. Repositories
+  // the App is not installed on are still listed (they carry installed:false
+  // and the one-click link to grant access), so an admin is never blocked by
+  // an installation that was created with "only select repositories".
+  const accessible = await userAccessibleRepos(token, installations);
+  if (!accessible.length) {
+    return errorPage('No repositories are available for this GitHub account. Create a repository or use an account that owns one.', input.webBase);
   }
-  if (!repos.length) {
-    return errorPage('No repositories are available. Install the RX Store Releases app on a repository first, then start again.', input.webBase);
-  }
-  // Server-issued completion code: only these repo ids may be bound.
+  const firstInstallation = installations[0] || null;
+  // Server-issued completion code: only these repo ids may be bound, and only
+  // when the App installation actually covers them.
   const completion = await issueOneTimeToken(env, 'code', {
     kind: 'github-oauth-bind', userId: String(payload.userId), appId: String(payload.appId),
     adminInitiated,
-    allowed: repos.map((r) => ({ id: r.repositoryId, installationId: r.installationId, fullName: r.fullName })),
+    allowed: accessible.map((r) => ({
+      id: r.repositoryId,
+      installationId: r.installationId || (firstInstallation ? firstInstallation.installationId : ''),
+      fullName: r.fullName,
+      private: r.private,
+      installed: r.installed,
+    })),
   });
 
   // ADMIN-started flow: hand the completion code straight back to the Admin
@@ -311,22 +332,41 @@ async function oauthPicketResponse(env: any, request: Request, input: { code: st
     }
   }
 
-  const publicRepos = repos.filter((r) => !r.private);
-  const privateCount = repos.length - publicRepos.length;
   const adminActionBase = `/v1/admin/github/connections/${encodeURIComponent(String(payload.appId))}/bind`;
   const bindAction = adminInitiated ? adminActionBase : '/v1/developers/github/oauth/bind';
-  const rows = publicRepos.map((r) => `
+  const installInfo = new Map(installations.map((i) => [i.installationId, i]));
+  const settingsLink = (installationId: string): string => {
+    const inst = installInfo.get(installationId);
+    if (inst && inst.accountType === 'Organization') {
+      return `https://github.com/organizations/${encodeURIComponent(inst.accountLogin)}/settings/installations/${encodeURIComponent(installationId)}`;
+    }
+    return installationId ? `https://github.com/settings/installations/${encodeURIComponent(installationId)}` : 'https://github.com/settings/installations';
+  };
+  const ready = accessible.filter((r) => r.installed && r.installationId);
+  const needsAccess = accessible.filter((r) => !(r.installed && r.installationId));
+  const readyRows = ready.map((r) => `
     <form class="card" method="POST" action="${bindAction}">
       <input type="hidden" name="code" value="${escapeHtml(completion)}" />
       <input type="hidden" name="repositoryId" value="${escapeHtml(r.repositoryId)}" />
-      <div><strong>${escapeHtml(r.fullName)}</strong><div class="muted">public repository</div></div>
+      <div><strong>${escapeHtml(r.fullName)}</strong><div class="muted">${r.private ? 'private' : 'public'} repository</div></div>
       <button type="submit">Connect</button>
     </form>`).join('');
+  const grantRows = needsAccess.map((r) => `
+    <div class="card">
+      <div><strong>${escapeHtml(r.fullName)}</strong><div class="muted">${r.private ? 'private' : 'public'} · RX Store has no access yet</div></div>
+      <a class="btn" href="${escapeHtml(settingsLink(r.installationId || (firstInstallation ? firstInstallation.installationId : '')))}" target="_blank" rel="noreferrer">Grant access</a>
+    </div>`).join('');
+  const privateNote = accessible.some((r) => r.private)
+    ? '<p class="muted">Private repositories are supported: RX Store verifies each asset with a short-lived token and streams downloads through its own endpoint — nothing is copied to RX Store storage.</p>'
+    : '';
   return htmlPage('RX Store — connect a repository', `
     <h1>Choose the repository for your app</h1>
-    <p class="sub">RX Store Releases will read this repository's releases and release assets (read-only). Users download installers straight from GitHub.</p>
-    ${rows || '<div class="card"><div>No public repositories found.</div></div>'}
-    ${privateCount ? `<p class="muted">${privateCount} private repository(ies) are not listed — RX Store needs a public repository so users can download without credentials.</p>` : ''}
+    <p class="sub">RX Store Releases reads this repository's releases and release assets (read-only). Public repositories download straight from GitHub; private ones are streamed securely through RX Store.</p>
+    ${readyRows || ''}
+    ${grantRows ? `<h1 style="font-size:15px;margin:22px 0 8px">Available — access not granted yet</h1>
+      <p class="sub">Add the repository to the RX Store Releases app, then reload this page.</p>${grantRows}` : ''}
+    ${!readyRows && !grantRows ? '<div class="card"><div>No repositories found for this account.</div></div>' : ''}
+    ${privateNote}
     <p style="margin-top:24px"><a class="btn" href="${escapeHtml(input.webBase)}/developers/apps">Cancel</a></p>`);
 }
 
@@ -356,11 +396,10 @@ export const githubOAuthRoutes = {
     const payload = await consumeOneTimeToken(env, 'code', code, { allowRetry: true });
     if (!payload || payload.kind !== 'github-oauth-bind') return errorPage('This connection link expired or was already used — start again from RX Store.', webBase);
     if (payload.adminInitiated) return errorPage('This connection was started by an administrator and must be finished in the Admin Panel.', webBase);
-    const allowed: Array<{ id: string; installationId: string; fullName: string }> = Array.isArray(payload.allowed) ? payload.allowed : [];
-    const match = allowed.find((r) => String(r.id) === String(repositoryId));
+    const match = bindableRepo(payload.allowed as any[], repositoryId);
     if (!match) {
       await restoreOneTimeToken(env, code);
-      return errorPage('That repository is not part of this authorization. Pick one from the list.', webBase);
+      return errorPage('RX Store does not have access to that repository yet. Use “Grant access” on the picker (or add the repository to the app installation), then reload and pick it again.', webBase);
     }
     // Resolve the developer org SERVER-SIDE from the user who started the flow.
     // 1) membership row (developer_members → developers), which is the normal
@@ -465,6 +504,7 @@ export const githubAdminRoutes = {
     const out = await publishGithubRelease(env, admin, id, {
       overrideSecurity: body?.overrideSecurity === true,
       reason: String(body?.reason || ''),
+      origin: new URL(request.url).origin,
     });
     if (!out.ok) return { code: out.code, message: out.message };
     return { success: true, version: out.version };
@@ -569,8 +609,13 @@ export const githubAdminRoutes = {
       return { code: 'FORBIDDEN', message: 'This connection request was started for a different application.' };
     }
     await restoreOneTimeToken(env, code); // stays usable for the bind step
-    const allowed: Array<{ id: string; installationId: string; fullName: string }> = Array.isArray(payload.allowed) ? payload.allowed : [];
-    return { apps: [], repos: allowed.map((r) => ({ id: r.id, fullName: r.fullName, private: false })) };
+    const allowed: Array<any> = Array.isArray(payload.allowed) ? payload.allowed : [];
+    return {
+      repos: allowed.map((r) => ({
+        id: r.id, fullName: r.fullName,
+        private: !!r.private, installed: !!r.installed,
+      })),
+    };
   },
 
   /** POST /admin/github/connections/:appId/bind {code, repositoryId} — finish an admin-started connect. */
@@ -592,11 +637,10 @@ export const githubAdminRoutes = {
       await restoreOneTimeToken(env, code);
       return { code: 'FORBIDDEN', message: 'This connection request was started for a different application.' };
     }
-    const allowed: Array<{ id: string; installationId: string; fullName: string }> = Array.isArray(payload.allowed) ? payload.allowed : [];
-    const match = allowed.find((r) => String(r.id) === repositoryId);
+    const match = bindableRepo(payload.allowed as any[], repositoryId);
     if (!match) {
       await restoreOneTimeToken(env, code);
-      return { code: 'FORBIDDEN', message: 'That repository is not part of this authorization.' };
+      return { code: 'FORBIDDEN', message: 'RX Store does not have access to that repository yet. Grant access to it in the GitHub App installation, then re-authorize.' };
     }
     const app: any = await env.DB.prepare('SELECT * FROM applications WHERE id=?').bind(appId).first().catch(() => null);
     if (!app) return { code: 'NOT_FOUND', message: 'Application not found.' };

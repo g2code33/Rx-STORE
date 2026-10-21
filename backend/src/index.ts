@@ -1004,6 +1004,68 @@ export default {
       }
     }
     // Notifications — personal feed (stored rows + synthesized "update available" for installed apps)
+    // ---- GitHub private-asset proxy -------------------------------------
+    // PRIVATE GitHub repositories have no public asset URL: their release
+    // assets need a short-lived installation token. This endpoint streams the
+    // verified asset to the user — RX Store still stores NOTHING — and it only
+    // ever serves a PUBLISHED package of a PUBLISHED release for a FREE app
+    // (the GitHub channel is free-only), so it can never act as an open proxy.
+    if (path.match(/^\/github-assets\/[^\/]+$/) && request.method === 'GET') {
+      const packageId = decodeURIComponent(path.split('/')[2] || '');
+      try {
+        const pkg: any = await env.DB.prepare(
+          `SELECT p.*, r.status AS release_status, a.price_type, a.price_amount, a.slug AS app_slug
+             FROM packages p
+             JOIN releases r ON r.id = p.release_id
+             JOIN applications a ON a.id = p.application_id
+            WHERE p.id = ?`
+        ).bind(packageId).first().catch(() => null);
+        if (!pkg || pkg.provider !== 'github' || Number(pkg.external_private) !== 1
+            || pkg.status !== 'published' || pkg.release_status !== 'published') {
+          return fail('NOT_FOUND', 'That download is not available.');
+        }
+        if (['paid', 'subscription'].includes(String(pkg.price_type || 'free')) && Number(pkg.price_amount) > 0) {
+          return respond({ success: false, error: { code: 'FORBIDDEN', message: 'GitHub-hosted packages are not available for paid applications.' } }, 403, origin);
+        }
+        if (await getSetting(env, 'downloads_open', '1') === '0') {
+          return respond({ success: false, error: { code: 'DOWNLOADS_CLOSED', message: 'Downloads are temporarily disabled by the administrator.' } }, 503, origin);
+        }
+        const conn: any = await env.DB.prepare(
+          `SELECT * FROM github_repo_connections WHERE application_id=?`
+        ).bind(pkg.application_id).first().catch(() => null);
+        if (!conn || conn.status !== 'active') return fail('NOT_FOUND', 'That download is not available.');
+        const { installationToken, githubAssetApiUrl } = await import('./services/github.ts');
+        const token = await installationToken(env, String(conn.installation_id));
+        const upstream = await fetch(githubAssetApiUrl(conn.repository_full_name, String(pkg.github_asset_id)), {
+          headers: { Authorization: `Bearer ${token}`, Accept: 'application/octet-stream', 'User-Agent': 'rx-store-github' },
+          redirect: 'follow',
+          signal: AbortSignal.timeout(120000),
+        });
+        if (!upstream.ok || !upstream.body) return fail('SERVICE_UNAVAILABLE', 'GitHub did not return the asset. Please try again shortly.');
+        // Best-effort download bookkeeping (same counters as the public path).
+        try {
+          let dlUser: string | null = null;
+          const t = (request.headers.get('Authorization') || '').replace(/^Bearer /, '');
+          if (t) dlUser = (await verifyAccessToken(t, env.JWT_SECRET))?.userId || null;
+          await env.DB.prepare('INSERT INTO downloads (id, user_id, app_id, platform, version, created_at, kind, country) VALUES (?,?,?,?,?,datetime(\'now\'),?,?)')
+            .bind(`dl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, dlUser, pkg.application_id, pkg.platform, pkg.version, await downloadKind(env, pkg.application_id, dlUser), downloadCountry(request)).run();
+          await env.DB.prepare('UPDATE applications SET download_count = download_count + 1 WHERE id=?').bind(pkg.application_id).run();
+        } catch {}
+        const headers = new Headers(corsHeaders(origin, env));
+        headers.set('Content-Type', upstream.headers.get('Content-Type') || 'application/octet-stream');
+        headers.set('Content-Disposition', `attachment; filename="${String(pkg.filename || 'package').replace(/["\\]/g, '_')}"`);
+        headers.set('Cache-Control', 'private, no-store');
+        const len = upstream.headers.get('Content-Length');
+        if (len) headers.set('Content-Length', len);
+        for (const [k, v] of Object.entries(SECURITY_HEADERS)) headers.set(k, v);
+        headers.set('X-Request-Id', requestId);
+        return new Response(upstream.body, { status: 200, headers });
+      } catch (e: any) {
+        console.error(`[${requestId}] github asset proxy:`, redact(String(e?.message || e)));
+        return fail('SERVICE_UNAVAILABLE', 'The download could not be completed. Please try again.');
+      }
+    }
+
     // ---- Per-user notification badges (profile / developer center tabs) ----
     if (path === '/notifications/counts' && request.method === 'GET') {
       const auth = request.headers.get('Authorization') || '';

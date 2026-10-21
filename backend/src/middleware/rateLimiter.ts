@@ -45,6 +45,7 @@ export const RATE_LIMIT_RULES: Array<{ prefix: string; rule: RateLimitRule }> = 
   { prefix: '/apps', rule: { limit: 300, windowSeconds: 60 } },
   { prefix: '/inbox/submit', rule: { limit: 10, windowSeconds: 300 } },
   { prefix: '/webhooks/github', rule: { limit: 120, windowSeconds: 60 } },
+  { prefix: '/github-assets', rule: { limit: 60, windowSeconds: 60 } },
   { prefix: '/payments', rule: { limit: 20, windowSeconds: 60 } },
   { prefix: '/', rule: { limit: 300, windowSeconds: 60 } },
 ];
