@@ -242,6 +242,16 @@ export const reviewRoutes = {
     await recomputeAppRating(env, app.id);
     const created: any = await env.DB.prepare('SELECT * FROM reviews WHERE id=?').bind(id).first().catch(() => null);
     await globalAudit(env, 'review_created', id, { appId: app.id, rating, verified });
+    try {
+      const { notifyAdmin } = await import('../services/adminNotifications.ts');
+      await notifyAdmin(env, {
+        section: 'reviews', type: rating <= 2 ? 'warning' : 'info',
+        title: `New ${rating}★ review on ${app.name}`,
+        message: (title || text || '').slice(0, 160),
+        link: '/admin?section=reviews', meta: { reviewId: id, appId: app.id, rating },
+        actorUserId: uid,
+      });
+    } catch { /* best-effort */ }
     return { review: created ? reviewView(created) : null, edited: false };
   },
 

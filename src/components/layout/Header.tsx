@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { Search, X, Bell, User, ChevronDown, LogOut, Settings, Shield, Download, Monitor, CreditCard, MoreHorizontal, Megaphone } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { getPublicSettings } from '../../services/api';
+import { getPublicSettings, api } from '../../services/api';
 import { useContent } from '../../context/ContentContext';
 import Editable from '../edit/Editable';
 import SearchBox from '../search/SearchBox';
@@ -180,7 +180,15 @@ export default function Header() {
             {user && (
               <div className="relative" ref={notifRef}>
                 <button
-                  onClick={() => { setIsNotifOpen(!isNotifOpen); setIsProfileOpen(false); setIsMoreOpen(false); }}
+                  onClick={() => {
+                    const opening = !isNotifOpen;
+                    setIsNotifOpen(opening); setIsProfileOpen(false); setIsMoreOpen(false);
+                    // Viewing the feed clears its number (same rule as the admin
+                    // and developer tabs). Individual rows stay listed.
+                    if (opening && unreadCount > 0) {
+                      api.notifications.seen('all').then(() => markAllNotificationsRead()).catch(() => {});
+                    }
+                  }}
                   className="relative p-2.5 rounded-xl text-rx-gray-medium hover:text-white hover:bg-white/5 transition-all"
                   aria-label={`Notifications${unreadCount > 0 ? ` (${unreadCount} unread)` : ''}`}
                   aria-expanded={isNotifOpen}

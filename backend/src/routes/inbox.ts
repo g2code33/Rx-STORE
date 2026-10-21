@@ -113,6 +113,19 @@ export const inboxRoutes = {
       }
     } catch { /* notification is best-effort; the portal inbox is the source of truth */ }
 
+    // Badge the Admin → Inbox tab (unread count clears when the tab is opened).
+    try {
+      const { notifyAdmin } = await import('../services/adminNotifications.ts');
+      const typeLabel3: Record<string, string> = { ad_booking: 'Ad booking', contact: 'Contact', support: 'Support', sponsor: 'Sponsor' };
+      await notifyAdmin(env, {
+        section: 'inbox', type: 'action_required',
+        title: `${typeLabel3[type] || 'Message'}: ${subject.slice(0, 120)}`,
+        message: `From ${name} <${email}>`,
+        link: `/admin?section=inbox&msg=${id}`,
+        meta: { inboxId: id, type },
+      });
+    } catch { /* best-effort */ }
+
     // Emails: notify the ADMIN (always attempted) + acknowledge the SENDER
     // (only when they asked for email correspondence). Honest outcomes only.
     const notify = await notifyAdminInboxMessage(env, { type, name, email, subject, message });

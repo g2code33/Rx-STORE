@@ -22,6 +22,7 @@ import { SECURITY_PIPELINE_VERSION } from './services/packageSecurity.ts';
 import { devicesRoutes } from './routes/devices.ts';
 import { developerRoutes, adminDeveloperRoutes } from './routes/developers.ts';
 import { githubDevRoutes, githubAdminRoutes, githubWebhookRoutes } from './routes/githubIntegration.ts';
+import { adminEventCounts, adminEventList, markAdminEventsSeen, userNotificationCounts, markUserNotificationsSeen } from './services/adminNotifications.ts';
 import { developerAppRoutes, adminDeveloperAppRoutes } from './routes/developerApps.ts';
 import { securityAdminRoutes } from './routes/securityAdmin.ts';
 import { developerSubmissionRoutes, adminSubmissionRoutes } from './routes/submissions.ts';
@@ -280,6 +281,26 @@ export default {
       if ((data as any)?.error) return respond({ success: false, error: data }, 404, origin);
       return respond({ success: true, data }, 200, origin);
     }
+    // ---- Admin awareness: per-section unread counts + the event feed ----
+    if (path === '/admin/notifications/counts' && request.method === 'GET') {
+      try { return respond({ success: true, data: await adminEventCounts(env) }, 200, origin); }
+      catch { return respond({ success: true, data: { total: 0, bySection: {}, unreadOldest: null } }, 200, origin); }
+    }
+    if (path === '/admin/notifications' && request.method === 'GET') {
+      const u = new URL(request.url);
+      const section = u.searchParams.get('section') || undefined;
+      const unreadOnly = u.searchParams.get('unread') === '1';
+      return respond({ success: true, data: { events: await adminEventList(env, { section: section || undefined, unreadOnly }) } }, 200, origin);
+    }
+    if (path === '/admin/notifications/seen' && request.method === 'POST') {
+      const body: any = await request.json().catch(() => ({}));
+      const section = String(body?.section || 'all');
+      const admin = (normalizedRequest as any).user;
+      if (!admin?.userId) return respond({ success: false, error: { code: 'UNAUTHORIZED', message: 'Admin identity required' } }, 401, origin);
+      const changed = await markAdminEventsSeen(env, section, String(admin.userId));
+      return respond({ success: true, data: { changed, counts: await adminEventCounts(env) } }, 200, origin);
+    }
+
     // ---- GitHub Releases & Approvals (dedicated admin center; identity is
     // attached by the /admin gate above and re-checked in every handler). ----
     if (path.startsWith('/admin/github/')) {
@@ -961,6 +982,24 @@ export default {
       }
     }
     // Notifications — personal feed (stored rows + synthesized "update available" for installed apps)
+    // ---- Per-user notification badges (profile / developer center tabs) ----
+    if (path === '/notifications/counts' && request.method === 'GET') {
+      const auth = request.headers.get('Authorization') || '';
+      let uid = '';
+      try { if (auth.startsWith('Bearer ')) uid = (await verifyAccessToken(auth.slice(7), env.JWT_SECRET))?.userId || ''; } catch {}
+      if (!uid) return respond({ success: false, error: { code: 'UNAUTHORIZED', message: 'Sign in required' } }, 401, origin);
+      return respond({ success: true, data: await userNotificationCounts(env, uid) }, 200, origin);
+    }
+    if (path === '/notifications/seen' && request.method === 'POST') {
+      const auth = request.headers.get('Authorization') || '';
+      let uid = '';
+      try { if (auth.startsWith('Bearer ')) uid = (await verifyAccessToken(auth.slice(7), env.JWT_SECRET))?.userId || ''; } catch {}
+      if (!uid) return respond({ success: false, error: { code: 'UNAUTHORIZED', message: 'Sign in required' } }, 401, origin);
+      const body: any = await request.json().catch(() => ({}));
+      const changed = await markUserNotificationsSeen(env, uid, String(body?.section || 'all'));
+      return respond({ success: true, data: { changed, counts: await userNotificationCounts(env, uid) } }, 200, origin);
+    }
+
     if (path === '/notifications' && request.method === 'GET') {
       const auth = request.headers.get('Authorization') || '';
       let userId = '';

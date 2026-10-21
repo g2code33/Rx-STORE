@@ -307,6 +307,15 @@ export async function processWebhook(env: any, input: {
     return { status: 200, body: { success: true, data: { status: outcome.status, releaseId: outcome.releaseId || null } } };
   } catch (e: any) {
     await recordEvent('failed', undefined, String(e?.message || e).slice(0, 500));
+    try {
+      const { notifyAdmin } = await import('./adminNotifications.ts');
+      await notifyAdmin(env, {
+        section: 'github', type: 'error',
+        title: `GitHub webhook failed: ${conn.repository_full_name}`,
+        message: String(e?.message || e).slice(0, 300),
+        link: '/admin?section=github', meta: { repositoryId: conn.repository_id, delivery: input.deliveryId },
+      });
+    } catch { /* best-effort */ }
     await env.DB.prepare(`UPDATE github_repo_connections SET last_event_at=datetime('now'), last_event=?, last_error=?, updated_at=datetime('now') WHERE id=?`)
       .bind(`release.${action}`, String(e?.message || e).slice(0, 300), conn.id).run().catch(() => {});
     return { status: 500, body: { success: false, error: { code: 'INTERNAL', message: 'Processing failed; GitHub will retry.' } } };
@@ -400,6 +409,19 @@ export async function detectRelease(env: any, conn: any, ghRelease: any, action:
       m.platform, m.architecture, url.ok ? url.url : String(m.asset.browser_download_url || ''), 'detected',
       String(m.asset.digest || '').replace(/^sha256:/, '').slice(0, 64) || null,
     ).run().catch(() => {});
+  }
+
+  // Awareness: a new GitHub release was detected (Admin → GitHub Releases badge).
+  if (!existing) {
+    try {
+      const { notifyAdmin } = await import('./adminNotifications.ts');
+      await notifyAdmin(env, {
+        section: 'github', type: 'action_required',
+        title: `GitHub release detected: ${conn.repository_full_name} ${tag}`,
+        message: 'Verification runs automatically; approve it in GitHub Releases once it is ready.',
+        link: '/admin?section=github', meta: { releaseId: id, repositoryId: conn.repository_id, version },
+      });
+    } catch { /* best-effort */ }
   }
 
   if (mapped.length === 0) {

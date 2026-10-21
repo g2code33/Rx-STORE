@@ -74,15 +74,39 @@ async function auditGlobal(env: any, action: string, resourceId: string, details
     .bind(rid('log'), action, 'developer', resourceId, JSON.stringify(details)).run().catch(() => {});
 }
 
-export async function notify(env: any, userId: string, type: 'update' | 'message' | 'system', title: string, message: string, data: Record<string, unknown> = {}) {
+/**
+ * Per-user notification. `section` tags it for the UI badge that owns it
+ * (profile / developer-center tab) so its number clears when the user opens
+ * that tab. Legacy rows without a section are still mapped from their link.
+ */
+export async function notify(
+  env: any, userId: string, type: 'update' | 'message' | 'system',
+  title: string, message: string, data: Record<string, unknown> = {},
+  section?: string | null,
+) {
   if (!userId) return;
-  await env.DB.prepare('INSERT INTO notifications (id, user_id, type, title, message, data, read) VALUES (?,?,?,?,?,?,0)')
-    .bind(rid('n'), userId, type, title, message, JSON.stringify(data)).run().catch(() => {});
+  await env.DB.prepare('INSERT INTO notifications (id, user_id, type, title, message, data, section, read) VALUES (?,?,?,?,?,?,?,0)')
+    .bind(rid('n'), userId, type, title, message, JSON.stringify(data), section || null).run().catch(async () => {
+      // Old schema (no section column yet): the badge is derived from the link.
+      await env.DB.prepare('INSERT INTO notifications (id, user_id, type, title, message, data, read) VALUES (?,?,?,?,?,?,0)')
+        .bind(rid('n'), userId, type, title, message, JSON.stringify(data)).run().catch(() => {});
+    });
 }
 
-export async function notifyAdmins(env: any, title: string, message: string, data: Record<string, unknown> = {}) {
+/**
+ * Notify every admin: one in-app notification per admin user (their bell) AND
+ * one admin_event that badges the matching Admin sidebar section. Both are
+ * best-effort — a notification failure never fails the action.
+ */
+export async function notifyAdmins(
+  env: any, title: string, message: string, data: Record<string, unknown> = {},
+  section: string = 'dashboard', eventType: 'info' | 'action_required' | 'warning' | 'success' | 'error' = 'info',
+) {
   const rows: any = await env.DB.prepare("SELECT id FROM users WHERE role='admin'").all().catch(() => ({ results: [] }));
-  for (const r of rows?.results || []) await notify(env, r.id, 'message', title, message, data);
+  const link = typeof (data as any)?.link === 'string' ? String((data as any).link) : undefined;
+  for (const r of rows?.results || []) await notify(env, r.id, 'message', title, message, data, section);
+  const { notifyAdmin } = await import('../services/adminNotifications.ts');
+  await notifyAdmin(env, { section, type: eventType, title, message, link, meta: data });
 }
 
 /** Resolve the caller's developer organization from their OWN membership. */
@@ -295,7 +319,7 @@ export const developerRoutes = {
        accepted_terms=1, terms_accepted_at=COALESCE(terms_accepted_at, datetime('now')), review_reason=NULL WHERE id=?`
     ).bind(app.id).run();
     await auditGlobal(env, 'developer_application_submitted', app.id, { userId });
-    await notifyAdmins(env, 'Developer application submitted', 'A new developer application is waiting for review.', { link: '/admin' });
+    await notifyAdmins(env, 'Developer application submitted', 'A new developer application is waiting for review.', { link: '/admin?section=developers' }, 'developers', 'action_required');
     return { application: { id: app.id, status: 'SUBMITTED' } };
   },
 
@@ -608,7 +632,7 @@ export const developerRoutes = {
       `INSERT INTO developer_thread_messages (id, thread_id, sender_user_id, sender_context, body, attachments) VALUES (?,?,?, 'DEVELOPER', ?,?)`
     ).bind(rid('dmsg'), threadId, userId, message, JSON.stringify(Array.isArray(body.attachments) ? body.attachments.slice(0, 10) : [])).run();
     await auditDev(env, ms.developer.id, userId, 'developer_admin_message_sent', { threadId, subject });
-    await notifyAdmins(env, `Developer message: ${subject}`, 'A developer opened a communication thread.', { threadId });
+    await notifyAdmins(env, `Developer message: ${subject}`, 'A developer opened a communication thread.', { threadId, link: '/admin?section=developers' }, 'developers', 'action_required');
     return { thread: { id: threadId, subject, status: 'AWAITING_ADMIN' } };
   },
 
@@ -650,7 +674,7 @@ export const developerRoutes = {
     ).bind(rid('dmsg'), threadId, userId, message).run();
     await env.DB.prepare(`UPDATE developer_threads SET status='AWAITING_ADMIN', action_required=1, updated_at=datetime('now') WHERE id=?`).bind(threadId).run();
     await auditDev(env, ms.developer.id, userId, 'developer_admin_message_sent', { threadId });
-    await notifyAdmins(env, `Developer reply: ${thread.subject}`, 'A developer replied to a communication thread.', { threadId });
+    await notifyAdmins(env, `Developer reply: ${thread.subject}`, 'A developer replied to a communication thread.', { threadId, link: '/admin?section=developers' }, 'developers', 'action_required');
     return { success: true };
   },
 };

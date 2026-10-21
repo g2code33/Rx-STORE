@@ -1339,6 +1339,16 @@ async function openPendingReviewIfNeeded(env: any, pkg: any, results: Partial<Re
        VALUES (?,?,?,?,?,?,?,?,?,'PENDING')`
     ).bind(rid('mrev'), pkg.id, pkg.release_id ?? null, String(pkg.sha256), pkg.platform,
       results.integrity?.status ?? null, malware?.status ?? null, pkg.overall_security ?? 'PENDING', reason.slice(0, 1000)).run();
+    // Awareness: an admin decision is required (Admin → Security badge).
+    try {
+      const { notifyAdmin } = await import('./adminNotifications.ts');
+      await notifyAdmin(env, {
+        section: 'security', type: 'action_required',
+        title: `Security review needed — ${String(pkg.filename || pkg.platform || 'package').slice(0, 80)}`,
+        message: reason.slice(0, 300),
+        link: '/admin?section=developers', meta: { packageId: pkg.id, releaseId: pkg.release_id ?? null, sha256: pkg.sha256 },
+      });
+    } catch { /* best-effort */ }
   } catch { /* review creation is best-effort; the gate re-derives eligibility */ }
 }
 

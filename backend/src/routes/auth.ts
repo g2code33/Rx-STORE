@@ -63,6 +63,16 @@ export const authRoutes = {
       } else throw e;
     }
 
+    // Awareness: a new account was created (Admin → Users badge).
+    try {
+      const { notifyAdmin } = await import('../services/adminNotifications.ts');
+      await notifyAdmin(env, {
+        section: 'users', type: 'info', title: 'New user signed up',
+        message: `${(name as string).trim().slice(0, 80)} <${(email as string).trim().toLowerCase()}>`,
+        link: '/admin?section=users', meta: { userId: id }, actorUserId: id,
+      });
+    } catch { /* best-effort */ }
+
     const token = await generateToken({ userId: id, role: 'user' }, env.JWT_SECRET);
     const refreshToken = await generateRefreshToken();
     // Persistent session: no expiry — ends only on sign-out / revocation.

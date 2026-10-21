@@ -340,7 +340,7 @@ export const developerAppRoutes = {
 
     await env.DB.prepare(`UPDATE applications SET status='submitted', updated_at=datetime('now') WHERE id=?`).bind(appId).run();
     await auditDev(env, ms.developer.id, userId, 'developer_app_submitted', { appId });
-    await notifyAdmins(env, 'Developer app submitted for review', `${app.name} was submitted for listing review.`, { appId });
+    await notifyAdmins(env, 'Developer app submitted for review', `${app.name} was submitted for listing review.`, { appId, link: '/admin?section=applications' }, 'applications', 'action_required');
     return { app: { id: appId, status: 'submitted' } };
   },
 
@@ -492,6 +492,8 @@ export const developerAppRoutes = {
     // PHASE 14: the first-class submission record (security stage -> review).
     const submission = await ensureSubmission(env, { developerId: ms.developer.id, userId, app, release: rel }).catch(() => null);
 
+    // Awareness: the release is now waiting on an admin decision.
+    await notifyAdmins(env, 'Release submitted for review', `${app.name} ${rel.version} is waiting for review.`, { releaseId: rel.id, link: '/admin?section=releases' }, 'releases', 'action_required');
     return { release: { id: releaseId, status: 'submitted' }, submission: submission ? { id: submission.id, status: submission.status } : null };
   },
 

@@ -96,6 +96,15 @@ async function completePurchase(env: any, purchaseId: string, providerTransactio
       `UPDATE purchases SET status='complete', provider_transaction_id=COALESCE(?, provider_transaction_id), completed_at=datetime('now'), updated_at=datetime('now') WHERE id=?`
     ).bind(providerTransactionId, purchaseId).run();
     await globalAudit(env, 'purchase_completed', purchaseId, { source, userId: purchase.user_id, appId: purchase.app_id });
+    try {
+      const { notifyAdmin } = await import('../services/adminNotifications.ts');
+      const appName: any = await env.DB.prepare('SELECT name FROM applications WHERE id=?').bind(purchase.app_id).first().catch(() => null);
+      await notifyAdmin(env, {
+        section: 'payments', type: 'success', title: 'New purchase completed',
+        message: `${appName?.name || purchase.app_id} — receipt ${String(purchaseId).slice(0, 24)}`,
+        link: '/admin?section=payments', meta: { purchaseId, appId: purchase.app_id, source },
+      });
+    } catch { /* best-effort */ }
   }
   // Idempotent entitlement upsert (one row per user+app; a re-purchase of an
   // owned app refreshes the same entitlement rather than duplicating).

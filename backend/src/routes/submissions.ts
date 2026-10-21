@@ -121,7 +121,8 @@ export async function ensureSubmission(env: any, input: {
   // Notify + email.
   const eventLabel = input.resubmission ? 'Resubmission received' : 'New submission received';
   await notifyAdmins(env, `${eventLabel}: ${input.app.name} ${input.release.version}`,
-    input.resubmission ? 'A developer resubmitted a release for review.' : 'A developer submitted a release for review.', { submissionId: id });
+    input.resubmission ? 'A developer resubmitted a release for review.' : 'A developer submitted a release for review.',
+    { submissionId: id, link: '/admin?section=releases' }, 'releases', 'action_required');
   await notifyOrgMembersEmail(env, {
     developerId: input.developerId,
     subject: `RX Store review: ${input.app.name} ${input.release.version} submitted`,
@@ -276,7 +277,7 @@ export const developerSubmissionRoutes = {
       await submissionEvent(env, sub.id, userId, 'DEVELOPER', 'developer_response', body.slice(0, 500));
       await auditDev(env, ms.developer.id, userId, 'developer_message_sent', { threadId: thread.id });
     }
-    await notifyAdmins(env, `Developer responded: ${app.name} ${rel.version}`, 'A developer responded to review feedback and resubmitted.', { submissionId: sub.id });
+    await notifyAdmins(env, `Developer responded: ${app.name} ${rel.version}`, 'A developer responded to review feedback and resubmitted.', { submissionId: sub.id, link: '/admin?section=releases' }, 'releases', 'action_required');
     return { submission: submissionView(updated || sub) };
   },
 

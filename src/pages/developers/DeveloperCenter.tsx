@@ -34,6 +34,15 @@ const NAV = [
 
 const ASSIGNABLE = ['ADMIN', 'DEVELOPER', 'RELEASE_MANAGER', 'ANALYST', 'SUPPORT'];
 
+/** Developer-center section → notification section (for the numbered badges). */
+const NAV_SECTION: Record<string, string> = {
+  '/developers/releases': 'releases',
+  '/developers/submissions': 'releases',
+  '/developers/reviews': 'reviews',
+  '/developers/revenue': 'payments',
+  '/developers/messages': 'messages',
+};
+
 function Section({ title, desc, children }: { title: string; desc?: string; children: React.ReactNode }) {
   return (
     <div>
@@ -63,6 +72,25 @@ export default function DeveloperCenter() {
   const [error, setError] = useState('');
 
   const section = useMemo(() => location.pathname.replace('/developers/', '') || 'center', [location.pathname]);
+
+  // Numbered badges per developer-center tab (unread = needs the developer).
+  const [navCounts, setNavCounts] = useState<Record<string, number>>({});
+  React.useEffect(() => {
+    if (!user || !isApiConfigured()) return;
+    const load = () => api.notifications.counts().then((c) => setNavCounts(c.bySection || {})).catch(() => {});
+    load();
+    const t = setInterval(load, 30_000);
+    window.addEventListener('focus', load);
+    return () => { clearInterval(t); window.removeEventListener('focus', load); };
+  }, [user?.id]);
+
+  // Opening a tab clears ITS badge (the number disappears after viewing).
+  React.useEffect(() => {
+    if (!user || !isApiConfigured()) return;
+    const sec = NAV_SECTION[location.pathname];
+    if (!sec) return;
+    api.notifications.seen(sec).then((r) => setNavCounts(r.counts?.bySection || {})).catch(() => {});
+  }, [location.pathname, user?.id]);
 
   useEffect(() => {
     if (!user) { navigate('/login'); return; }
@@ -102,6 +130,12 @@ export default function DeveloperCenter() {
                     className={({ isActive }) => `flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm whitespace-nowrap transition-all ${isActive ? 'text-rx-yellow bg-rx-yellow/10 font-medium' : 'text-rx-gray-medium hover:text-white hover:bg-white/5'}`}
                   >
                     <n.icon className="w-4 h-4 flex-shrink-0" /> {n.label}
+                    {(() => {
+                      const sec = NAV_SECTION[n.to];
+                      const count = sec ? (navCounts[sec] || 0) : 0;
+                      if (!count) return null;
+                      return <span className="ml-auto px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-rx-yellow text-rx-dark">{count > 99 ? '99+' : count}</span>;
+                    })()}
                   </NavLink>
                 );
               })}

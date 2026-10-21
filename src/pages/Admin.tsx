@@ -60,6 +60,7 @@ import PaymentsAdminPanel from '../components/admin/PaymentsAdminPanel';
 import CommunityModerationPanel from '../components/admin/CommunityModerationPanel';
 import AdminInboxPanel from '../components/admin/AdminInboxPanel';
 import GithubReleasesPanel from '../components/admin/GithubReleasesPanel';
+import AdminNotificationsPanel from '../components/admin/AdminNotificationsPanel';
 import AdminSettings from '../components/admin/AdminSettings';
 import RecycleBin from '../components/admin/RecycleBin';
 import { useAuth } from '../context/AuthContext';
@@ -73,14 +74,37 @@ export default function Admin() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [activeSection, setActiveSection] = useState(() => searchParams.get('section') || 'dashboard');
   const [inboxNew, setInboxNew] = useState(0);
+  // Per-section unread badges (everything that happened in RX Store raises an
+  // admin event; opening the section clears its badge).
+  const [adminCounts, setAdminCounts] = useState<{ total: number; bySection: Record<string, number> }>({ total: 0, bySection: {} });
   const [editingApp, setEditingApp] = useState<any>(null);
   const isAdmin = user?.role === 'admin';
+
+  const loadAdminCounts = React.useCallback(() => {
+    if (!isAdmin || !isApiConfigured()) return;
+    api.adminNotifications.counts().then(setAdminCounts).catch(() => {});
+  }, [isAdmin]);
 
   /** Switch section AND sync the URL (deep links stay shareable). */
   const goToSection = (id: string) => {
     setActiveSection(id);
     setSearchParams(id === 'dashboard' ? {} : { section: id }, { replace: true });
+    // Viewing a section clears ITS badge (the number disappears after viewing).
+    api.adminNotifications.seen(id)
+      .then((r) => setAdminCounts(r.counts))
+      .catch(() => {});
   };
+
+  // Poll the awareness feed: on mount, every 30s, and whenever the window
+  // regains focus (so a fresh submission shows up without a reload).
+  React.useEffect(() => {
+    if (!isAdmin || !isApiConfigured()) return;
+    loadAdminCounts();
+    const t = setInterval(loadAdminCounts, 30_000);
+    const onFocus = () => loadAdminCounts();
+    window.addEventListener('focus', onFocus);
+    return () => { clearInterval(t); window.removeEventListener('focus', onFocus); };
+  }, [isAdmin, loadAdminCounts]);
 
   // Unread admin-inbox badge: refreshed on load, on entering the inbox, and
   // every minute (matches the notification poll cadence).
@@ -348,9 +372,15 @@ export default function Admin() {
                     activeSection === item.id ? 'bg-rx-yellow/10 text-rx-yellow' : 'text-rx-gray-medium hover:text-white hover:bg-white/5'
                   }`}>
                   <item.icon className="w-4 h-4" />{item.label}
-                  {item.id === 'inbox' && inboxNew > 0 && (
-                    <span className="ml-auto px-2 py-0.5 rounded-full text-[10px] font-bold bg-rx-yellow text-rx-dark">{inboxNew}</span>
-                  )}
+                  {(() => {
+                    const n = item.id === 'inbox' ? Math.max(inboxNew, adminCounts.bySection.inbox || 0) : (adminCounts.bySection[item.id] || 0);
+                    if (!n) return null;
+                    return (
+                      <span className={`ml-auto min-w-[20px] text-center px-1.5 py-0.5 rounded-full text-[10px] font-bold ${item.id === 'notifications' ? 'bg-red-500 text-white' : 'bg-rx-yellow text-rx-dark'}`} title={`${n} new`}>
+                        {n > 99 ? '99+' : n}
+                      </span>
+                    );
+                  })()}
                 </button>
               ))}
             </nav>
@@ -373,7 +403,12 @@ export default function Admin() {
             </div>
           )}
           {activeSection === 'ai' && (<div className="animate-fade-in"><AIProviderPanel /></div>)}
-          {activeSection === 'notifications' && (<div className="animate-fade-in"><NotificationComposer /></div>)}
+          {activeSection === 'notifications' && (
+            <div className="animate-fade-in space-y-6">
+              <AdminNotificationsPanel counts={adminCounts} onChanged={loadAdminCounts} />
+              <NotificationComposer />
+            </div>
+          )}
           {activeSection === 'dashboard' && (
             <div className="space-y-8 animate-fade-in">
               <div><h1 className="text-2xl font-bold text-white">Dashboard Overview</h1><p className="text-rx-gray-medium mt-1">Welcome back! Here's what's happening with RX Store.</p></div>

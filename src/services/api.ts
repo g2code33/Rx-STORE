@@ -955,6 +955,36 @@ export const api = {
     },
   },
 
+  /** Admin awareness feed: per-section unread counts + events (badges). */
+  adminNotifications: {
+    counts() {
+      return request<{ total: number; bySection: Record<string, number>; unreadOldest: string | null }>('/admin/notifications/counts');
+    },
+    list(filters: { section?: string; unread?: boolean } = {}) {
+      const q = new URLSearchParams();
+      if (filters.section) q.set('section', filters.section);
+      if (filters.unread) q.set('unread', '1');
+      return request<{ events: any[] }>(`/admin/notifications${q.toString() ? `?${q}` : ''}`);
+    },
+    seen(section: string) {
+      return request<{ changed: number; counts: { total: number; bySection: Record<string, number> } }>('/admin/notifications/seen', {
+        method: 'POST', body: JSON.stringify({ section }),
+      });
+    },
+  },
+
+  /** Per-user badges: unread notifications by section (profile / developer tabs). */
+  notifications: {
+    counts() {
+      return request<{ total: number; bySection: Record<string, number> }>('/notifications/counts');
+    },
+    seen(section: string) {
+      return request<{ changed: number; counts: { total: number; bySection: Record<string, number> } }>('/notifications/seen', {
+        method: 'POST', body: JSON.stringify({ section }),
+      });
+    },
+  },
+
   /** Admin: GitHub Releases & Approvals center (real data + real actions only). */
   githubAdmin: {
     overview() {
