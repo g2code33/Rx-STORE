@@ -12,7 +12,7 @@ import { inboxRoutes } from './routes/inbox.ts';
 import { appsRoutes } from './routes/apps.ts';
 import { usersRoutes } from './routes/users.ts';
 
-import { adminRoutes } from './routes/admin.ts';
+import { adminRoutes, adminListApps } from './routes/admin.ts';
 import { aiRoutes } from './routes/ai.ts';
 import { getSetting, getAllSettings, putSettings, SETTING_DEFAULTS, PUBLIC_SETTING_KEYS } from './services/settings.ts';
 import { getAllContent, putContent, getContentHistory, revertContent } from './services/content.ts';
@@ -513,6 +513,13 @@ export default {
       const data = await adminRoutes.deleteApp(normalizedRequest as any, env);
       if ((data as any)?.error) return respond({ success: false, error: data }, 400, origin);
       return respond({ success: true, data }, 200, origin);
+    }
+    // Admin catalog: ALL applications (any status) — the Applications tab must
+    // show freshly approved developer apps immediately, not the public
+    // active-only feed.
+    if (path === '/admin/apps' && request.method === 'GET') {
+      try { return respond({ success: true, data: { apps: await adminListApps(env) } }, 200, origin); }
+      catch (e: any) { console.error(`[${requestId}] admin apps:`, redact(String(e?.message || e))); return fail('INTERNAL', 'Could not load applications.'); }
     }
     if (path === '/admin/apps' && request.method === 'POST') {
       const data = await adminRoutes.createApp(normalizedRequest as any, env);

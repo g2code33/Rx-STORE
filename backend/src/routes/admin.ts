@@ -269,6 +269,43 @@ async function syncLegacyAppVersion(env: any, appId: string, rel: any, origin: s
   } catch {}
 }
 
+/**
+ * ADMIN catalog — EVERY application regardless of status.
+ * The Admin → Applications tab must never depend on the public catalog
+ * (status='active' only): a developer app that was just approved — or one
+ * awaiting review — has to be visible (and editable) here immediately.
+ */
+export async function adminListApps(env: any): Promise<any[]> {
+  const rows: any = await env.DB.prepare(
+    `SELECT * FROM applications WHERE deleted_at IS NULL ORDER BY
+       CASE status WHEN 'submitted' THEN 0 WHEN 'under_review' THEN 1 WHEN 'changes_requested' THEN 2 WHEN 'active' THEN 3 ELSE 4 END,
+       COALESCE(updated_at, created_at) DESC`
+  ).all().catch(() => ({ results: [] }));
+  return (rows?.results || []).map((a: any) => {
+    let platforms: any = [];
+    try { const p = JSON.parse(String(a.platforms || '[]')); platforms = Array.isArray(p) ? p : String(a.platforms || '').split(',').filter(Boolean); }
+    catch { platforms = String(a.platforms || '').split(',').map((x: string) => x.trim()).filter(Boolean); }
+    let tags: any = [];
+    try { const t = JSON.parse(String(a.tags || '[]')); tags = Array.isArray(t) ? t : []; } catch { tags = []; }
+    return {
+      ...a,
+      platforms,
+      tags,
+      downloadCount: a.download_count,
+      reviewCount: a.review_count,
+      priceAmount: a.price_amount,
+      price: a.price_type || 'free',
+      version: a.current_version || '1.0.0',
+      isFeatured: !!a.is_featured,
+      isNew: !!a.is_new,
+      isTrending: !!a.is_trending,
+      developerOrgId: a.developer_org_id,
+      longDescription: a.long_description,
+      createdAt: a.created_at,
+    };
+  });
+}
+
 export const adminRoutes = {
   async dashboard(request: Request, env: any) {
     const [apps, users, payments, rating] = await Promise.all([

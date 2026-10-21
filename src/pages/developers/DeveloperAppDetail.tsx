@@ -193,6 +193,20 @@ function MetadataEditor({ app, editable, onSaved }: { app: any; editable: boolea
     category: app.category, icon: app.icon || '', website: app.website || '',
     tags: Array.isArray(app.tags) ? app.tags.join(', ') : String(app.tags || ''),
     platforms: Array.isArray(app.platforms) ? app.platforms : [],
+    // The rest of the storefront listing (same fields as the admin's New
+    // Application form) — the FINAL submission must be complete so approval
+    // publishes a finished listing.
+    price: app.price_type || app.price || 'free',
+    priceAmount: String(app.price_amount ?? app.priceAmount ?? ''),
+    version: app.currentVersion || app.version || '1.0.0',
+    screenshots: Array.isArray(app.screenshots) ? app.screenshots.join(', ') : String(app.screenshots || ''),
+    features: Array.isArray(app.features) ? app.features.join('\n') : String(app.features || ''),
+    releaseNotes: Array.isArray(app.releaseNotes) ? app.releaseNotes.join('\n') : '',
+    androidPackageId: app.androidPackageId || '',
+    windowsUninstallKey: app.windowsUninstallKey || '',
+    windowsExecutable: app.windowsExecutable || '',
+    linuxPackageName: app.linuxPackageName || '',
+    linuxExecutable: app.linuxExecutable || '',
   });
 
   const inputCls = 'w-full bg-rx-dark-tertiary border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-rx-gray-medium focus:outline-none focus:border-rx-yellow/50 disabled:opacity-50';
@@ -204,6 +218,15 @@ function MetadataEditor({ app, editable, onSaved }: { app: any; editable: boolea
         name: form.name, description: form.description, longDescription: form.longDescription,
         category: form.category, icon: form.icon, website: form.website,
         tags: form.tags.split(',').map((t: string) => t.trim()).filter(Boolean), platforms: form.platforms,
+        price: form.price,
+        ...(form.price !== 'free' && form.priceAmount !== '' ? { priceAmount: Number(form.priceAmount) } : { priceAmount: 0 }),
+        version: form.version,
+        screenshots: form.screenshots.split(',').map((x: string) => x.trim()).filter(Boolean),
+        features: form.features.split('\n').map((x: string) => x.trim()).filter(Boolean),
+        releaseNotes: form.releaseNotes.split('\n').map((x: string) => x.trim()).filter(Boolean),
+        androidPackageId: form.androidPackageId, windowsUninstallKey: form.windowsUninstallKey,
+        windowsExecutable: form.windowsExecutable, linuxPackageName: form.linuxPackageName,
+        linuxExecutable: form.linuxExecutable,
       });
       toast.success('Metadata saved');
       setEditing(false);
@@ -245,9 +268,37 @@ function MetadataEditor({ app, editable, onSaved }: { app: any; editable: boolea
               ))}
             </div>
           </div>
+          <div><label className="block text-xs text-rx-gray-medium mb-1.5">Price</label>
+            <select className={inputCls} value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })}>
+              <option value="free">Free</option><option value="paid">Paid</option><option value="subscription">Subscription</option>
+            </select></div>
+          <div><label className="block text-xs text-rx-gray-medium mb-1.5">Price amount (GH₵){form.price === 'free' ? ' — free apps use 0' : ''}</label>
+            <input className={inputCls} type="number" min="0" step="0.01" disabled={form.price === 'free'} value={form.price === 'free' ? '' : form.priceAmount} onChange={(e) => setForm({ ...form, priceAmount: e.target.value })} placeholder="0.00" /></div>
+          <div><label className="block text-xs text-rx-gray-medium mb-1.5">Version</label>
+            <input className={inputCls} value={form.version} onChange={(e) => setForm({ ...form, version: e.target.value })} placeholder="1.0.0" /></div>
+          <div><label className="block text-xs text-rx-gray-medium mb-1.5">Screenshots (comma-separated image URLs)</label>
+            <input className={inputCls} value={form.screenshots} onChange={(e) => setForm({ ...form, screenshots: e.target.value })} placeholder="https://…, https://…" /></div>
+          <div className="sm:col-span-2"><label className="block text-xs text-rx-gray-medium mb-1.5">Features (one per line)</label>
+            <textarea rows={3} className={inputCls} value={form.features} onChange={(e) => setForm({ ...form, features: e.target.value })} placeholder={'Offline mode\nDark theme'} /></div>
+          <div className="sm:col-span-2"><label className="block text-xs text-rx-gray-medium mb-1.5">Release notes (one per line)</label>
+            <textarea rows={2} className={inputCls} value={form.releaseNotes} onChange={(e) => setForm({ ...form, releaseNotes: e.target.value })} placeholder={'First public release'} /></div>
+          <div className="sm:col-span-2 pt-2 border-t border-white/5">
+            <p className="text-xs font-semibold text-white">Installed-app detection</p>
+            <p className="text-[11px] text-rx-gray-medium">Stable publisher identities let the native RX Store show Open/Update instead of Get.</p>
+          </div>
+          <div><label className="block text-xs text-rx-gray-medium mb-1.5">Android package ID</label>
+            <input className={inputCls} value={form.androidPackageId} onChange={(e) => setForm({ ...form, androidPackageId: e.target.value })} placeholder="com.example.app" /></div>
+          <div><label className="block text-xs text-rx-gray-medium mb-1.5">Linux package name</label>
+            <input className={inputCls} value={form.linuxPackageName} onChange={(e) => setForm({ ...form, linuxPackageName: e.target.value })} placeholder="clinical-rx" /></div>
+          <div><label className="block text-xs text-rx-gray-medium mb-1.5">Windows uninstall registry key</label>
+            <input className={inputCls} value={form.windowsUninstallKey} onChange={(e) => setForm({ ...form, windowsUninstallKey: e.target.value })} placeholder="RX Store Clinical Rx" /></div>
+          <div><label className="block text-xs text-rx-gray-medium mb-1.5">Windows executable</label>
+            <input className={inputCls} value={form.windowsExecutable} onChange={(e) => setForm({ ...form, windowsExecutable: e.target.value })} placeholder="ClinicalRx.exe" /></div>
+          <div className="sm:col-span-2"><label className="block text-xs text-rx-gray-medium mb-1.5">Linux executable</label>
+            <input className={inputCls} value={form.linuxExecutable} onChange={(e) => setForm({ ...form, linuxExecutable: e.target.value })} placeholder="/usr/bin/clinical-rx" /></div>
           <div className="sm:col-span-2 flex gap-2 justify-end">
             <button onClick={() => setEditing(false)} className="btn-secondary text-sm">Cancel</button>
-            <button onClick={save} disabled={busy} className="btn-primary text-sm disabled:opacity-40">{busy ? 'Saving…' : 'Save metadata'}</button>
+            <button onClick={save} disabled={busy} className="btn-primary text-sm disabled:opacity-40">{busy ? 'Saving…' : 'Save listing'}</button>
           </div>
         </div>
       )}

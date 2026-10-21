@@ -164,6 +164,73 @@ export function appView(app: any, extra: Record<string, unknown> = {}) {
 // Developer routes
 // ---------------------------------------------------------------------------
 
+/**
+ * The full listing field set a developer fills in for the FINAL submission —
+ * the same fields the admin's "New Application" form collects, so an approved
+ * developer app is complete and immediately usable in the store.
+ * Returns { fields } (DB columns) or { error }.
+ */
+function listingFieldsFromBody(body: any, opts: { partial: boolean }): { fields?: Record<string, any>; error?: string } {
+  const fields: Record<string, any> = {};
+  const has = (k: string) => body?.[k] !== undefined;
+
+  if (has('price') || has('priceType')) {
+    const v = String(body.price ?? body.priceType ?? 'free').toLowerCase();
+    if (!['free', 'paid', 'subscription'].includes(v)) return { error: 'Price must be free, paid or subscription' };
+    fields.price_type = v;
+  }
+  if (has('priceAmount')) {
+    const n = Number(body.priceAmount);
+    if (!Number.isFinite(n) || n < 0 || n > 1_000_000) return { error: 'Price amount must be between 0 and 1,000,000' };
+    fields.price_amount = Math.round(n * 100) / 100;
+  }
+  if (has('version') || has('currentVersion')) {
+    const v = str(body.version ?? body.currentVersion, 40);
+    if (!/^\d+(\.\d+){0,3}(-[0-9A-Za-z.-]+)?$/.test(v)) return { error: 'Version must look like 1.0.0' };
+    fields.current_version = v;
+  }
+  if (has('screenshots')) {
+    const list = Array.isArray(body.screenshots) ? body.screenshots : [];
+    fields.screenshots = JSON.stringify(list.slice(0, 10).map((x: any) => str(x, 500)).filter((x: string) => isHttpUrl(x)));
+  }
+  if (has('features')) {
+    const list = Array.isArray(body.features) ? body.features : String(body.features || '').split('\n');
+    fields.features = JSON.stringify(list.map((x: any) => str(x, 120)).filter(Boolean).slice(0, 20));
+  }
+  if (has('releaseNotes')) {
+    const list = Array.isArray(body.releaseNotes) ? body.releaseNotes : String(body.releaseNotes || '').split('\n');
+    fields.release_notes = JSON.stringify(list.map((x: any) => str(x, 300)).filter(Boolean).slice(0, 30));
+  }
+  if (has('gradient')) fields.gradient = str(body.gradient, 120) || null;
+  if (has('color')) fields.color = str(body.color, 40) || null;
+  // Installed-app detection identities (validated, length-capped).
+  const ID_FIELDS: Array<[string, RegExp, string]> = [
+    ['androidPackageId', /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/, 'Android package id must look like com.example.app'],
+    ['windowsUninstallKey', /^[^\u0000-\u001f]{3,200}$/, 'Invalid Windows uninstall key'],
+    ['windowsExecutable', /^[^\u0000-\u001f]{2,200}$/, 'Invalid Windows executable name'],
+    ['linuxPackageName', /^[a-z0-9][a-z0-9+.-]{1,80}$/i, 'Invalid Linux package name'],
+    ['linuxExecutable', /^[^\u0000-\u001f]{2,200}$/, 'Invalid Linux executable name'],
+  ];
+  const COL: Record<string, string> = {
+    androidPackageId: 'android_package_id', windowsUninstallKey: 'windows_uninstall_key',
+    windowsExecutable: 'windows_executable', linuxPackageName: 'linux_package_name',
+    linuxExecutable: 'linux_executable',
+  };
+  for (const [key, re, msg] of ID_FIELDS) {
+    if (!has(key)) continue;
+    const v = str(body[key], 200);
+    if (v && !re.test(v)) return { error: msg };
+    fields[COL[key]] = v || null;
+  }
+  if (has('privacyUrl')) {
+    const v = str(body.privacyUrl, 300);
+    if (v && !isHttpUrl(v)) return { error: 'Privacy policy must be a URL' };
+    fields.privacy_url = v || null;
+  }
+  if (!opts.partial && !Object.keys(fields).length) return { fields: {} };
+  return { fields };
+}
+
 export const developerAppRoutes = {
 
   /** POST /developers/apps — create an app (draft; never public until admin approval). */
@@ -205,7 +272,18 @@ export const developerAppRoutes = {
       profile?.publisher_name || 'RX Store Developer', userId, icon || null,
       JSON.stringify(platforms), website || null, ms.developer.id).run();
 
-    await auditDev(env, ms.developer.id, userId, 'developer_app_created', { appId: id, slug, name });
+    // The FINAL submission carries the full listing form (same fields as the
+    // admin's New Application form) — an approved app is complete on day one.
+    const extra = listingFieldsFromBody(body, { partial: true });
+    if (extra.error) return { error: extra.error, code: 'VALIDATION_ERROR' };
+    const cols = Object.keys(extra.fields || {});
+    if (cols.length) {
+      const sets = cols.map((c) => `${c}=?`).join(', ');
+      await env.DB.prepare(`UPDATE applications SET ${sets}, updated_at=datetime('now') WHERE id=?`)
+        .bind(...cols.map((c) => (extra.fields as any)[c]), id).run();
+    }
+
+    await auditDev(env, ms.developer.id, userId, 'developer_app_created', { appId: id, slug, name, fields: cols });
     return { app: { id, slug, status: 'draft' } };
   },
 
@@ -301,6 +379,12 @@ export const developerAppRoutes = {
     if (body.screenshots !== undefined) fields.screenshots = JSON.stringify(Array.isArray(body.screenshots) ? body.screenshots.slice(0, 8).filter((s: any) => isHttpUrl(String(s))) : []);
     if (body.website !== undefined) { const v = str(body.website, 300); if (v && !isHttpUrl(v)) return { error: 'Website must be a URL', code: 'VALIDATION_ERROR' }; fields.website = v || null; }
     if (body.privacyUrl !== undefined) { const v = str(body.privacyUrl, 300); if (v && !isHttpUrl(v)) return { error: 'Privacy policy must be a URL', code: 'VALIDATION_ERROR' }; fields.privacy_url = v || null; }
+    // Full listing form (price, version, screenshots, features, release notes,
+    // installed-app identities) — a developer submits the COMPLETE listing so
+    // admin approval publishes a finished storefront entry.
+    const extra = listingFieldsFromBody(body, { partial: true });
+    if (extra.error) return { error: extra.error, code: 'VALIDATION_ERROR' };
+    Object.assign(fields, extra.fields || {});
     if (!Object.keys(fields).length) return { error: 'Nothing to update', code: 'VALIDATION_ERROR' };
 
     const sets = Object.keys(fields).map((k) => `${k}=?`).join(', ');
@@ -745,11 +829,39 @@ export const adminDeveloperAppRoutes = {
     if (!['submitted', 'under_review', 'changes_requested'].includes(app.status)) {
       return { error: `Only submitted/under-review apps can be approved (current: ${app.status})`, code: 'FORBIDDEN' };
     }
-    await env.DB.prepare(`UPDATE applications SET status='active', updated_at=datetime('now') WHERE id=?`).bind(appId).run();
+    // Final-approval completeness check: an app can only go live when the
+    // storefront essentials exist (the developer filled the full form).
+    const missing: string[] = [];
+    if (!String(app.name || '').trim()) missing.push('name');
+    if (String(app.description || '').trim().length < 10) missing.push('short description (10+ chars)');
+    if (!['healthcare', 'education', 'productivity', 'technology', 'gaming', 'social'].includes(String(app.category || '').toLowerCase())) missing.push('category');
+    if (!String(app.icon || '').trim()) missing.push('icon');
+    {
+      let plats: string[] = [];
+      try { const p = JSON.parse(String(app.platforms || '[]')); if (Array.isArray(p)) plats = p; } catch { plats = String(app.platforms || '').split(',').filter(Boolean); }
+      if (!plats.length) missing.push('platforms');
+    }
+    if (missing.length) {
+      return { error: `This app is not ready to publish — missing: ${missing.join(', ')}. Ask the developer to complete the listing form, then approve again.`, code: 'VALIDATION_ERROR' };
+    }
+    // Normalize everything the public catalog and admin list depend on.
+    let platformsArr: string[] = [];
+    try { const p = JSON.parse(String(app.platforms || '[]')); if (Array.isArray(p)) platformsArr = p.map(String); } catch { platformsArr = String(app.platforms || '').split(',').map((x) => x.trim()).filter(Boolean); }
+    const priceType = ['free', 'paid', 'subscription'].includes(String(app.price_type || '').toLowerCase()) ? String(app.price_type).toLowerCase() : 'free';
+    const priceAmount = priceType === 'free' ? 0 : Number(app.price_amount || 0);
+    const version = String(app.current_version || '').trim() || '1.0.0';
+    await env.DB.prepare(
+      `UPDATE applications SET status='active', platforms=?, price_type=?, price_amount=?, current_version=?,
+         release_date=COALESCE(release_date, datetime('now')), last_updated=datetime('now'),
+         developer=COALESCE(NULLIF(developer,''),'RX Store Developer'), updated_at=datetime('now')
+       WHERE id=?`
+    ).bind(JSON.stringify(platformsArr), priceType, priceAmount, version, appId).run();
+    // Platform list is already normalized above; published packages add more
+    // platforms later through the release publish path (mergeAppPlatforms).
     await auditDev(env, app.developer_org_id, userIdOf(request), 'developer_app_approved', { appId });
     await adminAudit(env, 'developer_app_approved', appId, {});
     await notifyOrg(env, app.developer_org_id, 'App approved 🎉', `${app.name} is now listed on RX Store. You can create releases for it.`, { appId });
-    return { app: { id: appId, status: 'active' } };
+    return { app: { id: appId, status: 'active', slug: app.slug } };
   },
 
   /** POST /admin/developers/apps/:id/reject — reason REQUIRED. */

@@ -93,7 +93,23 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   const { getAppBySlug, installedApps, installApp, uninstallApp, isLoading } = useApps();
   const { user } = useAuth();
   const { get, getJSON } = useContent();
-  const app = getAppBySlug(slug || '');
+  const catalogApp = getAppBySlug(slug || '');
+  // The in-memory catalog is the first page of the public list (and may be
+  // cached). A LIVE app outside it must still open — resolve it from the API
+  // instead of showing "Application Not Found" for a real, active app.
+  const [fetchedApp, setFetchedApp] = React.useState<any>(null);
+  const [fetchDone, setFetchDone] = React.useState(false);
+  React.useEffect(() => {
+    if (catalogApp || !slug || !isApiConfigured()) { setFetchedApp(null); setFetchDone(true); return; }
+    let alive = true;
+    setFetchDone(false);
+    api.apps.detail(slug)
+      .then((a) => { if (alive && a && a.slug) setFetchedApp(a); })
+      .catch(() => { /* 404 / offline — fall through to Not Found */ })
+      .finally(() => { if (alive) setFetchDone(true); });
+    return () => { alive = false; };
+  }, [slug, catalogApp?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const app = (catalogApp || fetchedApp || undefined) as typeof catalogApp;
   const [activeTab, setActiveTab] = useState<'overview' | 'reviews' | 'versions' | 'docs'>('overview');
   const [isInstalling, setIsInstalling] = useState(false);
   const [newRating, setNewRating] = useState(5);
@@ -285,7 +301,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
     setPurchasing(false);
   };
 
-  if (isLoading && !app) {
+  if ((isLoading || !fetchDone) && !app) {
     return (
       <div className="section-container py-20 text-center">
         <div className="w-10 h-10 border-2 border-rx-yellow border-t-transparent rounded-full animate-spin mx-auto mb-4" />

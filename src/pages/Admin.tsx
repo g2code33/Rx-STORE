@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 import {
   LayoutDashboard, Package, Users, BarChart3, DollarSign, Upload,
   Download, Star, Settings, Shield, Plus, Edit, Trash2, Activity, Database, Cloud, Bot, Key, Globe, FileText, Bell, Megaphone,
-  Monitor, Eye, Paintbrush, Loader2, Rocket, MousePointerClick, Tablet, Smartphone, PanelRight, Shapes, Store, CreditCard, Inbox, Github} from 'lucide-react';
+  Monitor, Eye, Paintbrush, Loader2, Rocket, MousePointerClick, Tablet, Smartphone, PanelRight, Shapes, Store, CreditCard, Inbox, Github, RefreshCw} from 'lucide-react';
 import { useApps } from '../context/AppContext';
 import { useCategories } from '../hooks/useCategories';
 import { formatDownloadCount } from '../utils/helpers';
@@ -79,6 +79,18 @@ export default function Admin() {
   const [adminCounts, setAdminCounts] = useState<{ total: number; bySection: Record<string, number> }>({ total: 0, bySection: {} });
   const [editingApp, setEditingApp] = useState<any>(null);
   const isAdmin = user?.role === 'admin';
+  // Admin catalog: EVERY app (any status). The public catalog only carries
+  // active apps, which made freshly approved developer apps invisible here.
+  const [adminApps, setAdminApps] = useState<any[] | null>(null);
+  const [appsLoading, setAppsLoading] = useState(false);
+  const loadAdminApps = React.useCallback(() => {
+    if (!isAdmin || !isApiConfigured()) return;
+    setAppsLoading(true);
+    api.adminApps.list()
+      .then((r) => setAdminApps(r.apps || []))
+      .catch(() => setAdminApps(null))   // fall back to the public catalog
+      .finally(() => setAppsLoading(false));
+  }, [isAdmin]);
 
   const loadAdminCounts = React.useCallback(() => {
     if (!isAdmin || !isApiConfigured()) return;
@@ -97,6 +109,11 @@ export default function Admin() {
 
   // Poll the awareness feed: on mount, every 30s, and whenever the window
   // regains focus (so a fresh submission shows up without a reload).
+  React.useEffect(() => {
+    if (!isAdmin || !isApiConfigured()) return;
+    if (activeSection === 'applications') loadAdminApps();
+  }, [isAdmin, activeSection, loadAdminApps]);
+
   React.useEffect(() => {
     if (!isAdmin || !isApiConfigured()) return;
     loadAdminCounts();
@@ -486,8 +503,19 @@ export default function Admin() {
           {activeSection === 'applications' && (
             <div className="space-y-6 animate-fade-in">
               <div className="flex items-center justify-between">
-                <div><h1 className="text-2xl font-bold text-white">Applications</h1><p className="text-rx-gray-medium mt-1">Edit any app — real data, live to R2/D1. Click Edit to change everything.</p></div>
-                <button onClick={()=>setEditingApp({ slug:'', name:'', isNewPlaceholder:true })} className="btn-primary flex items-center gap-2"><Plus className="w-4 h-4" /> Add Application</button>
+                <div>
+                  <h1 className="text-2xl font-bold text-white">Applications</h1>
+                  <p className="text-rx-gray-medium mt-1">
+                    Every app in every status — approved developer listings appear here immediately.
+                    {adminApps && <span className="ml-2 text-white/70">({adminApps.length} total · {adminApps.filter((a) => a.status === 'active').length} live)</span>}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={loadAdminApps} disabled={appsLoading} className="btn-secondary text-sm flex items-center gap-2">
+                    {appsLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />} Refresh
+                  </button>
+                  <button onClick={()=>setEditingApp({ slug:'', name:'', isNewPlaceholder:true })} className="btn-primary flex items-center gap-2"><Plus className="w-4 h-4" /> Add Application</button>
+                </div>
               </div>
               {editingApp && <AppEditor app={editingApp} onClose={()=>setEditingApp(null)} onSaved={()=>refresh()} />}
               <div className="card overflow-hidden">
@@ -503,7 +531,7 @@ export default function Admin() {
                     </tr>
                   </thead>
                   <tbody>
-                    {apps.map((app) => (
+                    {(adminApps ?? apps).map((app) => (
                       <tr key={app.id} className="border-b border-white/5 hover:bg-white/5 transition-colors">
                         <td className="px-5 py-4">
                           <div className="flex items-center gap-3">
@@ -524,7 +552,7 @@ export default function Admin() {
                               if(!API){ alert('RX Store is not connected to its application service. Install a correctly configured build.'); return; }
                               const token=localStorage.getItem('rx-store-token')||'';
                               const res=await fetch(`${API.replace(/\/$/,'')}/admin/apps/${app.slug}`,{method:'DELETE',headers:{'Authorization':`Bearer ${token}`}});
-                              if(res.ok) { refresh(); } else { const j=await res.json(); alert(j.error?.message||'Failed'); }
+                              if(res.ok) { refresh(); loadAdminApps(); } else { const j=await res.json(); alert(j.error?.message||'Failed'); }
                             }} className="p-1.5 text-rx-gray-medium hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all"><Trash2 className="w-4 h-4" /></button>
                           </div>
                         </td>
@@ -532,6 +560,9 @@ export default function Admin() {
                     ))}
                   </tbody>
                 </table>
+                {(adminApps ?? apps).length === 0 && (
+                  <p className="p-8 text-center text-sm text-rx-gray-medium">No applications yet. Developer submissions appear here for review.</p>
+                )}
               </div>
             </div>
           )}

@@ -128,6 +128,9 @@ function makeEnv() {
           if (s.includes('SELECT id FROM packages WHERE release_id=? AND platform=? AND architecture=?')) {
             return { results: db.packages.filter((p: any) => p.release_id === a[0] && p.platform === a[1] && p.architecture === a[2]) };
           }
+          if (s.includes('SELECT * FROM applications WHERE deleted_at IS NULL')) {
+            return { results: db.applications.filter((x: any) => !x.deleted_at) };
+          }
           if (s.includes('SELECT * FROM applications WHERE status=\'active\'')) {
             return { results: db.applications.filter((x: any) => x.status === 'active') };
           }
@@ -222,10 +225,22 @@ function makeEnv() {
             for (const st of ['submitted', 'under_review', 'active', 'changes_requested', 'suspended', 'archived'] as const) {
               if (s.includes(`status='${st}'`)) app.status = st;
             }
-            const m = s.match(/SET (.*) WHERE id=\?/);
-            if (m && !s.includes("status='")) {
-              const cols = m[1].split(', ').map((c) => c.split('=')[0].trim()).filter((c) => c !== 'updated_at');
-              cols.forEach((c, i) => { (app as any)[c] = a[i]; });
+            // %s = a bound parameter for the column; SQL literal expressions
+            // (datetime('now'), COALESCE(...), NULLIF(...)) are applied below.
+            const m = s.match(/SET (.*?) WHERE id=\?/);
+            if (m) {
+              const parts = m[1].split(', ');
+              let bindIdx = 0;
+              for (const part of parts) {
+                const [rawCol, ...rest] = part.split('=');
+                const col = rawCol.trim();
+                const expr = rest.join('=').trim();
+                if (col === 'updated_at') continue;
+                if (expr === '?') { (app as any)[col] = a[bindIdx++]; continue; }
+                if (/datetime\('now'\)/.test(expr)) { (app as any)[col] = '2026-01-01 00:00:00'; continue; }
+                if (/^COALESCE\(release_date/.test(expr)) { (app as any)[col] = (app as any)[col] || '2026-01-01 00:00:00'; continue; }
+                if (/^COALESCE\(NULLIF\(developer/.test(expr)) { (app as any)[col] = (app as any)[col] || 'RX Store Developer'; continue; }
+              }
             }
             return { meta: { changes: 1 } };
           }
@@ -606,4 +621,75 @@ test('withdraw: developer can withdraw a submission and the record survives', as
   assert.equal(out.release.status, 'withdrawn');
   assert.equal(env.db.releases.length, 1);
   assert.ok(env.db.developer_audit_logs.some((l: any) => l.action === 'developer_release_withdrawn'));
+});
+
+// ---------------------------------------------------------------------------
+// REGRESSION — approved developer apps must be LIVE and VISIBLE
+// (production bug: approval left a half-normalized row that the public
+// catalog and Admin → Applications never showed, and /app/<slug> said
+// "Application Not Found").
+// ---------------------------------------------------------------------------
+
+test('REGRESSION approving a developer app normalizes it so it is immediately live and visible', async () => {
+  const env = await seededApp();
+  const app = env.db.applications[0];
+  // Simulate a legacy/corrupted row: comma-string platforms, no dates, no version.
+  app.status = 'submitted';
+  app.platforms = 'web';            // legacy comma form (not JSON)
+  app.current_version = '';
+  app.release_date = null;
+  app.price_type = 'free';
+  app.price_amount = null;
+  app.icon = '📦';
+
+  const approve: any = await adminDeveloperAppRoutes.approveApp(req('admin1', {}, '/admin/developers/apps/app_seed/approve'), env);
+  assert.ok(!approve.error, approve.error);
+  assert.equal(app.status, 'active');
+
+  // platforms stored as a JSON ARRAY (the public/admin consumers require it)
+  const parsed = JSON.parse(String(app.platforms));
+  assert.ok(Array.isArray(parsed) && parsed.includes('web'), `platforms must be a JSON array (got ${app.platforms})`);
+  assert.equal(app.current_version, '1.0.0', 'a version is set so the listing/card is complete');
+  assert.ok(app.release_date, 'release_date is set on approval');
+  assert.equal(app.price_amount, 0, 'free apps carry a numeric 0 price amount');
+
+  // The PUBLIC catalog now returns it (users can see it)…
+  const list: any = await appsRoutes.list(new Request('https://api.test/apps?limit=100'), env);
+  assert.ok((list.apps || []).some((a: any) => a.id === app.id), 'the approved app appears in the public catalog');
+
+  // …and the detail endpoint resolves it by slug (no more "Application Not Found").
+  const detail: any = await appsRoutes.detail(new Request(`https://api.test/apps/${app.slug}`), env);
+  assert.ok(!detail.error, detail.error);
+  assert.equal(detail.id, app.id);
+});
+
+test('REGRESSION approval REFUSES an incomplete listing (final submission must be complete)', async () => {
+  const env = await seededApp();
+  const app = env.db.applications[0];
+  app.status = 'submitted';
+  app.icon = '';                    // missing a required storefront essential
+  const out: any = await adminDeveloperAppRoutes.approveApp(req('admin1', {}, '/admin/developers/apps/app_seed/approve'), env);
+  assert.equal(out.code, 'VALIDATION_ERROR');
+  assert.match(String(out.error), /icon/);
+  assert.equal(app.status, 'submitted', 'a refused approval must not publish the app');
+});
+
+test('REGRESSION the admin catalog lists EVERY status (approved + awaiting review), newest first', async () => {
+  const env = await seededApp();
+  env.db.applications[0].status = 'active';
+  env.db.applications.push({
+    id: 'app_pending', slug: 'pending-app', name: 'Pending App', description: 'Awaiting review listing',
+    category: 'technology', tags: '[]', icon: '📦', status: 'under_review', platforms: '["web"]',
+    price_type: 'free', price_amount: 0, developer_org_id: 'dev_aaaaaaaa1', created_at: '2026-02-01',
+    updated_at: '2026-02-01', download_count: 0, review_count: 0,
+  });
+  const { adminListApps } = await import('./routes/admin.ts');
+  const all = await adminListApps(env);
+  assert.equal(all.length, 2, 'both the approved and the pending app are listed');
+  const pending = all.find((a: any) => a.id === 'app_pending');
+  assert.ok(pending, 'review-queue apps are included (ordering is enforced by the SQL ORDER BY)');
+  assert.ok(Array.isArray(pending.platforms), 'platforms are normalized for the admin UI');
+  const active = all.find((a: any) => a.id === 'app_seed');
+  assert.ok(active, 'the approved developer app is visible in Admin → Applications');
+  assert.equal(active.status, 'active');
 });

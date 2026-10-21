@@ -955,6 +955,13 @@ export const api = {
     },
   },
 
+  /** Admin catalog: EVERY application regardless of status (review queue included). */
+  adminApps: {
+    list() {
+      return request<{ apps: any[] }>('/admin/apps');
+    },
+  },
+
   /** Admin awareness feed: per-section unread counts + events (badges). */
   adminNotifications: {
     counts() {
