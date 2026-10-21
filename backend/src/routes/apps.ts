@@ -4,6 +4,7 @@
 import { getSetting } from '../services/settings.ts';
 import { verifyToken } from '../services/auth.ts';
 import { paginationMeta } from '../services/releases.ts';
+import { normalizeAppRow } from '../services/appRowNormalize.ts';
 
 /** Display label per stored package platform (used for the auto-derived size). */
 const SIZE_LABEL: Record<string, string> = {
@@ -104,7 +105,7 @@ export const appsRoutes = {
     const apps = result.results || [];
     const sizesByApp = await appSizesFor(env, apps.map((a: any) => a.id));
     const normalized = apps.map((a:any)=> {
-      const row: any = { ...a, platforms: tryParse(a.platforms, []), tags: tryParse(a.tags, []), screenshots: tryParse(a.screenshots, []), features: tryParse(a.features, []), releaseNotes: tryParse(a.release_notes, []), version: a.current_version || a.version || '1.0.0', downloadCount: a.download_count, reviewCount: a.review_count, priceAmount: a.price_amount, price: a.price_type || a.price };
+      const row: any = normalizeAppRow(a);
       return withSize(env, a.id, row, sizesByApp[a.id] || {});
     });
 
@@ -141,7 +142,7 @@ export const appsRoutes = {
     if (!['active', 'beta', 'coming-soon'].includes(String(app.status || 'active'))) {
       return { error: 'Application not found' };
     }
-    const row = { ...app, platforms: tryParse(app.platforms, []), tags: tryParse(app.tags, []), downloadCount: app.download_count, reviewCount: app.review_count, priceAmount: app.price_amount, price: app.price_type || app.price || 'free' };
+    const row = normalizeAppRow(app);
     // Provide frontend defaults for fields not stored in D1
     row.longDescription = app.long_description || app.description || '';
     row.features = tryParse(app.features, null) || ['Secure & Verified', 'Cross-platform', 'Auto-updates', 'Cloud sync'];

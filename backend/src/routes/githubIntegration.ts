@@ -23,6 +23,7 @@ import {
   processWebhook, verifyGithubRelease, publishGithubRelease,
   rejectGithubRelease, withdrawGithubRelease, syncAllConnections,
   adminOverview, adminQueue, adminAudit, verifyPendingDetections, ensureGithubTables,
+  adminConnectionsOverview, adminSetConnectionStatus,
 } from '../services/githubReleases.ts';
 import { issueOneTimeToken, consumeOneTimeToken, restoreOneTimeToken, apiCallbackBase } from '../services/oauth.ts';
 
@@ -431,6 +432,31 @@ export const githubAdminRoutes = {
     const out = await syncAllConnections(env, admin);
     if (ctx?.waitUntil) ctx.waitUntil(verifyPendingDetections(env).catch(() => {}));
     return out;
+  },
+
+  /** GET /admin/github/connections — every app + its GitHub connection state. */
+  async connections(request: Request, env: any) {
+    const admin = requireAdmin(request);
+    if ('error' in admin) return { code: 'UNAUTHORIZED', message: admin.error };
+    return adminConnectionsOverview(env);
+  },
+
+  /** POST /admin/github/connections/:appId/suspend|reinstate|disconnect {reason} */
+  async connectionAction(request: Request, env: any) {
+    const admin = requireAdmin(request);
+    if ('error' in admin) return { code: 'UNAUTHORIZED', message: admin.error };
+    const parts = new URL(request.url).pathname.split('/');
+    // /admin/github/connections/<appId>/<action>
+    const appId = parts[4] || '';
+    const action = parts[5] || '';
+    if (!['suspend', 'reinstate', 'disconnect'].includes(action)) {
+      return { code: 'VALIDATION_ERROR', message: 'Unknown connection action.' };
+    }
+    let body: any = {};
+    try { body = await request.json(); } catch {}
+    const out = await adminSetConnectionStatus(env, admin, appId, action as any, String(body?.reason || ''));
+    if (!out.ok) return { code: out.code, message: out.message };
+    return { success: true, status: out.status };
   },
 
   /** GET /admin/github/audit */

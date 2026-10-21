@@ -315,6 +315,8 @@ export default {
         let data: any;
         const seg = path.split('/')[3] || '';
         if (seg === 'overview' && request.method === 'GET') data = await githubAdminRoutes.overview(normalizedRequest as any, env);
+        else if (seg === 'connections' && request.method === 'GET') data = await githubAdminRoutes.connections(normalizedRequest as any, env);
+        else if (seg === 'connections' && request.method === 'POST') data = await githubAdminRoutes.connectionAction(normalizedRequest as any, env);
         else if (seg === 'releases' && request.method === 'GET') data = await githubAdminRoutes.releases(normalizedRequest as any, env);
         else if (seg === 'audit' && request.method === 'GET') data = await githubAdminRoutes.audit(normalizedRequest as any, env);
         else if (seg === 'sync' && request.method === 'POST') data = await githubAdminRoutes.sync(normalizedRequest as any, env, ctx);

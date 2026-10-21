@@ -28,6 +28,7 @@ import {
   resolveMembership, requirePermission, auditDev, notify, notifyAdmins, rid, str, isHttpUrl,
 } from './developers.ts';
 import { writePackageRow } from './admin.ts';
+import { listColumn } from '../services/appRowNormalize.ts';
 import { parseSemver, normalizeChannel } from '../services/releases.ts';
 import { permissionsForRole } from '../services/developerPermissions.ts';
 import { runSecurityPipeline, latestChecksForPackages } from '../services/packageSecurity.ts';
@@ -140,19 +141,14 @@ function releaseView(rel: any, app: any) {
  * ('linux,web') is tolerated and split so consumers can never receive a
  * non-array (the Developer App Detail page crashed on .join() otherwise).
  */
-function listColumn(v: any): string[] {
-  if (Array.isArray(v)) return v.map(String);
-  const s = String(v ?? '').trim();
-  if (!s) return [];
-  try { const parsed = JSON.parse(s); if (Array.isArray(parsed)) return parsed.map(String); } catch { /* fall through */ }
-  return s.split(',').map((x) => x.trim()).filter(Boolean);
-}
 
 export function appView(app: any, extra: Record<string, unknown> = {}) {
   return {
     id: app.id, slug: app.slug, name: app.name, description: app.description,
     longDescription: app.long_description, category: app.category, tags: listColumn(app.tags),
-    icon: app.icon, screenshots: app.screenshots, status: app.status,
+    screenshots: listColumn(app.screenshots), features: listColumn(app.features),
+    releaseNotes: listColumn(app.release_notes ?? app.releaseNotes),
+    icon: app.icon, status: app.status,
     platforms: listColumn(app.platforms), website: app.website, currentVersion: app.current_version,
     developer: app.developer, developerOrgId: app.developer_org_id,
     lastUpdated: app.last_updated || app.updated_at, createdAt: app.created_at,

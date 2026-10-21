@@ -960,6 +960,85 @@ export async function adminQueue(env: any, filters: { status?: string; appId?: s
   return out;
 }
 
+/**
+ * ADMIN view of the GitHub channel: EVERY application with its connection
+ * state (connected / not / disconnected / suspended), so an admin can see at a
+ * glance which developer apps publish through GitHub. Real data only.
+ */
+export async function adminConnectionsOverview(env: any): Promise<any> {
+  await ensureGithubTables(env);
+  const apps: any = await env.DB.prepare(
+    `SELECT id, slug, name, status, price_type, price_amount, current_version, developer_org_id
+       FROM applications WHERE deleted_at IS NULL ORDER BY name ASC LIMIT 500`
+  ).all().catch(() => ({ results: [] }));
+  const conns: any = await env.DB.prepare(`SELECT * FROM github_repo_connections`).all().catch(() => ({ results: [] }));
+  const byApp = new Map<string, any>();
+  for (const c of conns?.results || []) byApp.set(String(c.application_id), c);
+  // Last detected release per connection (for the "latest" column).
+  const latest: any = await env.DB.prepare(
+    `SELECT application_id, version, status, detected_at FROM github_releases ORDER BY detected_at DESC LIMIT 500`
+  ).all().catch(() => ({ results: [] }));
+  const latestByApp = new Map<string, any>();
+  for (const r of latest?.results || []) if (!latestByApp.has(String(r.application_id))) latestByApp.set(String(r.application_id), r);
+
+  const rows = (apps?.results || []).map((a: any) => {
+    const c = byApp.get(String(a.id)) || null;
+    const paid = ['paid', 'subscription'].includes(String(a.price_type || 'free')) && Number(a.price_amount) > 0;
+    return {
+      appId: a.id, slug: a.slug, name: a.name, status: a.status,
+      isPaid: paid, currentVersion: a.current_version,
+      connection: c ? {
+        id: c.id, repository: c.repository_full_name, repositoryId: c.repository_id,
+        installationId: c.installation_id, status: c.status, channel: c.channel,
+        connectedBy: c.connected_by, lastEvent: c.last_event, lastEventAt: c.last_event_at,
+        lastSyncAt: c.last_sync_at, latestDetectedVersion: c.latest_detected_version,
+        lastError: c.last_error, createdAt: c.created_at,
+      } : null,
+      latestRelease: latestByApp.get(String(a.id)) || null,
+    };
+  });
+  const connected = rows.filter((r: any) => r.connection && r.connection.status === 'active');
+  return {
+    configured: githubConfigured(env),
+    totals: {
+      applications: rows.length,
+      connected: connected.length,
+      disconnected: rows.filter((r: any) => r.connection && r.connection.status !== 'active').length,
+      notConnected: rows.filter((r: any) => !r.connection).length,
+      paid: rows.filter((r: any) => r.isPaid).length,
+    },
+    apps: rows,
+  };
+}
+
+/**
+ * ADMIN suspend / reinstate of a GitHub connection. Suspending stops ALL
+ * future webhook processing and blocks publication until reinstated; already
+ * published releases stay live (use Withdraw to remove one). Audited.
+ */
+export async function adminSetConnectionStatus(env: any, actor: { userId: string; label: string }, appId: string, action: 'suspend' | 'reinstate' | 'disconnect', reason: string): Promise<{ ok: boolean; code?: string; message?: string; status?: string }> {
+  await ensureGithubTables(env);
+  const conn: any = await env.DB.prepare(`SELECT * FROM github_repo_connections WHERE application_id=?`).bind(appId).first().catch(() => null);
+  if (!conn) return { ok: false, code: 'NOT_FOUND', message: 'This application has no GitHub connection.' };
+  const trimmed = String(reason || '').trim();
+  if (action !== 'reinstate' && trimmed.length < 10) {
+    return { ok: false, code: 'VALIDATION_ERROR', message: `A ${action} reason of at least 10 characters is required.` };
+  }
+  const next = action === 'suspend' ? 'revoked' : action === 'disconnect' ? 'disconnected' : 'active';
+  await env.DB.prepare(`UPDATE github_repo_connections SET status=?, last_error=?, updated_at=datetime('now') WHERE id=?`)
+    .bind(next, action === 'reinstate' ? null : (trimmed ? `${action}: ${trimmed.slice(0, 200)}` : null), conn.id).run();
+  if (action === 'suspend') {
+    // Detection/publication is blocked while suspended: park queued releases.
+    await env.DB.prepare(`UPDATE github_releases SET status='blocked', block_reason=? WHERE connection_id=? AND status IN ('detected','verifying','pending_approval')`)
+      .bind(`The repository connection was suspended by an administrator: ${trimmed.slice(0, 160)}`, conn.id).run().catch(() => {});
+  }
+  await audit(env, {
+    action: action === 'suspend' ? 'admin_suspend' : action === 'disconnect' ? 'admin_disconnect' : 'admin_reinstate',
+    actorId: actor.userId, actorLabel: actor.label, appId, repositoryId: conn.repository_id, reason: trimmed || undefined,
+  });
+  return { ok: true, status: next };
+}
+
 export async function adminAudit(env: any, limit = 100): Promise<any[]> {
   await ensureGithubTables(env);
   const rows: any = await env.DB.prepare(`SELECT * FROM github_audit_log ORDER BY created_at DESC, id DESC LIMIT ?`).bind(Math.min(limit, 200)).all().catch(() => ({ results: [] }));

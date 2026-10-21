@@ -3,6 +3,7 @@ import { X, Save, Trash2, Plus, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { API_URL } from '../../services/api';
 import { App } from '../../types';
+import { asList } from '../../utils/helpers';
 import { normalizeWebsiteUrl } from '../../utils/url';
 import AppLogo from '../apps/AppLogo';
 
@@ -13,7 +14,7 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
     description: app.description || '',
     longDescription: (app as any).longDescription || app.description || '',
     category: app.category || 'healthcare',
-    tags: (app.tags || []).join(', '),
+    tags: asList(app.tags).join(', '),
     icon: app.icon || '📦',
     color: app.color || '#FFD600',
     gradient: app.gradient || 'from-rx-dark to-rx-dark-secondary',
@@ -28,10 +29,10 @@ export default function AppEditor({ app, onClose, onSaved }: { app: Partial<App>
     rating: app.rating || 4.5,
     price: app.price || 'free',
     priceAmount: app.priceAmount || '',
-    platforms: (app.platforms || ['web']).join(', '),
-    screenshots: (app.screenshots || []).join(', '),
-    features: (app.features || []).join('\n'),
-    releaseNotes: (app.releaseNotes || []).join('\n'),
+    platforms: (asList(app.platforms).length ? asList(app.platforms) : ['web']).join(', '),
+    screenshots: asList(app.screenshots).join(', '),
+    features: asList(app.features).join('\n'),
+    releaseNotes: asList(app.releaseNotes).join('\n'),
     status: app.status || 'active',
     isFeatured: !!(app as any).isFeatured,
   });

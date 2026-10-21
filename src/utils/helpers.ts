@@ -74,3 +74,20 @@ export function formatBytes(bytes?: number | null): string {
   if (mb >= 1) return `${mb >= 100 ? mb.toFixed(0) : mb.toFixed(1)} MB`;
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
+
+/**
+ * Coerce ANY value to a string[] — the single guard for list columns.
+ * JSON arrays pass through; a legacy comma string is split; anything else
+ * becomes []. Components must never call `.join()`/`.map()` on a raw API
+ * list field (two production crashes came from exactly that).
+ */
+export function asList(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map(String);
+  const s = String(v ?? '').trim();
+  if (!s) return [];
+  try {
+    const parsed = JSON.parse(s);
+    if (Array.isArray(parsed)) return parsed.map(String);
+  } catch { /* not JSON — fall through */ }
+  return s.split(',').map((x) => x.trim()).filter(Boolean);
+}

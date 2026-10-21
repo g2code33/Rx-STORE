@@ -7,6 +7,7 @@ import { getSetting } from '../services/settings.ts';
 import { hashPassword, verifyPassword, verifyToken } from '../services/auth.ts';
 import { normalizeArchitecture, normalizeChannel, validatePackageIntegrity, CHANNELS } from '../services/releases.ts';
 import { notifyStableReleaseEmails } from '../services/email.ts';
+import { normalizeAppRow } from '../services/appRowNormalize.ts';
 import { runSecurityPipeline, publicationSecurityGate } from '../services/packageSecurity.ts';
 import { sha256R2Object } from '../services/streaming.ts';
 import { revokeAllSessions } from '../services/sessions.ts';
@@ -281,29 +282,9 @@ export async function adminListApps(env: any): Promise<any[]> {
        CASE status WHEN 'submitted' THEN 0 WHEN 'under_review' THEN 1 WHEN 'changes_requested' THEN 2 WHEN 'active' THEN 3 ELSE 4 END,
        COALESCE(updated_at, created_at) DESC`
   ).all().catch(() => ({ results: [] }));
-  return (rows?.results || []).map((a: any) => {
-    let platforms: any = [];
-    try { const p = JSON.parse(String(a.platforms || '[]')); platforms = Array.isArray(p) ? p : String(a.platforms || '').split(',').filter(Boolean); }
-    catch { platforms = String(a.platforms || '').split(',').map((x: string) => x.trim()).filter(Boolean); }
-    let tags: any = [];
-    try { const t = JSON.parse(String(a.tags || '[]')); tags = Array.isArray(t) ? t : []; } catch { tags = []; }
-    return {
-      ...a,
-      platforms,
-      tags,
-      downloadCount: a.download_count,
-      reviewCount: a.review_count,
-      priceAmount: a.price_amount,
-      price: a.price_type || 'free',
-      version: a.current_version || '1.0.0',
-      isFeatured: !!a.is_featured,
-      isNew: !!a.is_new,
-      isTrending: !!a.is_trending,
-      developerOrgId: a.developer_org_id,
-      longDescription: a.long_description,
-      createdAt: a.created_at,
-    };
-  });
+  // ONE normalizer for every JSON column — a partially-normalized row is what
+  // let `(a.screenshots || []).join` reach the editor and crash the page.
+  return (rows?.results || []).map((a: any) => normalizeAppRow(a));
 }
 
 export const adminRoutes = {

@@ -1027,6 +1027,15 @@ export const api = {
     audit() {
       return request<{ entries: any[] }>('/admin/github/audit');
     },
+    /** Every application + its GitHub connection state (Connect to GitHub tab). */
+    connections() {
+      return request<{ configured: boolean; totals: any; apps: any[] }>('/admin/github/connections');
+    },
+    connectionAction(appId: string, action: 'suspend' | 'reinstate' | 'disconnect', reason = '') {
+      return request<{ success: true; status: string }>(`/admin/github/connections/${encodeURIComponent(appId)}/${action}`, {
+        method: 'POST', body: JSON.stringify({ reason }),
+      });
+    },
   },
 };
 
