@@ -71,6 +71,11 @@ function fakeEnv(seed: { packages?: any[]; results?: any[]; reviews?: any[]; ove
             return db.package_security_overrides.filter((o: any) => o.package_id === a[0] && !o.invalidated_at)
               .sort((x: any, y: any) => (y.created_at || '').localeCompare(x.created_at || ''))[0] || null;
           }
+          if (s.includes('COUNT(*) AS n FROM package_security_results')) {
+            // Evidence presence check used by the publication gate.
+            const n = db.package_security_results.filter((r: any) => r.package_id === a[0]).length;
+            return { n } as any;
+          }
           if (s.includes('SELECT status FROM package_security_results WHERE package_id=? AND check_type=?')) {
             const rows = db.package_security_results.filter((r: any) => r.package_id === a[0] && r.check_type === a[1]);
             return rows.length ? { status: rows[rows.length - 1].status } : null;

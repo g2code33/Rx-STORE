@@ -126,6 +126,10 @@ function fakeD1() {
             return db.packages.find((p: any) => p.release_id === release_id && p.platform === platform && p.architecture === architecture) || null;
           }
           if (s.includes('SELECT p.id, p.application_id, p.platform, p.release_id')) return { all: async () => ({ results: [] }) } as any;
+          if (s.includes('COUNT(*) AS n FROM package_security_results')) {
+            const n = db.package_security_results.filter((r: any) => r.package_id === a[0]).length;
+            return { n } as any;
+          }
           if (s.includes('SELECT check_type, status, result, details FROM package_security_results')) {
             return { all: async () => ({ results: db.package_security_results.filter((r: any) => r.package_id === a[0]) }) } as any;
           }
@@ -618,8 +622,13 @@ test('gate: SCANNING / NEEDS_REVIEW / UNAVAILABLE results block publication', as
 });
 
 test('gate: clean + passed + SECURITY_REVIEW_COMPLETE → eligible', async () => {
+  // REAL evidence: the gate requires recorded per-check results before a
+  // 'PASSED' row may authorise publication (a badge alone is not proof).
   const env = gateEnv([pkg({ security_state: 'SECURITY_REVIEW_COMPLETE', overall_security: 'PASSED' })],
-    [{ package_id: 'pkg-1', check_type: 'malware', status: 'CLEAN', result: 'no detections' }]);
+    [
+      { package_id: 'pkg-1', check_type: 'integrity', status: 'PASSED', result: 'stored bytes match the recorded SHA-256' },
+      { package_id: 'pkg-1', check_type: 'malware', status: 'CLEAN', result: 'no detections' },
+    ]);
   const gate = await publicationSecurityGate(env as any, 'rel-1');
   assert.equal(gate.ok, true);
 });

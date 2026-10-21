@@ -306,7 +306,14 @@ export default function GithubReleasesPanel() {
                               <div className="flex flex-wrap items-center gap-2 mb-2">
                                 <p className="text-xs text-white/90 font-medium truncate">{p.filename}</p>
                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-rx-gray-medium">{p.platform}/{p.architecture}</span>
-                                <span className={`text-[10px] px-1.5 py-0.5 rounded ${p.overall_security === 'PASSED' ? 'bg-green-500/20 text-green-300' : p.overall_security === 'FAILED' ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300'}`}>{p.overall_security}</span>
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                                  (p.checks || []).length === 0 && p.overall_security === 'PASSED'
+                                    ? 'bg-white/10 text-rx-gray-medium'
+                                    : p.overall_security === 'PASSED' ? 'bg-green-500/20 text-green-300'
+                                    : p.overall_security === 'FAILED' ? 'bg-red-500/20 text-red-300'
+                                    : 'bg-amber-500/20 text-amber-300'}`}>
+                                  {(p.checks || []).length === 0 && p.overall_security === 'PASSED' ? 'NOT VERIFIED' : p.overall_security}
+                                </span>
                                 {p.signature_status && p.signature_status !== 'pending' && (
                                   <span className={`text-[10px] px-1.5 py-0.5 rounded ${p.signature_status === 'SIGNED' ? 'bg-green-500/20 text-green-300' : p.signature_status === 'UNSIGNED' ? 'bg-amber-500/20 text-amber-300' : 'bg-white/10 text-rx-gray-medium'}`} title="Signature status">signature: {p.signature_status}</span>
                                 )}

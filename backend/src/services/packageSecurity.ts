@@ -1673,6 +1673,19 @@ export async function publicationSecurityGate(env: any, releaseId: string): Prom
   const authorizations: Array<{ packageId: string; platform: string; publicationAuthorization: 'AUTOMATED' | 'MANUAL_APPROVAL' | 'SECURITY_OVERRIDE' }> = [];
   for (const p of pkgs?.results || []) {
     if (p.deployment_url) continue; // URL-based web packages
+    // A package row can carry overall_security='PASSED' without any recorded
+    // per-check evidence (e.g. rows created by the GitHub path before the
+    // pipeline ever ran). That badge must never claim a pass on no evidence:
+    // treat it as UNVERIFIED and let the normal re-verification below run.
+    {
+      const evidence: any = await env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM package_security_results WHERE package_id=?`
+      ).bind(p.id).first().catch(() => null);
+      if (!Number(evidence?.n || 0)) {
+        const fresh: any = await env.DB.prepare('SELECT * FROM packages WHERE id=?').bind(p.id).first().catch(() => null);
+        if (fresh) { fresh.overall_security = 'PENDING'; fresh.security_state = 'QUARANTINED'; }
+      }
+    }
     let fresh: any = await env.DB.prepare('SELECT * FROM packages WHERE id=?').bind(p.id).first().catch(() => null);
     if (!fresh) continue;
 

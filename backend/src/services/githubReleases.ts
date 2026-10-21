@@ -664,6 +664,26 @@ export async function detectRelease(
 // manual-review workflow. Nothing github-specific is weaker.
 // ---------------------------------------------------------------------------
 
+/**
+ * Releases stuck in 'verifying' (a Worker ran out of budget, or verification
+ * was interrupted) must not sit there forever with no way forward. Called by
+ * the admin queue: anything verifying for >10 minutes is marked
+ * 'verification_failed' with an actionable reason so Retry becomes available.
+ */
+export async function recoverStuckVerifications(env: any, releaseId?: string): Promise<number> {
+  await ensureGithubTables(env);
+  const res: any = releaseId
+    ? await env.DB.prepare(
+        `UPDATE github_releases SET status='verification_failed', block_reason=?
+          WHERE id=? AND status='verifying' AND detected_at < datetime('now','-10 minutes')`
+      ).bind('Verification did not finish (it was interrupted or timed out). Press Retry verification to run it again.', releaseId).run().catch(() => null)
+    : await env.DB.prepare(
+        `UPDATE github_releases SET status='verification_failed', block_reason=?
+          WHERE status='verifying' AND detected_at < datetime('now','-10 minutes')`
+      ).bind('Verification did not finish (it was interrupted or timed out). Press Retry verification to run it again.').run().catch(() => null);
+  return Number(res?.meta?.changes || 0);
+}
+
 export async function verifyGithubRelease(env: any, releaseId: string): Promise<{ ok: boolean; status: string; message?: string }> {
   await ensureGithubTables(env);
   const rel: any = await env.DB.prepare(`SELECT * FROM github_releases WHERE id=?`).bind(releaseId).first().catch(() => null);
@@ -1323,6 +1343,7 @@ export async function adminOverview(env: any): Promise<any> {
 
 export async function adminQueue(env: any, filters: { status?: string; appId?: string }): Promise<any[]> {
   await ensureGithubTables(env);
+  await recoverStuckVerifications(env).catch(() => {});
   const where: string[] = ['1=1'];
   const binds: any[] = [];
   if (filters.status) { where.push('g.status=?'); binds.push(filters.status); }
