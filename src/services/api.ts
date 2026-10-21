@@ -1031,6 +1031,18 @@ export const api = {
     connections() {
       return request<{ configured: boolean; totals: any; apps: any[] }>('/admin/github/connections');
     },
+    /** Remove a detected release record (published ones must be withdrawn first). */
+    removeRelease(releaseId: string, reason: string) {
+      return request<{ success: true }>(`/admin/github/releases/${encodeURIComponent(releaseId)}`, {
+        method: 'DELETE', body: JSON.stringify({ reason }),
+      });
+    },
+    /** Clear every superseded (archived) release record. */
+    removeSuperseded(appId?: string) {
+      return request<{ success: true; deleted: number }>('/admin/github/releases/delete-superseded', {
+        method: 'POST', body: JSON.stringify(appId ? { appId } : {}),
+      });
+    },
     /** Begin a GitHub authorization for an app, on the owner's behalf (admin). */
     connectStart(appId: string) {
       return request<{ url: string }>(`/admin/github/connections/${encodeURIComponent(appId)}/connect`, { method: 'POST', body: '{}' });

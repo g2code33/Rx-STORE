@@ -10,7 +10,7 @@
  * sync and the audit trail. No placeholder counts, no mock releases.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { Github, RefreshCw, CheckCircle2, XCircle, ShieldAlert, Clock, Link2, Unlink, History, ChevronDown, ExternalLink, Loader2 } from 'lucide-react';
+import { Github, RefreshCw, CheckCircle2, XCircle, ShieldAlert, Clock, Link2, Unlink, History, ChevronDown, ExternalLink, Loader2, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '../../services/api';
 
@@ -122,6 +122,32 @@ export default function GithubReleasesPanel() {
     finally { setBusyId(null); }
   };
 
+  const doDelete = async (rel: any) => {
+    const reason = window.prompt(
+      `Delete this release record (${rel.app_name || ''} v${rel.version})?\n\nThis removes it from RX Store history — the GitHub release itself is untouched. Published releases must be withdrawn first.\n\nReason (required, 10+ chars):`,
+    );
+    if (reason == null) return;
+    if (reason.trim().length < 10) { toast.error('A deletion reason of at least 10 characters is required.'); return; }
+    setBusyId(rel.id);
+    try {
+      await api.githubAdmin.removeRelease(rel.id, reason.trim());
+      toast.success(`Removed ${rel.version} from the list.`);
+      load();
+    } catch (e: any) { toast.error(e?.message || 'Could not delete the release.', { duration: 8000 }); }
+    finally { setBusyId(null); }
+  };
+
+  const doDeleteSuperseded = async (appId?: string) => {
+    if (!confirm(`Delete every SUPERSEDED release record${appId ? ' for this app' : ''}?\n\nThey are already archived (a newer release replaced them) — this just clears the list. Published releases are never touched.`)) return;
+    setBusyId(appId || '__superseded__');
+    try {
+      const r = await api.githubAdmin.removeSuperseded(appId);
+      toast.success(r.deleted ? `Deleted ${r.deleted} superseded record(s).` : 'Nothing to delete.');
+      load();
+    } catch (e: any) { toast.error(e?.message || 'Could not clear the superseded records.'); }
+    finally { setBusyId(null); }
+  };
+
   const doWithdraw = async (rel: any) => {
     const reason = prompt(`Withdraw v${rel.version} from users? Update checks stop recommending it.\nReason (required):`);
     if (reason == null) return;
@@ -194,6 +220,13 @@ export default function GithubReleasesPanel() {
               </button>
             ))}
           </div>
+          {(releases.some((r) => r.status === 'superseded') || filter === 'superseded') && (
+            <button onClick={() => doDeleteSuperseded()} disabled={busyId === '__superseded__'}
+              className="text-xs px-3 py-1.5 rounded-lg border border-red-400/30 text-red-300 hover:bg-red-400/10 flex items-center gap-1.5 disabled:opacity-50">
+              {busyId === '__superseded__' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+              Delete all superseded
+            </button>
+          )}
           {releases.length === 0 && <div className="card p-8 text-center text-sm text-rx-gray-medium">No releases match this filter. {overview?.configured ? 'New GitHub releases appear here automatically.' : ''}</div>}
           <div className="space-y-3">
             {releases.map((rel) => (
@@ -339,6 +372,11 @@ export default function GithubReleasesPanel() {
                           <Unlink className="w-4 h-4" /> Withdraw from users
                         </button>
                       )}
+                      <button onClick={() => doDelete(rel)} disabled={busyId === rel.id}
+                        title={rel.status === 'published' ? 'Withdraw it first — a live release cannot be deleted' : 'Delete this record'}
+                        className="px-4 py-2 rounded-xl text-sm text-red-300 hover:bg-red-400/10 flex items-center gap-2 disabled:opacity-40">
+                        <Trash2 className="w-4 h-4" /> Delete
+                      </button>
                       <a href={`https://github.com/${rel.repository_full_name}/releases/tag/${encodeURIComponent(rel.tag_name)}`} target="_blank" rel="noreferrer"
                         className="px-4 py-2 rounded-xl text-sm text-rx-gray-medium hover:text-white bg-white/5 flex items-center gap-2">
                         <ExternalLink className="w-4 h-4" /> View on GitHub

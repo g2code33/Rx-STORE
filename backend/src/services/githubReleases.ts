@@ -1052,6 +1052,96 @@ export async function publishGithubRelease(env: any, actor: { userId: string; la
   }
 }
 
+/**
+ * DELETE a GitHub release record the admin no longer wants to see.
+ *
+ * Refuses to delete a PUBLISHED release — that is a live version: it must be
+ * WITHDRAWN first (which deactivates the canonical rows and restores the
+ * previous version), never silently removed from history.
+ *
+ * Canonical artifacts are only removed when the canonical release is NOT
+ * published (safer predicates) — the canonical `releases` CHECK has no
+ * 'withdrawn'... it does; we guard with status <> 'published' anyway.
+ * Assets are removed through their own table (the FK cascade is not assumed).
+ */
+export async function deleteGithubRelease(
+  env: any,
+  actor: { userId: string; label: string },
+  releaseId: string,
+  reason: string,
+): Promise<{ ok: boolean; code?: string; message?: string }> {
+  await ensureGithubTables(env);
+  const trimmed = String(reason || '').trim();
+  if (trimmed.length < 10) return { ok: false, code: 'VALIDATION_ERROR', message: 'A deletion reason of at least 10 characters is required (it is audited).' };
+  const rel: any = await env.DB.prepare(`SELECT * FROM github_releases WHERE id=?`).bind(releaseId).first().catch(() => null);
+  if (!rel) return { ok: false, code: 'NOT_FOUND', message: 'Release not found.' };
+  if (rel.status === 'published') {
+    return { ok: false, code: 'CONFLICT', message: 'This release is live. Withdraw it first (that restores the previous version), then delete the record if you still want to.' };
+  }
+
+  // Canonical rows created at detection are unpublished/unused here.
+  try {
+    const canonical: any = await env.DB.prepare(
+      `SELECT id FROM releases WHERE application_id=? AND version=? AND status <> 'published'`
+    ).bind(rel.application_id, rel.version).first().catch(() => null);
+    if (canonical?.id) {
+      await env.DB.prepare(`DELETE FROM packages WHERE release_id=?`).bind(canonical.id).run().catch(() => {});
+      await env.DB.prepare(`DELETE FROM releases WHERE id=?`).bind(canonical.id).run().catch(() => {});
+    }
+  } catch { /* best-effort; the github row is the source of truth here */ }
+
+  await env.DB.prepare(`DELETE FROM github_release_assets WHERE release_id=?`).bind(releaseId).run().catch(() => {});
+  await env.DB.prepare(`DELETE FROM github_releases WHERE id=?`).bind(releaseId).run();
+
+  await audit(env, {
+    action: 'delete', actorId: actor.userId, actorLabel: actor.label,
+    appId: rel.application_id, releaseId, repositoryId: rel.connection_id,
+    reason: trimmed, details: { version: rel.version, tag: rel.tag_name, status: rel.status },
+  });
+  return { ok: true };
+}
+
+/**
+ * DELETE every SUPERSEDED release (archived because a newer one replaced them).
+ * Refuses to touch anything published or awaiting a decision.
+ */
+export async function deleteSupersededReleases(
+  env: any,
+  actor: { userId: string; label: string },
+  appId?: string,
+): Promise<{ ok: boolean; deleted?: number; code?: string; message?: string }> {
+  await ensureGithubTables(env);
+  const rows: any = appId
+    ? await env.DB.prepare(
+        `SELECT * FROM github_releases WHERE application_id=? AND status='withdrawn' AND block_reason LIKE ?`
+      ).bind(appId, `${SUPERSEDED_PREFIX}%`).all().catch(() => ({ results: [] }))
+    : await env.DB.prepare(
+        `SELECT * FROM github_releases WHERE status='withdrawn' AND block_reason LIKE ?`
+      ).bind(`${SUPERSEDED_PREFIX}%`).all().catch(() => ({ results: [] }));
+
+  let deleted = 0;
+  for (const rel of rows?.results || []) {
+    try {
+      const canonical: any = await env.DB.prepare(
+        `SELECT id FROM releases WHERE application_id=? AND version=? AND status <> 'published'`
+      ).bind(rel.application_id, rel.version).first().catch(() => null);
+      if (canonical?.id) {
+        await env.DB.prepare(`DELETE FROM packages WHERE release_id=?`).bind(canonical.id).run().catch(() => {});
+        await env.DB.prepare(`DELETE FROM releases WHERE id=?`).bind(canonical.id).run().catch(() => {});
+      }
+      await env.DB.prepare(`DELETE FROM github_release_assets WHERE release_id=?`).bind(rel.id).run().catch(() => {});
+      await env.DB.prepare(`DELETE FROM github_releases WHERE id=?`).bind(rel.id).run();
+      deleted++;
+    } catch { /* keep going; one bad row must not abort the batch */ }
+  }
+  await audit(env, {
+    action: 'delete_superseded', actorId: actor.userId, actorLabel: actor.label,
+    appId: appId || undefined, reason: `Removed ${deleted} superseded release record(s)`,
+    details: { deleted, scope: appId || 'all applications' },
+  });
+  return { ok: true, deleted };
+}
+
 export async function rejectGithubRelease(env: any, actor: { userId: string; label: string }, releaseId: string, reason: string): Promise<{ ok: boolean; code?: string; message?: string }> {
   await ensureGithubTables(env);
   const trimmed = String(reason || '').trim();

@@ -24,6 +24,7 @@ import {
   rejectGithubRelease, withdrawGithubRelease, syncAllConnections,
   adminOverview, adminQueue, adminAudit, verifyPendingDetections, ensureGithubTables,
   adminConnectionsOverview, adminSetConnectionStatus, appIsFree,
+  deleteGithubRelease, deleteSupersededReleases,
 } from '../services/githubReleases.ts';
 import { issueOneTimeToken, consumeOneTimeToken, restoreOneTimeToken } from '../services/oauth.ts';
 
@@ -575,6 +576,30 @@ export const githubAdminRoutes = {
     const out = await withdrawGithubRelease(env, admin, id, String(body?.reason || ''));
     if (!out.ok) return { code: out.code, message: out.message };
     return { success: true };
+  },
+
+  /** DELETE /admin/github/releases/:id — remove a record (published ones must be withdrawn first). */
+  async remove(request: Request, env: any) {
+    const admin = requireAdmin(request);
+    if ('error' in admin) return { code: 'UNAUTHORIZED', message: admin.error };
+    const id = new URL(request.url).pathname.split('/')[4] || '';
+    let body: any = {};
+    try { body = await request.json(); } catch {}
+    const out = await deleteGithubRelease(env, admin, id, String(body?.reason || ''));
+    if (!out.ok) return { code: out.code, message: out.message };
+    return { success: true };
+  },
+
+  /** POST /admin/github/releases/delete-superseded {appId?} — clear archived records. */
+  async removeSuperseded(request: Request, env: any) {
+    const admin = requireAdmin(request);
+    if ('error' in admin) return { code: 'UNAUTHORIZED', message: admin.error };
+    let body: any = {};
+    try { body = await request.json(); } catch {}
+    const appId = body?.appId ? String(body.appId) : undefined;
+    const out = await deleteSupersededReleases(env, admin, appId);
+    if (!out.ok) return { code: out.code, message: out.message };
+    return { success: true, deleted: out.deleted || 0 };
   },
 
   /** POST /admin/github/releases/:id/retry — re-run verification (never publishes). */

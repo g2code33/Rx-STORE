@@ -380,6 +380,20 @@ function fakeEnv() {
             return { meta: { changes: 0 } };
           }
           if (s.includes('CREATE TABLE') || s.includes('CREATE INDEX') || s.includes('CREATE UNIQUE INDEX')) return { meta: { changes: 0 } };
+          if (s.includes('DELETE FROM github_releases WHERE id=?')) {
+            const idx = T('github_releases').findIndex((x) => x.id === a[0]);
+            if (idx >= 0) T('github_releases').splice(idx, 1);
+            return { meta: { changes: idx >= 0 ? 1 : 0 } };
+          }
+          if (s.includes('DELETE FROM releases WHERE id=?')) {
+            const idx = T('releases').findIndex((x) => x.id === a[0]);
+            if (idx >= 0) T('releases').splice(idx, 1);
+            return { meta: { changes: idx >= 0 ? 1 : 0 } };
+          }
+          if (s.includes('DELETE FROM packages WHERE release_id=?')) {
+            for (let i = T('packages').length - 1; i >= 0; i--) if (T('packages')[i].release_id === a[0]) T('packages').splice(i, 1);
+            return { meta: { changes: 1 } };
+          }
           if (s.includes('DELETE FROM github_release_assets')) {
             const r = T('github_release_assets'); for (let i = r.length - 1; i >= 0; i--) if (r[i].release_id === a[0]) r.splice(i, 1);
             return { meta: { changes: 1 } };
@@ -445,6 +459,12 @@ function fakeEnv() {
           if (s.includes('FROM github_releases WHERE github_release_id')) return T('github_releases').find((r) => r.github_release_id === a[0]) || null;
           if (s.includes('FROM github_releases WHERE application_id=? AND version') || s.includes('FROM github_releases WHERE application_id = ? AND version')) return T('github_releases').find((r) => r.application_id === a[0] && r.version === a[1]) || null;
           if (s.includes('FROM github_releases WHERE id')) return T('github_releases').find((r) => r.id === a[0]) || null;
+          if (s.includes("status='withdrawn' AND block_reason LIKE") && s.includes('application_id=?')) {
+            return null; // batch path uses all()
+          }
+          if (s.includes("SELECT id FROM releases WHERE application_id=? AND version=?") && s.includes("status <> 'published'")) {
+            return T('releases').find((r) => r.application_id === a[0] && r.version === a[1] && r.status !== 'published') || null;
+          }
           if (s.includes('FROM github_release_assets WHERE release_id')) return null;
           if (s.includes('FROM applications WHERE id')) return T('applications').find((x) => x.id === a[0]) || null;
           if (s.includes('SELECT id FROM releases WHERE application_id') && s.includes("status='published'")) return T('releases').find((r) => r.application_id === a[0] && r.version === a[1] && r.status === 'published') || null;
@@ -487,6 +507,13 @@ function fakeEnv() {
           }
           if (s.includes('SELECT id, version FROM github_releases') && s.includes('id<>?')) {
             return { results: T('github_releases').filter((r) => r.application_id === a[0] && r.id !== a[1] && ['detected', 'verifying', 'pending_approval', 'verification_failed', 'blocked'].includes(r.status)) };
+          }
+          if (s.includes("status='withdrawn' AND block_reason LIKE")) {
+            const prefix = String(a[a.length - 1] || '').replace('%', '');
+            const byApp = s.includes('application_id=?') ? String(a[0]) : null;
+            return { results: T('github_releases').filter((r) => r.status === 'withdrawn'
+              && String(r.block_reason || '').startsWith(prefix)
+              && (!byApp || r.application_id === byApp)) };
           }
           if (s.includes('FROM github_releases WHERE status IN')) return { results: T('github_releases').filter((r) => ['detected', 'verifying'].includes(r.status)) };
           if (s.includes('SELECT COUNT(*)')) {
@@ -2552,4 +2579,73 @@ test('SECURITY NOTIFICATIONS: verification success and failure both raise an adm
     assert.ok(events.some((e: any) => /verification failed/i.test(e.title)), JSON.stringify(events.map((e: any) => e.title)));
     assert.ok(events.some((e: any) => e.type === 'error'));
   } finally { stubs2.restore(); }
+});
+
+// ---------------------------------------------------------------------------
+// DELETE — the admin must be able to clear records, but a LIVE release is
+// never silently removed (withdraw first).
+// ---------------------------------------------------------------------------
+
+test('DELETE: a detected/superseded record is removed, with its assets; published is refused', async () => {
+  const { deleteGithubRelease, deleteSupersededReleases } = await import('./services/githubReleases.ts');
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-del-1');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    assert.ok(env.tables.github_release_assets.some((a: any) => a.release_id === rel.id));
+
+    // Reason is mandatory (audited).
+    const noReason = await deleteGithubRelease(env, ADMIN, rel.id, 'short');
+    assert.equal(noReason.ok, false);
+    assert.equal((noReason as any).code, 'VALIDATION_ERROR');
+
+    const ok = await deleteGithubRelease(env, ADMIN, rel.id, 'Clearing a test release that was never approved.');
+    assert.ok(ok.ok, (ok as any).message);
+    assert.equal(env.tables.github_releases.some((r: any) => r.id === rel.id), false, 'the record is gone');
+    assert.equal(env.tables.github_release_assets.some((a: any) => a.release_id === rel.id), false, 'its assets are gone');
+    assert.ok(env.tables.github_audit_log.some((e: any) => e.action === 'delete'));
+  } finally { stubs.restore(); }
+
+  // A PUBLISHED release cannot be deleted.
+  env = fakeEnv();
+  env.GITHUB_APP_PRIVATE_KEY = TEST_PEM;
+  await ensureGithubTables(env);
+  const stubs2 = installStubs(env);
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-del-2');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    await verifyGithubRelease(env, rel.id);
+    const published = await publishGithubRelease(env, ADMIN, rel.id, {});
+    assert.ok(published.ok, (published as any).message);
+    const out = await deleteGithubRelease(env, ADMIN, rel.id, 'Trying to delete a live release by mistake.');
+    assert.equal(out.ok, false);
+    assert.equal((out as any).code, 'CONFLICT');
+    assert.match(String((out as any).message), /Withdraw it first/i);
+    assert.ok(env.tables.github_releases.some((r: any) => r.id === rel.id), 'the live record is untouched');
+  } finally { stubs2.restore(); }
+});
+
+test('DELETE ALL SUPERSEDED: clears archived rows only, never queued or published ones', async () => {
+  const { deleteSupersededReleases, SUPERSEDED_PREFIX } = await import('./services/githubReleases.ts');
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-bulk-1');
+    const live = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    // Older releases archived by the latest-only rule:
+    for (const v of ['1.0.60', '1.0.61']) {
+      env.tables.github_releases.push({
+        id: `ghr_${v}`, application_id: APP_ID, connection_id: live.connection_id,
+        github_release_id: `id_${v}`, tag_name: `v${v}`, version: v,
+        status: 'withdrawn', block_reason: `${SUPERSEDED_PREFIX} 1.12.0.`, detected_at: '2026-10-21',
+      });
+    }
+    const out = await deleteSupersededReleases(env, ADMIN);
+    assert.equal(out.deleted, 2);
+    assert.equal(env.tables.github_releases.some((r: any) => r.id === live.id), true, 'the live/queued release is untouched');
+    assert.equal(env.tables.github_releases.filter((r: any) => r.status === 'withdrawn').length, 0);
+    assert.ok(env.tables.github_audit_log.some((e: any) => e.action === 'delete_superseded'));
+  } finally { stubs.restore(); }
 });
