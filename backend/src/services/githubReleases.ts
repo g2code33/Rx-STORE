@@ -30,7 +30,7 @@
 import {
   githubAppConfig, githubConfigured, installationRepos, verifyWebhookSignature,
   mapAssetFilename, parseRxManifest, versionFromTag, validateAssetUrl,
-  streamAssetHash, ghApi,
+  streamAssetHash, ghApi, ignoredAssetReason, assetPreference,
 } from './github.ts';
 import {
   runSecurityPipeline, publicationSecurityGate, latestCheckStatus,
@@ -84,8 +84,13 @@ export async function ensureGithubTables(env: any): Promise<void> {
     release_notes TEXT, github_published_at TEXT, status TEXT NOT NULL DEFAULT 'detected',
     block_reason TEXT, detected_at TEXT DEFAULT (datetime('now')), verified_at TEXT,
     reviewed_by TEXT, reviewed_at TEXT, decision_reason TEXT, published_by TEXT, published_at TEXT,
-    prior_version TEXT, UNIQUE(application_id, version)
+    prior_version TEXT,
+    ignored_assets TEXT,
+    UNIQUE(application_id, version)
   )`).run().catch(() => {});
+  // Migration 0026 adds this to EXISTING databases; the no-op ALTER keeps a
+  // fresh/lazy-created table in sync without requiring the migration first.
+  await env.DB.prepare('ALTER TABLE github_releases ADD COLUMN ignored_assets TEXT').run().catch(() => {});
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS github_release_assets (
     id TEXT PRIMARY KEY, release_id TEXT NOT NULL, github_asset_id TEXT NOT NULL,
     name TEXT NOT NULL, platform TEXT NOT NULL, architecture TEXT NOT NULL,
@@ -404,23 +409,49 @@ export async function detectRelease(env: any, conn: any, ghRelease: any, action:
   // recorded with state 'unmapped' so the admin sees WHY a release is blocked).
   const assets: any[] = Array.isArray(ghRelease.assets) ? ghRelease.assets : [];
   const manifest = parseRxManifest(notes);
-  const mapped: Array<{ asset: any; platform: string; architecture: string }> = [];
+  const candidates: Array<{ asset: any; platform: string; architecture: string; score: number }> = [];
+  const ignored: Array<{ name: string; reason: string }> = [];
+  const unmapped: Array<{ name: string }> = [];
   for (const a of assets) {
     const name = String(a?.name || '');
     const urlCheck = validateAssetUrl(a?.browser_download_url);
-    const mapping = (manifest && manifest[name]) || mapAssetFilename(name);
-    if (!mapping) continue; // unmapped assets are simply not candidates (listed via release notes/assets link)
-    if (!urlCheck.ok) continue;
-    mapped.push({ asset: a, platform: mapping.platform, architecture: mapping.architecture });
+    const manifestEntry = manifest && manifest[name];
+    if (!urlCheck.ok) { ignored.push({ name, reason: 'download URL is not an allowed GitHub asset URL' }); continue; }
+    // Build noise FIRST: it must be reported as "deliberately skipped" (with
+    // the reason) rather than as an unknown file. A manifest entry always
+    // wins over the filter — the publisher explicitly chose that asset.
+    const noise = manifestEntry ? null : ignoredAssetReason(name);
+    if (noise) { ignored.push({ name, reason: noise }); continue; }
+    const mapping = manifestEntry || mapAssetFilename(name);
+    if (!mapping) { unmapped.push({ name }); continue; } // unknown artefact — never guessed
+    candidates.push({ asset: a, platform: mapping.platform, architecture: mapping.architecture, score: assetPreference(name) });
   }
-  // Duplicate (platform, architecture) from multiple assets = ambiguous -> blocked.
-  const seen = new Set<string>();
-  let duplicate = false;
-  for (const m of mapped) {
-    const key = `${m.platform}/${m.architecture}`;
-    if (seen.has(key)) duplicate = true;
-    seen.add(key);
+
+  // Prefer ONE candidate per (platform, architecture). A real installer beats
+  // a helper; if two candidates are equally good the mapping is genuinely
+  // ambiguous and the release is blocked — naming the files.
+  const bySlot = new Map<string, typeof candidates>();
+  for (const c of candidates) {
+    const key = `${c.platform}/${c.architecture}`;
+    const list = bySlot.get(key) || [];
+    list.push(c);
+    bySlot.set(key, list);
   }
+  const mapped: Array<{ asset: any; platform: string; architecture: string }> = [];
+  const ambiguous: string[] = [];
+  for (const [slot, list] of bySlot) {
+    list.sort((a, b) => b.score - a.score || String(a.asset.name).localeCompare(String(b.asset.name)));
+    const best = list[0];
+    mapped.push({ asset: best.asset, platform: best.platform, architecture: best.architecture });
+    for (const loser of list.slice(1)) {
+      if (loser.score === best.score) {
+        ambiguous.push(`${slot}: "${best.asset.name}" vs "${loser.asset.name}"`);
+      } else {
+        ignored.push({ name: String(loser.asset.name), reason: `superseded by "${best.asset.name}" for ${slot}` });
+      }
+    }
+  }
+  const duplicate = ambiguous.length > 0;
 
   await env.DB.prepare(`DELETE FROM github_release_assets WHERE release_id=?`).bind(id).run().catch(() => {});
   for (const m of mapped) {
@@ -453,7 +484,8 @@ export async function detectRelease(env: any, conn: any, ghRelease: any, action:
     return { status: 'blocked_no_assets', releaseId: id, latestVersion: version };
   }
   if (duplicate) {
-    await env.DB.prepare(`UPDATE github_releases SET status='blocked', block_reason='Multiple assets map to the same platform/architecture — the mapping is ambiguous. Use the rx-store manifest in the release notes or distinct filenames.' WHERE id=?`).bind(id).run();
+    await env.DB.prepare(`UPDATE github_releases SET status='blocked', block_reason=? WHERE id=?`)
+      .bind(`Ambiguous asset mapping — two equally-plausible installers target the same slot: ${ambiguous.slice(0, 3).join('; ')}. Remove one, or disambiguate with an rx-store manifest in the release notes.`, id).run();
     return { status: 'blocked_ambiguous', releaseId: id, latestVersion: version };
   }
 
@@ -489,6 +521,20 @@ export async function detectRelease(env: any, conn: any, ghRelease: any, action:
       return { status: 'blocked_duplicate_version', releaseId: id, latestVersion: version };
     }
     throw e;
+  }
+
+  // Record what was deliberately skipped so the admin can see the full picture
+  // (nothing is ever silently dropped). Best-effort: the column arrives with
+  // migration 0026 and detection must not fail if it is not applied yet.
+  {
+    const notes = JSON.stringify({ ignored: ignored.slice(0, 20), unmapped: unmapped.slice(0, 20) });
+    await env.DB.prepare(`UPDATE github_releases SET ignored_assets=? WHERE id=?`).bind(notes, id).run().catch(() => {});
+  }
+
+  // A blocked release whose assets now map cleanly RECOVERS on re-detection
+  // (admin "Sync repositories now", or a webhook redelivery after the fix).
+  if (existing && existing.status === 'blocked') {
+    await env.DB.prepare(`UPDATE github_releases SET status='detected', block_reason=NULL WHERE id=? AND status='blocked'`).bind(id).run().catch(() => {});
   }
 
   // A previous release row for the same (app, version) that was rejected stays
@@ -979,7 +1025,13 @@ export async function adminQueue(env: any, filters: { status?: string; appId?: s
         ).bind(p.id).first().catch(() => null);
       }
     }
-    out.push({ ...r, assets: assets?.results || [], canonicalReleaseId: canonical?.id || null, canonicalStatus: canonical?.canonical_status || null, packages });
+    let ignored: any = null;
+    try { ignored = r.ignored_assets ? JSON.parse(r.ignored_assets) : null; } catch { ignored = null; }
+    out.push({
+      ...r, assets: assets?.results || [],
+      ignoredAssets: ignored?.ignored || [], unmappedAssets: ignored?.unmapped || [],
+      canonicalReleaseId: canonical?.id || null, canonicalStatus: canonical?.canonical_status || null, packages,
+    });
   }
   return out;
 }

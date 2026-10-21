@@ -408,13 +408,72 @@ export interface AssetMapping {
  *      known installer extension) is NOT mapped — ambiguous means unmapped,
  *      never guessed.
  */
+/**
+ * Build artefacts that are NEVER publishable packages, even when their
+ * extension looks like an installer. `elevate.exe` is electron-builder's NSIS
+ * UAC helper — shipping it as the Windows app would be wrong, and treating it
+ * as a second candidate made every electron-builder release "ambiguous".
+ */
+const IGNORED_ASSET_PATTERNS: Array<{ re: RegExp; reason: string }> = [
+  { re: /^elevate\.exe$/i, reason: 'NSIS UAC helper emitted by electron-builder (not an installer)' },
+  { re: /^.*\.blockmap$/i, reason: 'updater block map (differential download metadata)' },
+  { re: /^latest(-[a-z0-9-]+)?\.yml$/i, reason: 'auto-updater feed manifest' },
+  { re: /^builder-(debug|effective-config)\.(yml|json)$/i, reason: 'electron-builder debug output' },
+  { re: /^\.?icon-set$/i, reason: 'electron-builder icon cache' },
+  { re: /^.*\.nupkg$/i, reason: 'Squirrel/Windows package feed' },
+  { re: /^RELEASES$/i, reason: 'Squirrel feed index' },
+  { re: /^.*\.(sha256|sha512|sha1|md5)$/i, reason: 'checksum sidecar' },
+  { re: /^.*\.(sig|asc|pem|pub)$/i, reason: 'signature sidecar' },
+  { re: /^.*\.dmg$/i, reason: 'macOS disk image (macOS channel not enabled yet)' },
+  { re: /^.*\.(tar\.gz|tgz|zip|7z)$/i, reason: 'source/portable archive — not a store installer' },
+  { re: /^.*-debug\.apk$/i, reason: 'debug build — release builds only are distributed' },
+  { re: /^.*(symbols|sources)\.(zip|tar\.gz)$/i, reason: 'debug symbols' },
+];
+
+/** Why an asset is deliberately skipped, or null when it is a candidate. */
+export function ignoredAssetReason(name: string): string | null {
+  const n = String(name || '').trim();
+  if (!n) return 'unnamed asset';
+  for (const rule of IGNORED_ASSET_PATTERNS) if (rule.re.test(n)) return rule.reason;
+  return null;
+}
+
+/**
+ * How good a candidate is for its platform slot (higher wins). Used ONLY to
+ * break ties between assets that already mapped to the SAME platform+arch —
+ * e.g. a real "Setup.exe" beats a stray "helper.exe". Two candidates with the
+ * same score are genuinely ambiguous and the release is blocked.
+ */
+export function assetPreference(name: string): number {
+  const n = String(name || '').toLowerCase();
+  let score = 0;
+  // Real installer wording.
+  if (/(^|[^a-z])(setup|installer|install)([^a-z]|$)/.test(n)) score += 40;
+  if (n.endsWith('.msi')) score += 30;              // MSI is unambiguous
+  if (/universal/.test(n)) score += 12;             // universal builds preferred
+  if (/release/.test(n)) score += 10;               // release builds over others
+  if (/(x64|amd64|x86_64|aarch64|arm64|armhf)/.test(n)) score += 5;
+  // Penalise things that look like helpers/portables.
+  if (/(portable|unpacked|helper|updater|update|crash|report)/.test(n)) score -= 25;
+  if (n.endsWith('.exe') && !/(setup|installer|install)/.test(n)) score -= 10;
+  return score;
+}
+
 export function mapAssetFilename(name: string): AssetMapping | null {
   const n = String(name || '').toLowerCase();
   const arm64 = /(arm64|aarch64)/.test(n);
   const x64 = !arm64 && /(amd64|x86_64|\bx64\b)/.test(n);
   const arm = !arm64 && !x64 && /(armhf|\barm\b)/.test(n);
 
-  if (n.endsWith('.apk')) return { platform: 'android', architecture: 'universal' };
+  if (n.endsWith('.apk')) {
+    // Per-ABI APKs (app-arm64-v8a-release.apk) must keep their architecture;
+    // a generic app-release.apk stays universal.
+    if (/arm64-v8a|arm64|aarch64/.test(n)) return { platform: 'android', architecture: 'arm64' };
+    if (/armeabi-v7a|armeabi|armhf/.test(n)) return { platform: 'android', architecture: 'arm' };
+    if (/x86_64/.test(n)) return { platform: 'android', architecture: 'x64' };
+    if (/x86(?!_64)/.test(n)) return { platform: 'android', architecture: 'x86' };
+    return { platform: 'android', architecture: 'universal' };
+  }
   if (n.endsWith('.exe') || n.endsWith('.msi')) return { platform: 'windows', architecture: arm64 ? 'arm64' : 'x64' };
   if (n.endsWith('.deb')) {
     if (arm64) return { platform: 'linux_deb', architecture: 'arm64' };

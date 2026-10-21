@@ -295,6 +295,28 @@ export default function GithubReleasesPanel() {
                       </div>
                     )}
 
+                    {((rel.ignoredAssets || []).length > 0 || (rel.unmappedAssets || []).length > 0) && (
+                      <details className="rounded-xl border border-white/5 bg-rx-dark/60">
+                        <summary className="cursor-pointer px-3 py-2 text-xs text-rx-gray-medium hover:text-white select-none">
+                          Skipped assets — {((rel.ignoredAssets || []).length + (rel.unmappedAssets || []).length)} not published
+                        </summary>
+                        <div className="px-3 pb-3 space-y-1.5">
+                          {(rel.ignoredAssets || []).map((a: any) => (
+                            <div key={`ig-${a.name}`} className="text-[11px] flex flex-wrap gap-x-2">
+                              <span className="text-white/70 font-mono">{a.name}</span>
+                              <span className="text-rx-gray-medium">— {a.reason}</span>
+                            </div>
+                          ))}
+                          {(rel.unmappedAssets || []).map((a: any) => (
+                            <div key={`um-${a.name}`} className="text-[11px] flex flex-wrap gap-x-2">
+                              <span className="text-white/70 font-mono">{a.name}</span>
+                              <span className="text-rx-gray-medium">— not a recognised installer type (no platform/architecture mapping)</span>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+
                     <div className="flex flex-wrap gap-2 border-t border-white/5 pt-4">
                       {rel.status === 'pending_approval' && (
                         <>

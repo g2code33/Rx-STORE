@@ -226,6 +226,17 @@ function fakeEnv() {
             const r = T('github_releases').find((x) => x.id === a[0]); if (r) { r.status = 'verifying'; r.block_reason = null; }
             return { meta: { changes: r ? 1 : 0 } };
           }
+          if (s.includes('UPDATE github_releases SET ignored_assets=?')) {
+            const r = T('github_releases').find((x) => x.id === a[1]);
+            if (r) r.ignored_assets = a[0];
+            return { meta: { changes: r ? 1 : 0 } };
+          }
+          if (s.includes('ALTER TABLE github_releases ADD COLUMN ignored_assets')) return { meta: { changes: 0 } };
+          if (s.includes("UPDATE github_releases SET status='detected', block_reason=NULL")) {
+            const r = T('github_releases').find((x) => x.id === a[0]);
+            if (r && r.status === 'blocked') { r.status = 'detected'; r.block_reason = null; }
+            return { meta: { changes: r ? 1 : 0 } };
+          }
           if (s.includes("UPDATE github_releases SET status='blocked'")) {
             // Two shapes: (reason, id) and (id) with the reason inline in SQL.
             const r = T('github_releases').find((x) => x.id === a[a.length - 1]);
@@ -1839,4 +1850,104 @@ test('BIND RESILIENCE: connecting succeeds from the OAuth-verified repository wh
     assert.ok(conn, 'connected via the OAuth-verified repository');
     assert.equal(conn.repository_full_name, 'octo/app');
   } finally { stubs.restore(); }
+});
+
+// ---------------------------------------------------------------------------
+// REAL electron-builder layout (production bug): elevate.exe is the NSIS UAC
+// helper, and treating every .exe as an installer made the whole release
+// "ambiguous" — blocking a perfectly good APK + .deb.
+// ---------------------------------------------------------------------------
+
+test('MAPPING: an electron-builder release publishes Setup.exe and ignores elevate.exe + feed files', async () => {
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    const payload = ghReleasePayload();
+    payload.release.assets = [
+      { id: 1, name: 'app-release.apk', size: 10, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/app-release.apk' },
+      { id: 2, name: 'yayra_1.0.75_amd64.deb', size: 10, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/yayra_1.0.75_amd64.deb' },
+      { id: 3, name: 'Yayra Setup 1.0.75.exe', size: 10, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/YayraSetup.exe' },
+      { id: 4, name: 'elevate.exe', size: 10, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/elevate.exe' },
+      { id: 5, name: 'latest.yml', size: 1, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/latest.yml' },
+      { id: 6, name: 'Yayra Setup 1.0.75.exe.blockmap', size: 1, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/x.blockmap' },
+      { id: 7, name: 'sha256sums.txt', size: 1, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/sha256sums.txt' },
+    ];
+    const out = await signedDelivery(env, 'release', payload, 'd-electron');
+    assert.equal(out.body.data.status, 'detected', JSON.stringify(out.body));
+
+    const rel = env.tables.github_releases.find((r) => r.github_release_id === '5001');
+    assert.equal(rel.status, 'detected', 'a helper .exe must not block the release');
+    const assets = env.tables.github_release_assets.filter((a: any) => a.release_id === rel.id);
+    const slots = assets.map((a: any) => `${a.platform}/${a.architecture}`).sort();
+    assert.deepEqual(slots, ['android/universal', 'linux_deb/x64', 'windows/x64']);
+    assert.equal(assets.find((a: any) => a.platform === 'windows').name, 'Yayra Setup 1.0.75.exe', 'the real installer wins the slot');
+
+    // Transparency: everything skipped is recorded with its reason.
+    const ignored = JSON.parse(rel.ignored_assets || '{}');
+    const ignoredNames = (ignored.ignored || []).map((i: any) => i.name);
+    assert.ok(ignoredNames.includes('elevate.exe'), 'elevate.exe is recorded as skipped');
+    assert.ok(ignoredNames.includes('latest.yml'));
+    assert.ok((ignored.unmapped || []).some((u: any) => u.name === 'sha256sums.txt'));
+  } finally { stubs.restore(); }
+});
+
+test('MAPPING: per-ABI APKs keep their architecture (no longer all "universal")', async () => {
+  const { mapAssetFilename, ignoredAssetReason, assetPreference } = await import('./services/github.ts');
+  assert.deepEqual(mapAssetFilename('app-arm64-v8a-release.apk'), { platform: 'android', architecture: 'arm64' });
+  assert.deepEqual(mapAssetFilename('app-armeabi-v7a-release.apk'), { platform: 'android', architecture: 'arm' });
+  assert.deepEqual(mapAssetFilename('app-x86_64-release.apk'), { platform: 'android', architecture: 'x64' });
+  assert.deepEqual(mapAssetFilename('app-release.apk'), { platform: 'android', architecture: 'universal' });
+
+  assert.ok(ignoredAssetReason('elevate.exe'));
+  assert.ok(ignoredAssetReason('latest-linux.yml'));
+  assert.ok(ignoredAssetReason('app-debug.apk'));
+  assert.equal(ignoredAssetReason('Yayra Setup 1.0.75.exe'), null, 'a real installer is never ignored');
+  assert.ok(assetPreference('Yayra Setup 1.0.75.exe') > assetPreference('helper.exe'));
+  assert.ok(assetPreference('app.msi') > assetPreference('portable.exe'));
+});
+
+test('MAPPING: two equally-good installers in one slot still BLOCK, and name both files', async () => {
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    const payload = ghReleasePayload();
+    payload.release.assets = [
+      { id: 1, name: 'yayra-setup-x64.exe', size: 10, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/a.exe' },
+      { id: 2, name: 'yayra-setup-x64-alt.exe', size: 10, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/b.exe' },
+    ];
+    const out = await signedDelivery(env, 'release', payload, 'd-ambig');
+    assert.equal(out.body.data.status, 'blocked_ambiguous');
+    const rel = env.tables.github_releases.find((r) => r.github_release_id === '5001');
+    assert.match(String(rel.block_reason), /yayra-setup-x64\.exe/, 'the blocker names the conflicting files');
+    assert.match(String(rel.block_reason), /alt/);
+  } finally { stubs.restore(); }
+});
+
+test('MAPPING: a blocked release RECOVERS on re-detection once the mapping is clean', async () => {
+  const stubs = installStubs(env);
+  const original = globalThis.fetch;
+  try {
+    await connect();
+    // First delivery: ambiguous -> blocked.
+    const bad = ghReleasePayload();
+    bad.release.assets = [
+      { id: 1, name: 'setup-x64.exe', size: 10, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/a.exe' },
+      { id: 2, name: 'setup-x64-copy.exe', size: 10, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/b.exe' },
+    ];
+    await signedDelivery(env, 'release', bad, 'd-recover-1');
+    const rel = env.tables.github_releases.find((r) => r.github_release_id === '5001');
+    assert.equal(rel.status, 'blocked');
+
+    // Admin sync afterwards: the ambiguity is gone -> detected again.
+    (globalThis.fetch as any) = (async (url: any, init?: any) => {
+      const u = String(url);
+      if (u.startsWith('https://api.github.com/repos/octo/app/releases?per_page=10')) {
+        return new Response(JSON.stringify([ghReleasePayload().release]), { status: 200 });
+      }
+      return (original as any)(url, init);
+    });
+    await syncAllConnections(env, ADMIN);
+    const after = env.tables.github_releases.find((r) => r.github_release_id === '5001');
+    assert.equal(after.status, 'detected', 'a blocked release is re-evaluated, not stuck forever');
+  } finally { globalThis.fetch = original; stubs.restore(); }
 });
