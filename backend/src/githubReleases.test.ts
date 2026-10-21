@@ -273,10 +273,10 @@ function fakeEnv() {
             return { meta: { changes: r ? 1 : 0 } };
           }
           if (s.includes('ALTER TABLE github_releases ADD COLUMN ignored_assets')) return { meta: { changes: 0 } };
-          if (s.includes("UPDATE github_releases SET status='superseded'")) {
+          if (s.includes("UPDATE github_releases SET status='withdrawn', block_reason=? WHERE id=? AND status IN")) {
             const r = T('github_releases').find((x) => x.id === a[1]);
             if (r && ['detected', 'verifying', 'pending_approval', 'verification_failed', 'blocked'].includes(r.status)) {
-              r.status = 'superseded'; r.block_reason = a[0];
+              r.status = 'withdrawn'; r.block_reason = a[0];
             }
             return { meta: { changes: r ? 1 : 0 } };
           }
@@ -2465,7 +2465,7 @@ test('LATEST ONLY: an older undecided release is SUPERSEDED when a newer one is 
     await signedDelivery(env, 'release', newer, 'd-new');
     const newerRow = env.tables.github_releases.find((r: any) => r.github_release_id === '4002');
     assert.equal(newerRow.status, 'detected');
-    assert.equal(older.status, 'superseded', 'the older undecided release leaves the queue');
+    assert.equal(older.status, 'withdrawn', 'the older undecided release leaves the queue (withdrawn + superseded marker)');
     assert.ok(String(older.block_reason).includes('Superseded by the newer GitHub release 1.0.68'), String(older.block_reason));
 
     const pub = await publishGithubRelease(env, ADMIN, older.id, {});
@@ -2521,7 +2521,7 @@ test('LATEST ONLY: sync imports ONLY the newest non-draft release and archives t
       ['detected', 'verifying', 'pending_approval'].includes(r.status));
     assert.equal(live.length, 1, JSON.stringify(live.map((r: any) => r.version)));
     assert.equal(live[0].version, '1.0.68');
-    const superseded = env.tables.github_releases.filter((r: any) => r.status === 'superseded');
+    const superseded = env.tables.github_releases.filter((r: any) => r.status === 'withdrawn' && /Superseded by the newer/.test(String(r.block_reason || '')));
     assert.ok(superseded.length >= 3, 'the historical backlog is archived, not queued');
   } finally { globalThis.fetch = original; stubs.restore(); }
 });

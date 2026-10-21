@@ -1,59 +1,44 @@
--- 0029 — LATEST-ONLY release queue.
+-- 0029 — LATEST-ONLY release queue (DATA ONLY — no schema rebuild).
 --
--- A sync used to import every historical GitHub release, so the approval queue
--- filled with v1.0.60 … v1.0.68. Only the newest undecided release matters now:
--- older candidates are marked 'superseded' (kept as history, never queued,
--- never publishable, never notified).
+-- WHY THIS MIGRATION LOOKS DIFFERENT
+--   The first version rebuilt github_releases to add 'superseded' to its CHECK
+--   constraint. SQLite cannot ALTER a CHECK, so a table rebuild is the only
+--   way — but github_release_assets.release_id has a FOREIGN KEY to
+--   github_releases(id), and dropping the parent table fails under
+--   enforcement (that is the ❌ this migration produced in production).
 --
--- SQLite cannot ALTER a CHECK constraint, so the github_releases status check
--- is rebuilt to include 'superseded'. Data is copied verbatim.
+--   So no DDL at all: a release replaced by a newer one is stored with the
+--   EXISTING 'withdrawn' status plus a marker prefix in block_reason
+--   ("Superseded by the newer GitHub release X"). 'withdrawn' is already
+--   excluded from the queue and cannot be published, and the admin UI shows
+--   it as "superseded".
 --
--- Re-running is safe: the rebuild is idempotent because the source table is
--- recreated only when the constraint lacks 'superseded'.
+-- WHAT IT DOES: archive older undecided candidates that are already piling up
+-- in the queue (the sync used to import the whole release history). Releases
+-- that are published, already decided, or are the newest candidate are left
+-- untouched.
+--
+-- Re-running is safe: the WHERE clause only ever matches undecided rows.
 
-CREATE TABLE IF NOT EXISTS github_releases_new (
-  id TEXT PRIMARY KEY,
-  application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
-  connection_id TEXT NOT NULL,
-  github_release_id TEXT NOT NULL,
-  tag_name TEXT NOT NULL,
-  version TEXT NOT NULL,
-  release_name TEXT,
-  target_commitish TEXT,
-  is_prerelease INTEGER NOT NULL DEFAULT 0,
-  release_notes TEXT,
-  github_published_at TEXT,
-  status TEXT NOT NULL DEFAULT 'detected'
-    CHECK (status IN ('detected','verifying','pending_approval','verification_failed','blocked','rejected','withdrawn','published','superseded')),
-  block_reason TEXT,
-  detected_at TEXT DEFAULT (datetime('now')),
-  verified_at TEXT,
-  reviewed_by TEXT,
-  reviewed_at TEXT,
-  decision_reason TEXT,
-  published_by TEXT,
-  published_at TEXT,
-  prior_version TEXT,
-  ignored_assets TEXT,
-  UNIQUE(github_release_id),
-  UNIQUE(application_id, version)
-);
-
-INSERT OR IGNORE INTO github_releases_new (
-  id, application_id, connection_id, github_release_id, tag_name, version, release_name,
-  target_commitish, is_prerelease, release_notes, github_published_at, status, block_reason,
-  detected_at, verified_at, reviewed_by, reviewed_at, decision_reason, published_by,
-  published_at, prior_version, ignored_assets
-)
-SELECT
-  id, application_id, connection_id, github_release_id, tag_name, version, release_name,
-  target_commitish, is_prerelease, release_notes, github_published_at, status, block_reason,
-  detected_at, verified_at, reviewed_by, reviewed_at, decision_reason, published_by,
-  published_at, prior_version, ignored_assets
-FROM github_releases;
-
-DROP TABLE github_releases;
-ALTER TABLE github_releases_new RENAME TO github_releases;
-
-CREATE INDEX IF NOT EXISTS idx_gh_rel_status ON github_releases(status);
-CREATE INDEX IF NOT EXISTS idx_gh_rel_app ON github_releases(application_id);
+UPDATE github_releases
+   SET status = 'withdrawn',
+       block_reason = 'Superseded by the newer GitHub release ' || (
+         SELECT newer.version
+           FROM github_releases AS newer
+          WHERE newer.application_id = github_releases.application_id
+            AND newer.status IN ('detected','verifying','pending_approval','verification_failed','blocked')
+            AND newer.detected_at = (
+              SELECT MAX(n2.detected_at) FROM github_releases AS n2
+               WHERE n2.application_id = github_releases.application_id
+                 AND n2.status IN ('detected','verifying','pending_approval','verification_failed','blocked')
+            )
+          LIMIT 1
+       ) || '.'
+ WHERE status IN ('detected','verifying','pending_approval','verification_failed','blocked')
+   AND EXISTS (
+     SELECT 1 FROM github_releases AS n
+      WHERE n.application_id = github_releases.application_id
+        AND n.id <> github_releases.id
+        AND n.status IN ('detected','verifying','pending_approval','verification_failed','blocked')
+        AND n.detected_at > github_releases.detected_at
+   );

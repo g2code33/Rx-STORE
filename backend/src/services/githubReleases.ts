@@ -97,11 +97,12 @@ export async function ensureGithubTables(env: any): Promise<void> {
   await env.DB.prepare('ALTER TABLE packages ADD COLUMN external_private INTEGER DEFAULT 0').run().catch(() => {});
   await env.DB.prepare('ALTER TABLE github_release_assets ADD COLUMN arch_assumed INTEGER DEFAULT 0').run().catch(() => {});
   await env.DB.prepare('ALTER TABLE packages ADD COLUMN arch_assumed INTEGER DEFAULT 0').run().catch(() => {});
-  // 'superseded' is a NEW status value. SQLite cannot alter a CHECK constraint
-  // in place, so this only matters for databases created by migration 0023 —
-  // the migration below rebuilds that constraint. A write with the new value on
-  // an old table would fail, so it is wrapped in .catch() at the call sites and
-  // re-tried by migration 0029.
+  // NOTE: superseded releases use the EXISTING 'withdrawn' status plus the
+  // SUPERSEDED_PREFIX in block_reason. The status CHECK constraint created by
+  // migration 0023 cannot be altered in SQLite without rebuilding the table —
+  // and a rebuild fails under the github_release_assets foreign key (that is
+  // exactly how migration 0029 failed in production). 'withdrawn' is already
+  // non-queued and non-publishable, so it is the right semantic fit.
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS github_release_assets (
     id TEXT PRIMARY KEY, release_id TEXT NOT NULL, github_asset_id TEXT NOT NULL,
     name TEXT NOT NULL, platform TEXT NOT NULL, architecture TEXT NOT NULL,
@@ -548,8 +549,8 @@ export async function detectRelease(
     for (const row of older?.results || []) {
       if (compareSemver(row.version, version) < 0) {
         await env.DB.prepare(
-          `UPDATE github_releases SET status='superseded', block_reason=? WHERE id=? AND status IN ('detected','verifying','pending_approval','verification_failed','blocked')`
-        ).bind(`Superseded by the newer GitHub release ${version}.`, row.id).run().catch(() => {});
+          `UPDATE github_releases SET status='withdrawn', block_reason=? WHERE id=? AND status IN ('detected','verifying','pending_approval','verification_failed','blocked')`
+        ).bind(`${SUPERSEDED_PREFIX} ${version}.`, row.id).run().catch(() => {});
         superseded++;
       }
     }
@@ -1108,6 +1109,23 @@ export async function isPrivateRepo(env: any, conn: any): Promise<boolean> {
   }
 }
 
+/**
+ * Marker stored in github_releases.block_reason for a release that has been
+ * replaced by a newer one. Kept as 'withdrawn' (an allowed status) so no
+ * schema change is needed — see the note in ensureGithubTables.
+ */
+export const SUPERSEDED_PREFIX = 'Superseded by the newer GitHub release';
+
+/** Is this release archived because a newer one replaced it? */
+export function isSuperseded(row: any): boolean {
+  return !!row && String(row.status) === 'withdrawn' && String(row.block_reason || '').startsWith(SUPERSEDED_PREFIX);
+}
+
+/** Human status used by the UI: 'superseded' when archived by a newer release. */
+export function displayStatus(row: any): string {
+  return isSuperseded(row) ? 'superseded' : String(row?.status || '');
+}
+
 /** Authenticated headers for a PRIVATE repository's assets (null otherwise). */
 async function assetAuthHeaders(env: any, conn: any, isPrivate: boolean): Promise<Record<string, string> | undefined> {
   if (!isPrivate) return undefined;
@@ -1159,8 +1177,8 @@ export async function syncAllConnections(env: any, actor: { userId: string; labe
       const newest = items.reduce((a: any, b: any) => (compareSemver(b.version, a.version) > 0 ? b : a), items[0]);
       for (const it of items) {
         if (it.id === newest.id) continue;
-        await env.DB.prepare(`UPDATE github_releases SET status='superseded', block_reason=? WHERE id=?`)
-          .bind(`Superseded by the newer GitHub release ${newest.version}.`, it.id).run().catch(() => {});
+        await env.DB.prepare(`UPDATE github_releases SET status='withdrawn', block_reason=? WHERE id=?`)
+          .bind(`${SUPERSEDED_PREFIX} ${newest.version}.`, it.id).run().catch(() => {});
       }
     }
   } catch { /* best-effort */ }
@@ -1225,7 +1243,7 @@ export async function adminQueue(env: any, filters: { status?: string; appId?: s
      JOIN github_repo_connections c ON c.id = g.connection_id
      LEFT JOIN applications a ON a.id = g.application_id
      WHERE ${where.join(' AND ')}
-     ORDER BY CASE g.status WHEN 'pending_approval' THEN 0 WHEN 'verifying' THEN 1 WHEN 'detected' THEN 2 WHEN 'superseded' THEN 9 ELSE 3 END, g.detected_at DESC
+     ORDER BY CASE g.status WHEN 'pending_approval' THEN 0 WHEN 'verifying' THEN 1 WHEN 'detected' THEN 2 WHEN 'withdrawn' THEN 9 ELSE 3 END, g.detected_at DESC
      LIMIT 100`
   ).bind(...binds).all().catch(() => ({ results: [] }));
   const out = [];
@@ -1252,7 +1270,9 @@ export async function adminQueue(env: any, filters: { status?: string; appId?: s
     let ignored: any = null;
     try { ignored = r.ignored_assets ? JSON.parse(r.ignored_assets) : null; } catch { ignored = null; }
     out.push({
-      ...r, assets: assets?.results || [],
+      ...r,
+      status: displayStatus(r),
+      assets: assets?.results || [],
       ignoredAssets: ignored?.ignored || [], unmappedAssets: ignored?.unmapped || [],
       canonicalReleaseId: canonical?.id || null, canonicalStatus: canonical?.canonical_status || null, packages,
     });

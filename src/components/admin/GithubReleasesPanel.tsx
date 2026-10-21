@@ -217,7 +217,7 @@ export default function GithubReleasesPanel() {
                 {expanded === rel.id && (
                   <div className="border-t border-white/5 p-4 md:p-5 space-y-4">
                     {rel.block_reason && (
-                      rel.status === 'superseded'
+                      (rel.status === 'superseded' || /^Superseded by the newer GitHub release/i.test(String(rel.block_reason || '')))
                         ? <div className="p-3 rounded-xl bg-white/5 border border-white/10 text-xs text-rx-gray-medium">{rel.block_reason} It stays here as history — only the newest release is reviewed.</div>
                         : <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-xs text-red-200">⚠ {rel.block_reason}</div>
                     )}
