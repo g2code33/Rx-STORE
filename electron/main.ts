@@ -168,15 +168,14 @@ function isAppUrl(url: string): boolean {
 }
 
 /**
- * Open a NEW RX Store window.
- *   - app:// destinations keep the privileged origin + preload (full desktop
- *     APIs, same session as the main window).
- *   - http(s) destinations open in an isolated partition with no preload and
- *     no node access (they are third-party pages), but as an RX Store window
- *     so the user never loses the app or has to hunt for a browser tab.
+ * Open an IN-APP destination (/app/…, /profile/…) in a new RX Store window.
+ *
+ * Only `app://` destinations do this. Anything on the web is handed to the
+ * user's own browser (see openExternal / attachWindowOpenHandler below) —
+ * an embedded wrapper around third-party sites was a dead end (framing
+ * blocked, logins broken, no real browser features), so it is gone.
  */
-function openChildWindow(url: string): BrowserWindow {
-  const appUrl = isAppUrl(url);
+function openAppWindow(url: string): BrowserWindow {
   const child = new BrowserWindow({
     width: 1200,
     height: 860,
@@ -186,96 +185,55 @@ function openChildWindow(url: string): BrowserWindow {
     icon: path.join(app.getAppPath(), 'build/icon.png'),
     backgroundColor: '#0F1419',
     autoHideMenuBar: true,
-    webPreferences: appUrl
-      ? {
-          preload: path.join(__dirname, 'preload.cjs'),
-          contextIsolation: true,
-          nodeIntegration: false,
-          sandbox: false,
-          backgroundThrottling: false,
-        }
-      : {
-          contextIsolation: true,
-          nodeIntegration: false,
-          sandbox: true,
-          partition: 'persist:rx-external',
-        },
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      backgroundThrottling: false,
+    },
   });
   attachWindowOpenHandler(child);
-  if (appUrl) {
-    child.loadURL(url).catch((err) => console.error('[rx-store] child window failed:', err));
-  } else {
-    // External destination: render through a wrapper that keeps an RX Store
-    // bar on screen — "Open in web" (the system browser), a Back button for
-    // in-page history, and the destination URL. The page itself runs in the
-    // isolated partition on its own origin (no rewrite, no injected scripts),
-    // so third-party sites behave normally.
-    child.loadURL(externalWrapperUrl(url)).catch((err) => console.error('[rx-store] child window failed:', err));
-  }
+  child.loadURL(url).catch((err) => console.error('[rx-store] window failed:', err));
   return child;
 }
 
-/** data: wrapper page hosting an external site in an iframe + an RX Store bar. */
-function externalWrapperUrl(target: string): string {
-  const escape = (v: string) => String(v)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  const safe = escape(target);
-  const display = escape(target.length > 90 ? `${target.slice(0, 88)}…` : target);
-  const html = `<!doctype html><html><head><meta charset="utf-8" />
-<title>RX Store — external page</title>
-<style>
-  :root{color-scheme:dark}
-  html,body{margin:0;height:100%;background:#0f1419;color:#e6e8eb;font:13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-  .bar{height:44px;display:flex;align-items:center;gap:8px;padding:0 12px;background:#1a2332;border-bottom:1px solid rgba(255,255,255,.08)}
-  .brand{font-weight:800;letter-spacing:.02em}.brand span{color:#ffd600}
-  .url{flex:1;min-width:0;color:#9aa4b2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,monospace;font-size:11px}
-  button,a.btn{background:#ffd600;color:#0f1419;border:0;border-radius:8px;padding:6px 12px;font-weight:700;cursor:pointer;text-decoration:none;font-size:12px;white-space:nowrap}
-  button.ghost{background:rgba(255,255,255,.08);color:#e6e8eb}
-  iframe{border:0;width:100%;height:calc(100vh - 44px);display:block;background:#fff}
-  .note{padding:6px 12px;color:#9aa4b2;font-size:11px;background:#141b26;border-bottom:1px solid rgba(255,255,255,.05)}
-</style></head><body>
-  <div class="bar">
-    <span class="brand">RX <span>Store</span></span>
-    <button class="ghost" id="back" title="Go back">&#8592;</button>
-    <span class="url" id="url" title="${safe}">${display}</span>
-    <a class="btn" id="openweb" href="${safe}" target="_blank" rel="noreferrer">Open in web</a>
-  </div>
-  <div class="note">This page is opened by RX Store. Use “Open in web” to continue in your browser, or close this window to return to the app.</div>
-  <iframe id="frame" src="${safe}" referrerpolicy="no-referrer"></iframe>
-  <script>
-    // "Open in web" hands the URL to the system browser through the app shell.
-    var target = ${JSON.stringify(target)};
-    document.getElementById('openweb').addEventListener('click', function (ev) {
-      if (window.rxDesktop && window.rxDesktop.openInBrowser) {
-        ev.preventDefault();
-        window.rxDesktop.openInBrowser(target);
-      }
-    });
-    document.getElementById('back').addEventListener('click', function () {
-      try { var f = document.getElementById('frame'); f.contentWindow.history.back(); } catch (e) {}
-    });
-  </script>
-</body></html>`;
-  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+/** Hand an http(s) URL to the operating system's default browser. */
+function openExternal(url: string): boolean {
+  if (!/^https?:\/\//i.test(String(url || ''))) return false;
+  shell.openExternal(String(url)).catch((err) => console.error('[rx-store] openExternal failed:', err));
+  return true;
 }
 
-/** Route every window.open()/target=_blank from any RX Store window. */
+/**
+ * Route links opened from any RX Store window.
+ *
+ *   app://rxstore/<path>  -> a new RX STORE window (same origin + session;
+ *                            this is what makes "View live" work)
+ *   http(s)://…           -> the USER'S DEFAULT BROWSER (desktop) — never an
+ *                            embedded frame, never a hijacked app window
+ *
+ * Nothing here can navigate the app window away from the app.
+ */
 function attachWindowOpenHandler(win: BrowserWindow) {
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (isAppUrl(url) || /^https?:\/\//i.test(url)) {
-      openChildWindow(url);
+    if (isAppUrl(url)) {
+      openAppWindow(url);
+      return { action: 'deny' };
+    }
+    if (/^https?:\/\//i.test(url)) {
+      openExternal(url);
       return { action: 'deny' };
     }
     return { action: 'deny' };
   });
-  // A plain link to an external site must not replace the app UI in-place;
-  // send it to a new RX Store window instead.
+  // A plain external link must never replace the app UI in place — send it to
+  // the system browser instead.
   win.webContents.on('will-navigate', (event, url) => {
     const current = win.webContents.getURL();
     if (/^https?:\/\//i.test(url) && !/^https?:\/\//i.test(current)) {
       event.preventDefault();
-      openChildWindow(url);
+      openExternal(url);
     }
   });
 }
@@ -1007,11 +965,11 @@ function initIpc() {
   ipcMain.handle('window:open', (_e, payload: any) => {
     const pathOrUrl = String(payload?.path ?? payload?.url ?? '');
     if (!pathOrUrl) return false;
-    const target = /^https?:\/\//i.test(pathOrUrl)
-      ? pathOrUrl
-      : `app://rxstore${pathOrUrl.startsWith('/') ? '' : '/'}${pathOrUrl}`;
-    if (!isAppUrl(target) && !/^https?:\/\//i.test(target)) return false;
-    openChildWindow(target);
+    // Web URLs always belong to the browser; only in-app paths get a window.
+    if (/^https?:\/\//i.test(pathOrUrl)) return openExternal(pathOrUrl);
+    const target = `app://rxstore${pathOrUrl.startsWith('/') ? '' : '/'}${pathOrUrl}`;
+    if (!isAppUrl(target)) return false;
+    openAppWindow(target);
     return true;
   });
   // Explicit "open in the system browser" (used only where the OS browser is
