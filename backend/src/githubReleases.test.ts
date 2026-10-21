@@ -1703,3 +1703,140 @@ test('CALLBACK URL: connect sends exactly the canonical callback URL to GitHub',
     assert.ok(decoded.includes('redirect_uri=https://api.test/v1/developers/github/callback'), decoded);
   } finally { stubs.restore(); }
 });
+
+test('BIND FALLBACK: an app-owned org connects even when the strict membership lookup fails', async () => {
+  const stubs = installStubs(env);
+  try {
+    // Production case: applications.developer_org_id is set but the
+    // developer_members row is missing/legacy -> resolveMembership() is null.
+    env.tables.applications[0].developer_id = USER_ID;
+    env.tables.developer_members.length = 0;
+
+    const state = await issueOneTimeToken(env, 'state', { kind: 'github-oauth', userId: USER_ID, appId: APP_ID });
+    const res: any = await githubDevRoutes.callback(
+      new Request(`https://api.test/developers/github/callback?code=gh-code&state=${encodeURIComponent(state)}`) as any, env,
+    );
+    const html = await res.text();
+    const code = html.match(/name="code" value="([^"]+)"/)![1];
+    const repo = html.match(/name="repositoryId" value="([^"]+)"/)![1];
+    const out: any = await githubOAuthRoutes.bind(
+      new Request('https://api.test/developers/github/oauth/bind', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ code, repositoryId: repo }).toString(),
+      }) as any, env,
+    );
+    const outHtml = await out.text();
+    assert.ok(outHtml.includes('Repository connected'), outHtml.slice(0, 300));
+    const conn = env.tables.github_repo_connections.find((c: any) => c.application_id === APP_ID);
+    assert.ok(conn, 'the connection is created through the app-ownership fallback');
+    assert.equal(conn.repository_id, REPO_ID);
+  } finally { stubs.restore(); }
+});
+
+test('BIND FALLBACK: a user with no relation to the app is refused (never a silent connect)', async () => {
+  const stubs = installStubs(env);
+  try {
+    env.tables.applications[0].developer_id = 'somebody-else';
+    env.tables.developer_members.length = 0;
+    const state = await issueOneTimeToken(env, 'state', { kind: 'github-oauth', userId: USER_ID, appId: APP_ID });
+    const res: any = await githubDevRoutes.callback(
+      new Request(`https://api.test/developers/github/callback?code=gh-code&state=${encodeURIComponent(state)}`) as any, env,
+    );
+    const html = await res.text();
+    const code = html.match(/name="code" value="([^"]+)"/);
+    // The picker itself may refuse up front; if it renders, the bind must.
+    if (code) {
+      const repo = html.match(/name="repositoryId" value="([^"]+)"/)![1];
+      const out: any = await githubOAuthRoutes.bind(
+        new Request('https://api.test/developers/github/oauth/bind', {
+          method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ code: code[1], repositoryId: repo }).toString(),
+        }) as any, env,
+      );
+      const outHtml = await out.text();
+      assert.ok(/not linked to a developer organization|could not be found|not part of this authorization/i.test(outHtml), outHtml.slice(0, 300));
+    }
+    assert.equal(env.tables.github_repo_connections.length, 0, 'nothing was connected');
+  } finally { stubs.restore(); }
+});
+
+// ---------------------------------------------------------------------------
+// PRIVATE KEY FORMAT — GitHub issues PKCS#1 ("BEGIN RSA PRIVATE KEY").
+// The old parser only understood PKCS#8, so a REAL GitHub key never decoded:
+// the App JWT could not be signed and connecting a repository failed with
+// "the GitHub installation could not be read". Tests used PKCS#8 and passed.
+// ---------------------------------------------------------------------------
+
+test('KEY FORMAT: a PKCS#1 (GitHub-style RSA PRIVATE KEY) signs the App JWT', async () => {
+  const { createPrivateKey } = await import('node:crypto');
+  const { githubAppJwt, pemToDer } = await import('./services/github.ts');
+  // Convert the generated PKCS#8 key into exactly what GitHub downloads.
+  const pkcs1 = createPrivateKey(TEST_PEM).export({ type: 'pkcs1', format: 'pem' }).toString();
+  assert.ok(pkcs1.includes('BEGIN RSA PRIVATE KEY'), 'fixture is a GitHub-style PKCS#1 key');
+
+  const parsed = pemToDer(pkcs1);
+  assert.ok(!('error' in parsed), (parsed as any).error);
+  assert.equal((parsed as any).format, 'pkcs1');
+
+  const jwt = await githubAppJwt({ ...env, GITHUB_APP_PRIVATE_KEY: pkcs1 });
+  assert.equal(jwt.split('.').length, 3, 'a signed JWT has three segments');
+  assert.ok(jwt.length > 200);
+
+  // CRYPTOGRAPHIC PROOF: the signature verifies against the matching public
+  // key — i.e. the PKCS#1 → PKCS#8 wrap produced a genuinely usable key (not
+  // merely something importKey tolerated).
+  const { createVerify, createPublicKey } = await import('node:crypto');
+  const [header, body, signature] = jwt.split('.');
+  const verifier = createVerify('RSA-SHA256');
+  verifier.update(`${header}.${body}`);
+  verifier.end();
+  const sigBuf = Buffer.from(signature.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+  assert.equal(verifier.verify(createPublicKey(createPrivateKey(pkcs1)), sigBuf), true, 'the App JWT signature must verify');
+});
+
+test('KEY FORMAT: PKCS#8 still works, and bad keys fail with an actionable message', async () => {
+  const { githubAppJwt, pemToDer } = await import('./services/github.ts');
+  // PKCS#8 (what our tests used before) keeps working.
+  const jwt = await githubAppJwt(env);
+  assert.equal(jwt.split('.').length, 3);
+  // Plain text / encrypted / empty keys are rejected clearly, not cryptically.
+  assert.match(String((pemToDer('not a pem') as any).error), /not a valid PEM/);
+  assert.match(String((pemToDer('-----BEGIN ENCRYPTED PRIVATE KEY-----\nabc\n-----END ENCRYPTED PRIVATE KEY-----') as any).error), /encrypted/);
+  assert.match(String((pemToDer('') as any).error), /empty/);
+  await assert.rejects(
+    () => githubAppJwt({ ...env, GITHUB_APP_PRIVATE_KEY: 'garbage' }),
+    /private key could not be read/i,
+  );
+});
+
+test('BIND RESILIENCE: connecting succeeds from the OAuth-verified repository when the App lookup fails', async () => {
+  const stubs = installStubs(env);
+  try {
+    // Simulate App credentials that cannot mint an installation token.
+    const original = globalThis.fetch;
+    (globalThis.fetch as any) = (async (url: any, init?: any) => {
+      if (String(url).includes('/app/installations/') && String(url).includes('access_tokens')) {
+        return new Response('bad credentials', { status: 401 });
+      }
+      return (original as any)(url, init);
+    });
+    const state = await issueOneTimeToken(env, 'state', { kind: 'github-oauth', userId: USER_ID, appId: APP_ID });
+    const res: any = await githubDevRoutes.callback(
+      new Request(`https://api.test/developers/github/callback?code=gh-code&state=${encodeURIComponent(state)}`) as any, env,
+    );
+    const html = await res.text();
+    const code = html.match(/name="code" value="([^"]+)"/)![1];
+    const repo = html.match(/name="repositoryId" value="([^"]+)"/)![1];
+    const out: any = await githubOAuthRoutes.bind(
+      new Request('https://api.test/developers/github/oauth/bind', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ code, repositoryId: repo }).toString(),
+      }) as any, env,
+    );
+    const outHtml = await out.text();
+    assert.ok(outHtml.includes('Repository connected'), outHtml.slice(0, 300));
+    const conn = env.tables.github_repo_connections.find((c: any) => c.application_id === APP_ID);
+    assert.ok(conn, 'connected via the OAuth-verified repository');
+    assert.equal(conn.repository_full_name, 'octo/app');
+  } finally { stubs.restore(); }
+});

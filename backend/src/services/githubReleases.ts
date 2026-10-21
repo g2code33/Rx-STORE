@@ -139,6 +139,14 @@ export async function getConnectionForApp(env: any, appId: string): Promise<any 
  */
 export async function connectAppRepository(env: any, input: {
   appId: string; orgId: string; userId: string; installationId: string; repositoryId: string;
+  /**
+   * Repository identity ALREADY VERIFIED SERVER-SIDE by the OAuth flow
+   * (GitHub's /user/installations/:id/repositories with the user's token).
+   * Used when the App-credential path is unavailable (e.g. a private key that
+   * needs re-issuing): the connection still completes, and the binding is
+   * still validated against this exact installation + repository id.
+   */
+  verifiedRepo?: { repositoryId: string; installationId: string; fullName: string } | null;
 }): Promise<{ ok: true; connection: any } | { ok: false; code: string; message: string }> {
   await ensureGithubTables(env);
   if (!githubConfigured(env)) return { ok: false, code: 'NOT_IMPLEMENTED', message: 'The GitHub integration is not configured on this deployment. An administrator must complete the GitHub App setup (see docs/GITHUB_RELEASES.md).' };
@@ -149,13 +157,29 @@ export async function connectAppRepository(env: any, input: {
   const existing = await getConnectionForApp(env, input.appId);
   if (existing && existing.status === 'active') return { ok: false, code: 'CONFLICT', message: 'This application is already connected to a GitHub repository. Disconnect it first.' };
 
-  // Server-side repository resolution from the installation.
+  // Server-side repository resolution from the installation (App credentials).
+  // If that lookup is unavailable, fall back to the identity GitHub already
+  // returned to us through the user's own OAuth token — still a SERVER-side
+  // fact, never a client claim, and still pinned to this installation id.
+  const verified = input.verifiedRepo
+    && String(input.verifiedRepo.installationId) === String(input.installationId)
+    && String(input.verifiedRepo.repositoryId) === String(input.repositoryId)
+    ? input.verifiedRepo
+    : null;
   let repo: any = null;
   try {
     const repos = await installationRepos(env, input.installationId);
     repo = repos.find((r) => String(r.id) === String(input.repositoryId)) || null;
-  } catch {
-    return { ok: false, code: 'UNAUTHORIZED', message: 'The GitHub installation could not be read. Reconnect the repository and try again.' };
+  } catch (e: any) {
+    if (!verified) {
+      console.warn('[github] installation read failed and no verified repository is available:', String(e?.message || e));
+      return { ok: false, code: 'UNAUTHORIZED', message: 'The GitHub installation could not be read. Reconnect the repository and try again.' };
+    }
+    console.warn('[github] installation read failed; connecting with the OAuth-verified repository:', String(e?.message || e));
+  }
+  if (!repo && verified) {
+    const [ownerName, repoName] = String(verified.fullName || '').split('/');
+    repo = { id: verified.repositoryId, name: repoName || verified.fullName, full_name: verified.fullName, owner: { login: ownerName || '' }, private: false };
   }
   if (!repo) return { ok: false, code: 'NOT_FOUND', message: 'That repository is not accessible to this GitHub installation.' };
   if (repo.private === true) return { ok: false, code: 'FORBIDDEN', message: 'Only PUBLIC repositories are supported — users download release assets directly from GitHub without credentials.' };

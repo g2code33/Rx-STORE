@@ -279,6 +279,23 @@ async function oauthPicketResponse(env: any, request: Request, input: { code: st
     allowed: repos.map((r) => ({ id: r.repositoryId, installationId: r.installationId, fullName: r.fullName })),
   });
 
+  // Verify the person who started the flow can actually own this app's
+  // connection — otherwise every Connect click would fail. Fail here with an
+  // actionable page instead of a button that cannot work.
+  const { resolveMembership } = await import('./developers.ts');
+  const starterId = String(payload.userId);
+  const appRow: any = await env.DB.prepare('SELECT * FROM applications WHERE id=?').bind(String(payload.appId)).first().catch(() => null);
+  if (!appRow) return errorPage('That application no longer exists. Start again from RX Store.', input.webBase);
+  {
+    const ms = await resolveMembership(env, starterId).catch(() => null);
+    const memOrg = ms?.developer?.id ? String(ms.developer.id) : null;
+    const appOrg = appRow?.developer_org_id ? String(appRow.developer_org_id) : null;
+    const isAppDeveloper = appRow?.developer_id ? String(appRow.developer_id) === starterId : false;
+    if (!memOrg && !appOrg && !isAppDeveloper) {
+      return errorPage('This application is not linked to a developer organization yet. Open Developer Center → your app and start the connection from there.', input.webBase);
+    }
+  }
+
   const publicRepos = repos.filter((r) => !r.private);
   const privateCount = repos.length - publicRepos.length;
   const rows = publicRepos.map((r) => `
@@ -327,16 +344,57 @@ export const githubOAuthRoutes = {
       await restoreOneTimeToken(env, code);
       return errorPage('That repository is not part of this authorization. Pick one from the list.', webBase);
     }
-    // Resolve the developer org from the user who STARTED the flow (server-side).
+    // Resolve the developer org SERVER-SIDE from the user who started the flow.
+    // 1) membership row (developer_members → developers), which is the normal
+    //    path for a developer account; 2) fallback: the org that already owns
+    //    the APP being connected — an app always belongs to an organization, so
+    //    a missing/legacy membership row must not dead-end the connection.
+    // Never trusts the browser beyond the state/code token.
     const { resolveMembership } = await import('./developers.ts');
     const ms = await resolveMembership(env, String(payload.userId));
-    if (!ms?.developer?.id) return errorPage('Your RX Store developer account could not be found.', webBase);
+    let orgId: string | null = ms?.developer?.id ? String(ms.developer.id) : null;
+    const userId = String(payload.userId);
+
+    // Fallback: derive the org from the app (and soft-check ownership).
+    if (!orgId) {
+      const appRow: any = await env.DB.prepare('SELECT * FROM applications WHERE id=?')
+        .bind(String(payload.appId)).first().catch(() => null);
+      const appOrg = appRow?.developer_org_id ? String(appRow.developer_org_id) : null;
+      const developerCol = appRow?.developer_id ? String(appRow.developer_id) : null;
+      if (appOrg) {
+        // Is the flow starter the app's developer or a member of that org?
+        let owns = developerCol === userId;
+        if (!owns) {
+          const mem: any = await env.DB.prepare(
+            'SELECT id FROM developer_members WHERE user_id=? AND developer_id=?'
+          ).bind(userId, appOrg).first().catch(() => null);
+          owns = !!mem;
+        }
+        if (owns) orgId = appOrg;
+      }
+    }
+    if (!orgId) {
+      return errorPage(
+        'Your RX Store account is not linked to a developer organization that owns this app. '
+        + 'If you are the developer, open Developer Center → your app and start the connection from there.',
+        webBase,
+      );
+    }
+
 
     const out = await connectAppRepository(env, {
-      appId: String(payload.appId), orgId: String(ms.developer.id), userId: String(payload.userId),
+      appId: String(payload.appId), orgId: String(orgId), userId,
       installationId: match.installationId, repositoryId: match.id,
+      // GitHub already returned this repo for this installation with the
+      // user's own token — a server-side fact we can bind from even if the
+      // App-credential lookup is unavailable.
+      verifiedRepo: { repositoryId: match.id, installationId: match.installationId, fullName: match.fullName },
     });
     if (!out.ok) {
+      // Log the precise reason server-side; the user gets the actionable text.
+      console.warn('[github-oauth-bind] connect failed:', out.code, out.message, {
+        appId: String(payload.appId), orgId: String(orgId), repositoryId: match.id,
+      });
       await restoreOneTimeToken(env, code);
       return errorPage(String(out.message || 'The repository could not be connected.'), webBase);
     }

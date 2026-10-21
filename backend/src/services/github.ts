@@ -200,24 +200,91 @@ function b64url(bytes: Uint8Array | string): string {
   return btoa(s).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 }
 
-function pemToBytes(pem: string): Uint8Array {
-  const body = pem
-    .replace(/-----(BEGIN|END) PRIVATE KEY-----/g, '')
-    .replace(/\s+/g, '');
-  const bin = atob(body);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+// ---------------------------------------------------------------------------
+// PEM → DER (both key formats GitHub can give you)
+//
+// GitHub issues App private keys as **PKCS#1** ("BEGIN RSA PRIVATE KEY"), but
+// WebCrypto's importKey only understands **PKCS#8** ("BEGIN PRIVATE KEY").
+// The old parser only matched the PKCS#8 header, so a real GitHub key was
+// never decoded: the App JWT could not be signed, installation tokens failed,
+// and connecting a repository dead-ended with "the GitHub installation could
+// not be read". Both formats are handled now; PKCS#1 is wrapped into PKCS#8
+// with a tiny DER encoder (no dependency needed).
+// ---------------------------------------------------------------------------
+
+function derLength(n: number): Uint8Array {
+  if (n < 0x80) return new Uint8Array([n]);
+  const bytes: number[] = [];
+  let x = n;
+  while (x > 0) { bytes.unshift(x & 0xff); x >>>= 8; }
+  return new Uint8Array([0x80 | bytes.length, ...bytes]);
+}
+
+function derElement(tag: number, content: Uint8Array): Uint8Array {
+  const len = derLength(content.length);
+  const out = new Uint8Array(1 + len.length + content.length);
+  out[0] = tag;
+  out.set(len, 1);
+  out.set(content, 1 + len.length);
   return out;
+}
+
+/** rsaEncryption OID + NULL parameters (AlgorithmIdentifier). */
+const RSA_ALGORITHM_ID = new Uint8Array([0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00]);
+const PKCS8_VERSION_0 = new Uint8Array([0x02, 0x01, 0x00]);
+
+/** Wrap a PKCS#1 RSAPrivateKey in a PKCS#8 PrivateKeyInfo. */
+export function pkcs1ToPkcs8(pkcs1: Uint8Array): Uint8Array {
+  const parts = [PKCS8_VERSION_0, RSA_ALGORITHM_ID, derElement(0x04, pkcs1)];
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const inner = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) { inner.set(part, offset); offset += part.length; }
+  return derElement(0x30, inner);
+}
+
+export type PemKey = { der: Uint8Array; format: 'pkcs8' | 'pkcs1' } | { error: string };
+
+/** Parse a PEM private key into importable PKCS#8 DER (PKCS#1 is converted). */
+export function pemToDer(pemInput: string): PemKey {
+  // Accept literal "\n" sequences (a key pasted into a single-line env var).
+  const pem = String(pemInput || '').replace(/\\n/g, '\n').replace(/\r\n/g, '\n').trim();
+  if (!pem) return { error: 'the private key is empty' };
+  if (/ENCRYPTED PRIVATE KEY/.test(pem)) {
+    return { error: 'the private key is encrypted — generate an unencrypted key in the GitHub App settings' };
+  }
+  const match = pem.match(/-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/);
+  if (!match) return { error: 'the private key is not a valid PEM block' };
+  const label = match[1].trim();
+  const base64 = match[2].replace(/\s+/g, '');
+  let bytes: Uint8Array;
+  try {
+    const bin = atob(base64);
+    bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  } catch {
+    return { error: 'the private key body is not valid base64' };
+  }
+  if (label === 'RSA PRIVATE KEY') return { der: pkcs1ToPkcs8(bytes), format: 'pkcs1' };
+  if (label === 'PRIVATE KEY') return { der: bytes, format: 'pkcs8' };
+  return { error: `unsupported private key type "${label}"` };
 }
 
 let cachedKey: { pem: string; key: CryptoKey } | null = null;
 
 async function appSigningKey(pem: string): Promise<CryptoKey> {
   if (cachedKey && cachedKey.pem === pem) return cachedKey.key;
-  const key = await crypto.subtle.importKey(
-    'pkcs8', pemToBytes(pem) as unknown as BufferSource,
-    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign'],
-  );
+  const parsed = pemToDer(pem);
+  if ('error' in parsed) throw new Error(`GitHub App private key could not be read: ${parsed.error}`);
+  let key: CryptoKey;
+  try {
+    key = await crypto.subtle.importKey(
+      'pkcs8', parsed.der as unknown as BufferSource,
+      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign'],
+    );
+  } catch (e: any) {
+    throw new Error(`GitHub App private key could not be imported (${parsed.format}): ${String(e?.message || e)}`);
+  }
   cachedKey = { pem, key };
   return key;
 }
