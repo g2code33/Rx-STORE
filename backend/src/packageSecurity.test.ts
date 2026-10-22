@@ -11,12 +11,14 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { gzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 import {
   runSecurityPipeline, publicationSecurityGate, r2KeyIsPubliclyServed,
   classifyDuplicate, runMalwareScan, checkStructure, checkSignature, checkCertificate,
   checkNativeIdentity, parseZipCentralDirectory, parseAr, extractCertificateFromPkcs7,
-  loadPackageBytes, invalidatePendingReviews } from './services/packageSecurity.ts';
+  loadPackageBytes, loadExternalPackageBytes, invalidatePendingReviews } from './services/packageSecurity.ts';
 import { securityAdminRoutes } from './routes/securityAdmin.ts';
 import { adminRoutes } from './routes/admin.ts';
 
@@ -955,4 +957,93 @@ test('gate freshness: INDETERMINATE malware results are ALWAYS re-checked (never
   const gate = await publicationSecurityGate(scanEnv, 'rel_1');
   assert.ok(fetchCalls > 0, 'SCANNING re-polled even though the results are brand new');
   assert.equal(gate.ok, false, 'the completed DETECTED verdict blocks');
+});
+// ---------------------------------------------------------------------------
+// EXTERNAL (GitHub-hosted) ASSET STREAMING — the production 'Failed to fetch'
+//
+// Regression: loadExternalPackageBytes used to walk EVERY BYTE of the response
+// in JavaScript and shift() a 2MB tail array per byte. Past the 2MB window that
+// is unbounded work, so a 100MB Windows installer never finished: the isolate
+// was killed at the CPU limit, the edge answered with an error page that has no
+// CORS headers, and every Retry / Manual approve surfaced as a bare
+// 'Failed to fetch'. These tests stream REAL multi-megabyte payloads and pin
+// both the bytes (hash + windows) and the linear cost.
+// ---------------------------------------------------------------------------
+
+/** A deterministic payload large enough to cross the 2MB head/tail window. */
+function patternedBytes(total: number): Uint8Array {
+  const out = new Uint8Array(total);
+  let x = 0x12345678;
+  for (let i = 0; i < total; i++) {
+    x ^= (x << 13); x >>>= 0;
+    x ^= (x >>> 17);
+    x ^= (x << 5); x >>>= 0;
+    out[i] = x & 0xff;
+  }
+  return out;
+}
+
+function streamInChunks(bytes: Uint8Array, sizes: number[]): ReadableStream<Uint8Array> {
+  let offset = 0;
+  let i = 0;
+  return new ReadableStream({
+    pull(controller) {
+      if (offset >= bytes.length) { controller.close(); return; }
+      const want = Math.max(1, sizes[i++ % sizes.length]);
+      const end = Math.min(offset + want, bytes.length);
+      controller.enqueue(bytes.slice(offset, end));
+      offset = end;
+    },
+  });
+}
+
+const WINDOW = 2 * 1024 * 1024;
+const sameBytes = (a: Uint8Array | null, b: Uint8Array) => !!a && Buffer.from(a).equals(Buffer.from(b));
+
+test('external streaming: a 5MB asset hashes correctly and keeps the real head/tail windows', async () => {
+  const bytes = patternedBytes(5 * 1024 * 1024);
+  const expectedSha = createHash('sha256').update(bytes).digest('hex');
+  globalThis.fetch = (async () => new Response(streamInChunks(bytes, [64 * 1024]), { status: 200 })) as any;
+
+  const started = Date.now();
+  const ext = await loadExternalPackageBytes('https://github.com/octo/app/releases/download/v1.0.0/big.msi', { maxBytes: 200 * 1024 * 1024 });
+  const elapsed = Date.now() - started;
+
+  assert.ok(ext, 'the asset streamed');
+  assert.equal(ext!.size, bytes.length, 'size comes from the actual bytes');
+  assert.equal(ext!.sha256, expectedSha, 'SHA-256 is the real hash of the whole stream');
+  assert.ok(sameBytes(ext!.head, bytes.subarray(0, WINDOW)), 'head window = first 2MB');
+  assert.ok(sameBytes(ext!.tail, bytes.subarray(bytes.length - WINDOW)), 'tail window = last 2MB, in stream order');
+  assert.equal(ext!.tailOffset, bytes.length - WINDOW, 'the tail window reports where it starts');
+  assert.ok(ext!.full, '5MB is inside the inspect budget → buffered whole');
+  assert.ok(sameBytes(ext!.full, bytes), 'the full buffer is byte-identical');
+  // The old per-byte/shift() implementation could not finish this in minutes;
+  // a linear implementation needs milliseconds.
+  assert.ok(elapsed < 5000, `streaming must be linear, took ${elapsed}ms`);
+});
+
+test('external streaming: an asset above the buffer budget still yields exact windows (bounded memory)', async () => {
+  const total = 34 * 1024 * 1024; // > the 32MB external full-inspect budget
+  const bytes = patternedBytes(total);
+  const expectedSha = createHash('sha256').update(bytes).digest('hex');
+  // Chunk sizes deliberately include one LARGER than the window (exercises the
+  // "whole chunk fills the ring" branch) and small ones (wrap-around branch).
+  globalThis.fetch = (async () => new Response(
+    streamInChunks(bytes, [WINDOW + 12345, 64 * 1024, 7 * 1024 * 1024, 4096]),
+    { status: 200 },
+  )) as any;
+
+  const ext = await loadExternalPackageBytes('https://github.com/octo/app/releases/download/v1.0.0/big.deb', { maxBytes: 200 * 1024 * 1024 });
+  assert.ok(ext);
+  assert.equal(ext!.size, total);
+  assert.equal(ext!.sha256, expectedSha, 'hashing never depends on buffering the whole file');
+  assert.equal(ext!.full, null, 'over the budget → windows only');
+  assert.ok(sameBytes(ext!.head, bytes.subarray(0, WINDOW)));
+  assert.ok(sameBytes(ext!.tail, bytes.subarray(total - WINDOW)));
+});
+
+test('external streaming: the per-byte / shift() loop can never come back', () => {
+  const src = readFileSync(new URL('./services/packageSecurity.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(src, /tail\.shift\(\)/, 'the O(window) per-byte shift() is what killed the Worker');
+  assert.match(src, /EXTERNAL_FULL_INSPECT_LIMIT/, 'whole-file buffering is bounded');
 });

@@ -47,7 +47,7 @@ import { validateAssetUrl } from './github.ts';
  * /health so a deployment's actual behavior generation is verifiable
  * without guessing from commit SHAs.
  */
-export const SECURITY_PIPELINE_VERSION = '2026-09-26.3'; // gate freshness window + 503 distinction
+export const SECURITY_PIPELINE_VERSION = '2026-10-22.1'; // linear (chunk-based) external asset streaming — no per-byte window loop
 
 export type MalwareStatus = 'PENDING' | 'SCANNING' | 'CLEAN' | 'DETECTED' | 'FAILED' | 'UNAVAILABLE';
 /** Generic check statuses (spec §8). */
@@ -87,6 +87,16 @@ async function sha256Hex(data: ArrayBuffer | Uint8Array): Promise<string> {
 
 const FULL_INSPECT_LIMIT = 64 * 1024 * 1024; // ≤64MB: read whole object once
 const WINDOW = 2 * 1024 * 1024;              // >64MB: first+last 2MB windows
+
+/**
+ * Whole-file buffering budget for EXTERNAL (GitHub-hosted) assets.
+ *
+ * The chunks are concatenated once at the end, so peak memory is ~2x this
+ * value — comfortably inside the 128MB Worker isolate ceiling. Assets above it
+ * are still fully hashed and size-checked (streaming), and their structure is
+ * inspected through the 2MB head/tail windows, exactly like >64MB local uploads.
+ */
+const EXTERNAL_FULL_INSPECT_LIMIT = 32 * 1024 * 1024;
 
 export interface PackageBytes {
   size: number;
@@ -178,12 +188,26 @@ export async function loadExternalPackageBytes(url: string, opts: {
   const ds = DS ? new DS('SHA-256') : null;
   const writer = ds ? ds.getWriter() : null;
 
-  // Windows for the checks; `all` buffers the WHOLE file only while it is
-  // within the full-inspect budget (mirrors the R2 loader's 64MB rule), so a
-  // mid-size APK's ZIP central directory is genuinely inspectable.
-  const head: number[] = [];
-  const tail: number[] = []; // ring buffer of the last WINDOW bytes
-  let all: number[] | null = []; // whole-file buffer while size <= FULL_INSPECT_LIMIT
+  // Windows for the checks; `blocks` buffers the WHOLE file only while it is
+  // within the external inspect budget, so a mid-size APK's ZIP central
+  // directory is genuinely inspectable without risking the isolate's memory.
+  //
+  // PRODUCTION INCIDENT (the 'Failed to fetch' on Retry / Manual approve):
+  // this loop used to walk EVERY BYTE in JavaScript (`for i < value.length`)
+  // and shift() a 2MB tail array per byte. Past the 2MB window that is
+  // quadratic-to-unbounded work: a 100MB Windows installer could never finish,
+  // the isolate was killed at the CPU limit, the edge answered with an error
+  // page that carries no CORS headers, and the browser surfaced the bare
+  // 'Failed to fetch'. Every operation below is now O(bytes) with a fixed
+  // memory ceiling — no per-byte loops, no array shifting.
+  const windowBytes = Math.max(1, Math.min(WINDOW, opts.maxBytes));
+  const head = new Uint8Array(windowBytes);
+  let headLen = 0;
+  // Ring buffer: after the stream ends it holds the LAST windowBytes bytes.
+  const tail = new Uint8Array(windowBytes);
+  let tailPos = 0;   // next write position in the ring
+  let tailLen = 0;   // valid bytes in the ring (saturates at windowBytes)
+  let blocks: Uint8Array[] | null = []; // whole file, only while inside budget
   let size = 0;
   const reader = resp.body.getReader();
   try {
@@ -194,15 +218,30 @@ export async function loadExternalPackageBytes(url: string, opts: {
       if (size > opts.maxBytes) return null; // hard cap — caller reports the size violation
       if (writer) await writer.write(value);
       else if (hash) hash.update(value);
-      for (let i = 0; i < value.length; i++) {
-        const b = value[i];
-        if (head.length < WINDOW) head.push(b);
-        if (tail.length >= WINDOW) tail.shift();
-        tail.push(b);
-        if (all) {
-          all.push(b);
-          if (all.length > FULL_INSPECT_LIMIT) all = null; // over budget — windows only
-        }
+
+      // First window — one set() per chunk.
+      if (headLen < windowBytes) {
+        const n = Math.min(value.length, windowBytes - headLen);
+        head.set(value.subarray(0, n), headLen);
+        headLen += n;
+      }
+
+      // Last window — one (or two) set() calls per chunk, never per byte.
+      if (value.length >= windowBytes) {
+        tail.set(value.subarray(value.length - windowBytes));
+        tailPos = 0;
+        tailLen = windowBytes;
+      } else {
+        const first = Math.min(value.length, windowBytes - tailPos);
+        tail.set(value.subarray(0, first), tailPos);
+        if (first < value.length) tail.set(value.subarray(first), 0);
+        tailPos = (tailPos + value.length) % windowBytes;
+        tailLen = Math.min(windowBytes, tailLen + value.length);
+      }
+
+      if (blocks) {
+        if (size <= EXTERNAL_FULL_INSPECT_LIMIT) blocks.push(value.slice()); // copy: runtimes reuse the chunk buffer
+        else blocks = null; // over budget — windows only
       }
     }
   } finally {
@@ -219,13 +258,30 @@ export async function loadExternalPackageBytes(url: string, opts: {
   }
   if (!sha256) return null;
 
+  // Materialize the ring in stream order (oldest → newest).
+  let tailBytes: Uint8Array;
+  if (tailLen < windowBytes || tailPos === 0) {
+    tailBytes = tail.slice(0, tailLen);
+  } else {
+    tailBytes = new Uint8Array(windowBytes);
+    tailBytes.set(tail.subarray(tailPos));
+    tailBytes.set(tail.subarray(0, tailPos), windowBytes - tailPos);
+  }
+
+  let full: Uint8Array | null = null;
+  if (blocks) {
+    full = new Uint8Array(size);
+    let offset = 0;
+    for (const b of blocks) { full.set(b, offset); offset += b.length; }
+  }
+
   return {
     size,
     sha256,
     finalUrl: current,
-    head: new Uint8Array(head), headOffset: 0,
-    tail: new Uint8Array(tail), tailOffset: size - tail.length,
-    full: all ? new Uint8Array(all) : null,
+    head: head.slice(0, headLen), headOffset: 0,
+    tail: tailBytes, tailOffset: size - tailBytes.length,
+    full,
   };
 }
 

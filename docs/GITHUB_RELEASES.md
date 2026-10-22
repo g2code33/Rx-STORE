@@ -153,3 +153,29 @@ block; filenames may only disambiguate platform/architecture, never URLs:
   explicit, audited override is chosen; DETECTED can never be overridden.
 * Paid apps can never connect, publish, or serve a GitHub-hosted package
   (checked at connect, at publish, and again at download time).
+
+## 6. Verification budget (why it is incremental, and how assets are hashed)
+
+A GitHub asset is never copied into RX Store storage: it lives on GitHub and is
+streamed on demand, so **every verification pass pays for the download** and for
+hashing it inside the Worker.
+
+* **One asset per request.** `POST /v1/admin/github/releases/:id/retry` verifies
+  a single asset (`maxAssets: 1`) and returns `{ remaining, verifiedAssets,
+  totalAssets }`; the admin panel loops until nothing is left. Asking for a whole
+  release in one request used to exceed the Worker's CPU budget, the runtime
+  killed the request, the edge answered with an error page **without CORS
+  headers**, and the browser only showed `Failed to fetch`.
+* **Streaming is linear and bounded.** `loadExternalPackageBytes()` hashes the
+  stream with `crypto.DigestStream`, keeps the first and last 2 MB for the
+  structure/signature checks, and buffers the whole file in memory only up to
+  32 MB. (It previously walked every byte in JavaScript and shifted a 2 MB ring
+  per byte — a 100 MB installer could never finish.)
+* **Manual approval prefers GitHub's own digest.** GitHub returns
+  `digest: "sha256:…"` on release-asset metadata; a manual approval binds to that
+  hash without re-downloading the file. When no digest exists (older assets) the
+  real bytes are streamed and hashed. The audit entry records which path was
+  used (`hashSource`: `recorded` / `github_digest` / `streamed`).
+* **Confirm the deployed pipeline.** `GET /v1/health` returns
+  `securityPipelineVersion`; it changes whenever the verification code changes,
+  so a stale Worker is visible immediately after a deploy.

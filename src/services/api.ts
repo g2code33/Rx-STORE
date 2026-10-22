@@ -108,6 +108,57 @@ type ApiOptions = {
   signal?: AbortSignal;
 };
 
+/**
+ * A bare browser network failure ('TypeError: Failed to fetch') is what the
+ * user sees when the edge answers WITHOUT CORS headers — typically because the
+ * Worker was killed mid-request (CPU/memory) or the connection dropped. It
+ * carries no status, no body and no request id, so it used to surface as the
+ * meaningless toast 'Failed to fetch'.
+ *
+ * Two things happen here instead:
+ *   1. Idempotent requests (GET/HEAD) are retried once after a short backoff —
+ *      a killed isolate is replaced by a fresh one on the retry.
+ *   2. A failure that survives the retry is reported honestly and actionable.
+ * POST/PUT/DELETE are never retried automatically: replaying a publish or an
+ * approval silently is worse than asking the admin to press the button again.
+ */
+const NETWORK_RETRY_DELAY_MS = 800;
+
+function isAbortError(e: any): boolean {
+  return e?.name === 'AbortError' || e?.name === 'TimeoutError';
+}
+
+function networkError(cause: any, path: string): Error {
+  const err: any = new Error(
+    'The RX Store API did not respond (network error) — the request was interrupted before it could answer. '
+    + 'This usually means the server ran out of budget on that request. Please try again.',
+  );
+  err.code = 'NETWORK';
+  err.network = true;
+  err.path = path;
+  err.cause = cause;
+  return err;
+}
+
+async function fetchWithNetworkRetry(
+  url: string,
+  init: RequestInit,
+  path: string,
+): Promise<Response> {
+  const idempotent = !init.method || ['GET', 'HEAD', 'OPTIONS'].includes(String(init.method).toUpperCase());
+  try {
+    return await fetch(url, init);
+  } catch (e: any) {
+    if (isAbortError(e) || !idempotent) throw isAbortError(e) ? e : networkError(e, path);
+    await new Promise((r) => setTimeout(r, NETWORK_RETRY_DELAY_MS));
+    try {
+      return await fetch(url, init);
+    } catch (e2: any) {
+      throw isAbortError(e2) ? e2 : networkError(e2, path);
+    }
+  }
+}
+
 async function request<T>(
   path: string,
   options: RequestInit & ApiOptions = {},
@@ -124,11 +175,11 @@ async function request<T>(
     if (token) headers['Authorization'] = `Bearer ${token}`;
   }
 
-  let res = await fetch(`${API_URL}${path}`, {
+  let res = await fetchWithNetworkRetry(`${API_URL}${path}`, {
     ...options,
     headers,
     signal: options.signal,
-  });
+  }, path);
 
   // A 401 on an authenticated request may just mean the access token expired.
   // Refresh once (rotating the refresh token) and retry the original request.
@@ -136,7 +187,7 @@ async function request<T>(
     const fresh = await refreshAccessToken();
     if (fresh) {
       headers['Authorization'] = `Bearer ${fresh}`;
-      res = await fetch(`${API_URL}${path}`, { ...options, headers, signal: options.signal });
+      res = await fetchWithNetworkRetry(`${API_URL}${path}`, { ...options, headers, signal: options.signal }, path);
     }
   }
 

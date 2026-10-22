@@ -2845,6 +2845,42 @@ test('MANUAL APPROVE: computes the real hash, records audited evidence and unblo
   } finally { stubs.restore(); }
 });
 
+test('MANUAL APPROVE: uses GitHub\'s own sha256 digest instead of streaming the asset again', async () => {
+  const { manualVerifyAsset } = await import('./services/githubReleases.ts');
+  const stubs = installStubs(env);
+  const original = globalThis.fetch;
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-manual-digest');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const asset = env.tables.github_release_assets[0];
+    const digest = 'a'.repeat(64);
+    let downloads = 0;
+    (globalThis.fetch as any) = async (url: any, init?: any) => {
+      const u = String(url);
+      if (u.startsWith('https://api.github.com/repos/octo/app/releases/assets/')) {
+        return new Response(JSON.stringify({
+          id: 555001, name: 'clinical-rx_1.12.0_amd64.deb', size: DEB_FIXTURE.byteLength, digest: `sha256:${digest}`,
+        }), { status: 200 });
+      }
+      if (u.startsWith('https://github.com/octo/app/releases/download/')) {
+        downloads++;
+        throw new TypeError('Failed to fetch'); // must never be reached
+      }
+      return (original as any)(url, init);
+    };
+
+    const out: any = await manualVerifyAsset(env, ADMIN, rel.id, asset.id, 'APPROVE', 'Vendor published the SHA-256 in the release notes; the scanner was rate limited.');
+    assert.ok(out.ok, out.message);
+    assert.equal(downloads, 0, 'no 100MB download just to hash a file GitHub already digests');
+    assert.equal(asset.sha256, digest, 'the approved hash is GitHub\'s authoritative digest');
+    assert.equal(asset.size_bytes, DEB_FIXTURE.byteLength);
+    assert.equal(asset.state, 'verified');
+    const audit = env.tables.github_audit_log.find((e: any) => e.action === 'manual_asset_approve');
+    assert.equal(JSON.parse(String(audit.details)).hashSource, 'github_digest', 'the audit records where the hash came from');
+  } finally { globalThis.fetch = original; stubs.restore(); }
+});
+
 test('MANUAL APPROVE: a DETECTED verdict can never be overridden', async () => {
   const { manualVerifyAsset } = await import('./services/githubReleases.ts');
   const stubs = installStubs(env, { vtVerdict: 'DETECTED' });

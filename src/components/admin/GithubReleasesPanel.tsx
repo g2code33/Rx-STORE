@@ -55,19 +55,26 @@ export default function GithubReleasesPanel() {
   const [override, setOverride] = useState(false);
   const [overrideReason, setOverrideReason] = useState('');
 
+  /**
+   * The two reads are independent: a failure in one must not blank the other
+   * (Promise.all used to throw away a perfectly good overview whenever the
+   * queue request failed, leaving the whole center empty and unexplained).
+   */
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
-    try {
-      const [ov, rel] = await Promise.all([
-        api.githubAdmin.overview(),
-        api.githubAdmin.releases(filter ? { status: filter } : {}),
-      ]);
-      setOverview(ov);
-      setReleases(rel.releases || []);
-    } catch (e: any) {
-      setError(e?.message || 'Could not load the GitHub approval center.');
-    } finally { setLoading(false); }
+    const [ov, rel] = await Promise.allSettled([
+      api.githubAdmin.overview(),
+      api.githubAdmin.releases(filter ? { status: filter } : {}),
+    ]);
+    if (ov.status === 'fulfilled') setOverview(ov.value);
+    if (rel.status === 'fulfilled') setReleases(rel.value.releases || []);
+    if (rel.status === 'rejected') {
+      setError(rel.reason?.message || 'Could not load the GitHub approval queue.');
+    } else if (ov.status === 'rejected') {
+      toast.error(ov.reason?.message || 'The counters could not be loaded.');
+    }
+    setLoading(false);
   }, [filter]);
 
   useEffect(() => { load(); }, [load]);
@@ -244,7 +251,14 @@ export default function GithubReleasesPanel() {
       </div>
 
       {loading && <div className="card p-8 text-center text-sm text-rx-gray-medium">Loading…</div>}
-      {error && <div className="card p-6 text-center text-sm text-red-300">{error}</div>}
+      {error && (
+        <div className="card p-6 text-center text-sm text-red-300">
+          <p>{error}</p>
+          <button onClick={() => load()} className="btn-secondary mt-3 inline-flex items-center gap-2 text-xs">
+            <RefreshCw className="w-3.5 h-3.5" /> Try again
+          </button>
+        </div>
+      )}
 
       {/* ---- Queue ---- */}
       {!loading && !error && tab === 'queue' && (

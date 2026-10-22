@@ -1270,17 +1270,36 @@ export async function manualVerifyAsset(
 
   let sha = String(asset.sha256 || '').toLowerCase();
   let size = Number(asset.size_bytes || 0);
+  // Where the hash came from — always recorded in the audit trail, never
+  // guessed: 'recorded' (a previous verification), 'github_digest' (computed
+  // by GitHub over the bytes it stores), or 'streamed' (computed here from the
+  // actual bytes).
+  let hashSource = /^[a-f0-9]{64}$/.test(sha) ? 'recorded' : '';
   if (!/^[a-f0-9]{64}$/.test(sha) || !size) {
-    // One bounded stream: compute the authoritative hash for THIS asset only.
-    const ext = await loadExternalPackageBytes(asset.download_url, {
-      maxBytes: assetMaxBytes(env),
-      authHeaders: asset.is_private === 1 ? { Authorization: `Bearer ${await installationToken(env, String(conn.installation_id))}` } : undefined,
-    });
-    if (!ext) return { ok: false, code: 'SERVICE_UNAVAILABLE', message: 'The asset could not be streamed to compute its SHA-256. Try manual approval again shortly.' };
-    if (Number(meta.json.size) !== ext.size) {
-      return { ok: false, code: 'CONFLICT', message: `GitHub reports ${meta.json.size} bytes but the asset serves ${ext.size} — refusing to approve a changed file.` };
+    // GitHub computes a digest for every uploaded asset and returns it here.
+    // It is authoritative for the bytes GitHub serves, and using it means a
+    // 100MB installer never has to be pulled through the Worker just to hash
+    // it (that download is what the CPU budget could not afford). When GitHub
+    // has no digest (older assets) we fall back to streaming the real bytes.
+    const digestMatch = /^sha256:([a-f0-9]{64})$/i.exec(String((meta.json as any)?.digest || ''));
+    const metaSize = Number((meta.json as any)?.size);
+    if (digestMatch && Number.isFinite(metaSize) && metaSize > 0) {
+      sha = digestMatch[1].toLowerCase();
+      size = metaSize;
+      hashSource = 'github_digest';
+    } else {
+      // One bounded stream: compute the authoritative hash for THIS asset only.
+      const ext = await loadExternalPackageBytes(asset.download_url, {
+        maxBytes: assetMaxBytes(env),
+        authHeaders: asset.is_private === 1 ? { Authorization: `Bearer ${await installationToken(env, String(conn.installation_id))}` } : undefined,
+      });
+      if (!ext) return { ok: false, code: 'SERVICE_UNAVAILABLE', message: 'The asset could not be streamed to compute its SHA-256. Try manual approval again shortly.' };
+      if (Number(meta.json.size) !== ext.size) {
+        return { ok: false, code: 'CONFLICT', message: `GitHub reports ${meta.json.size} bytes but the asset serves ${ext.size} — refusing to approve a changed file.` };
+      }
+      sha = ext.sha256; size = ext.size;
+      hashSource = 'streamed';
     }
-    sha = ext.sha256; size = ext.size;
   }
   const existingScan: any = pkgRow ? await env.DB.prepare(
     `SELECT status FROM package_security_results WHERE package_id=? AND check_type='malware' ORDER BY created_at DESC LIMIT 1`
@@ -1300,7 +1319,10 @@ export async function manualVerifyAsset(
     // REAL evidence rows attributed to the human decision (audited, sha-bound).
     for (const [check, status, result] of [
       ['structure', 'PASSED', 'structure reviewed manually (format/identity checked by the admin)'],
-      ['integrity', 'PASSED', `SHA-256 ${sha} approved manually (computed from the actual bytes)`],
+      ['integrity', 'PASSED', `SHA-256 ${sha} approved manually (` + (
+        hashSource === 'streamed' ? 'computed from the actual bytes'
+          : hashSource === 'github_digest' ? "GitHub's own sha256 asset digest"
+            : 'as recorded by an earlier verification') + ')'],
       ['malware', 'NEEDS_REVIEW', 'malware scan not conclusive — approved by an explicit, audited admin decision'],
     ] as const) {
       await env.DB.prepare(
@@ -1324,7 +1346,7 @@ export async function manualVerifyAsset(
   await audit(env, {
     action: 'manual_asset_approve', actorId: actor.userId, actorLabel: actor.label,
     appId: rel.application_id, releaseId, reason,
-    details: { asset: asset.name, platform: asset.platform, arch: asset.architecture, sha256: sha, size },
+    details: { asset: asset.name, platform: asset.platform, arch: asset.architecture, sha256: sha, size, hashSource },
   });
   const remaining = await refreshVerificationStatus(env, releaseId).catch(() => 0);
   return { ok: true, remaining };
@@ -1547,34 +1569,50 @@ export async function adminQueue(env: any, filters: { status?: string; appId?: s
   ).bind(...binds).all().catch(() => ({ results: [] }));
   const out = [];
   for (const r of rows?.results || []) {
-    const assets: any = await env.DB.prepare(`SELECT * FROM github_release_assets WHERE release_id=?`).bind(r.id).all().catch(() => ({ results: [] }));
-    // Full per-check security evidence from the REAL pipeline: the canonical
-    // packages rows + their latest package_security_results + manual-review
-    // state (the admin reviews the same evidence the manual channel shows).
-    const canonical: any = await env.DB.prepare(
-      `SELECT id, status AS canonical_status FROM releases WHERE application_id=? AND version=?`
-    ).bind(r.application_id, r.version).first().catch(() => null);
-    let packages: any[] = [];
-    if (canonical?.id) {
-      const pkgs: any = await env.DB.prepare(`SELECT * FROM packages WHERE release_id=?`).bind(canonical.id).all().catch(() => ({ results: [] }));
-      packages = pkgs?.results || [];
-      const checks = await latestChecksForPackages(env, packages.map((p: any) => p.id)).catch(() => ({} as Record<string, any[]>));
-      for (const p of packages) {
-        (p as any).checks = checks[p.id] || [];
-        (p as any).manualReview = await env.DB.prepare(
-          `SELECT status, reason, admin_notes, created_at, reviewed_at, invalidated_at FROM package_manual_reviews WHERE package_id=? ORDER BY created_at DESC LIMIT 1`
-        ).bind(p.id).first().catch(() => null);
+    // One unreadable release record must never blank the WHOLE queue: the
+    // admin would just see a failed request with no explanation and no way to
+    // act on the other releases. Each row is enriched in isolation.
+    try {
+      const assets: any = await env.DB.prepare(`SELECT * FROM github_release_assets WHERE release_id=?`).bind(r.id).all().catch(() => ({ results: [] }));
+      // Full per-check security evidence from the REAL pipeline: the canonical
+      // packages rows + their latest package_security_results + manual-review
+      // state (the admin reviews the same evidence the manual channel shows).
+      const canonical: any = await env.DB.prepare(
+        `SELECT id, status AS canonical_status FROM releases WHERE application_id=? AND version=?`
+      ).bind(r.application_id, r.version).first().catch(() => null);
+      let packages: any[] = [];
+      if (canonical?.id) {
+        const pkgs: any = await env.DB.prepare(`SELECT * FROM packages WHERE release_id=?`).bind(canonical.id).all().catch(() => ({ results: [] }));
+        packages = pkgs?.results || [];
+        const checks = await latestChecksForPackages(env, packages.map((p: any) => p.id)).catch(() => ({} as Record<string, any[]>));
+        for (const p of packages) {
+          (p as any).checks = checks[p.id] || [];
+          (p as any).manualReview = await env.DB.prepare(
+            `SELECT status, reason, admin_notes, created_at, reviewed_at, invalidated_at FROM package_manual_reviews WHERE package_id=? ORDER BY created_at DESC LIMIT 1`
+          ).bind(p.id).first().catch(() => null);
+        }
       }
+      let ignored: any = null;
+      try { ignored = r.ignored_assets ? JSON.parse(r.ignored_assets) : null; } catch { ignored = null; }
+      out.push({
+        ...r,
+        status: displayStatus(r),
+        assets: assets?.results || [],
+        ignoredAssets: ignored?.ignored || [], unmappedAssets: ignored?.unmapped || [],
+        canonicalReleaseId: canonical?.id || null, canonicalStatus: canonical?.canonical_status || null, packages,
+      });
+    } catch (e: any) {
+      console.error(`[github] adminQueue could not enrich release ${r?.id}:`, String(e?.message || e));
+      let ignored: any = null;
+      try { ignored = r.ignored_assets ? JSON.parse(r.ignored_assets) : null; } catch { ignored = null; }
+      out.push({
+        ...r,
+        status: displayStatus(r),
+        assets: [], ignoredAssets: ignored?.ignored || [], unmappedAssets: ignored?.unmapped || [],
+        canonicalReleaseId: null, canonicalStatus: null, packages: [],
+        enrichmentError: String(e?.message || e).slice(0, 200),
+      });
     }
-    let ignored: any = null;
-    try { ignored = r.ignored_assets ? JSON.parse(r.ignored_assets) : null; } catch { ignored = null; }
-    out.push({
-      ...r,
-      status: displayStatus(r),
-      assets: assets?.results || [],
-      ignoredAssets: ignored?.ignored || [], unmappedAssets: ignored?.unmapped || [],
-      canonicalReleaseId: canonical?.id || null, canonicalStatus: canonical?.canonical_status || null, packages,
-    });
   }
   return out;
 }
