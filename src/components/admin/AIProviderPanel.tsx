@@ -101,7 +101,13 @@ export default function AIProviderPanel() {
       const j = await res.json();
       const d = j.data;
       if (!res.ok || !d?.ok) throw new Error(d?.error || j.error?.error || j.error?.message || 'Test failed');
-      setTestResult(r=>({ ...r, [provider]: `OK in ${d.latencyMs}ms (${d.model}${d.usedStoredKey ? ', saved key' : ', field key'}): ${d.reply}` }));
+      // The Test exercises the SAME path the assistant uses (stream + buffered),
+      // so a provider that only works buffered is visible here — not as
+      // "offline" in the chat with a different provider blamed.
+      const streamNote = d.streamOk === false
+        ? ` ⚠ streaming failed (${String(d.streamError || 'unknown').slice(0, 90)}) — answers will be buffered`
+        : d.streamOk === true ? ' · streaming OK' : '';
+      setTestResult(r=>({ ...r, [provider]: `OK in ${d.latencyMs}ms (${d.model}${d.usedStoredKey ? ', saved key' : ', field key'}): ${d.reply}${streamNote}` }));
       toast.success(`${provider} works`);
     } catch (e: any) {
       setTestResult(r=>({ ...r, [provider]: 'Error: ' + e.message }));

@@ -190,12 +190,39 @@ All apps poll same endpoint.
 
 ## 8. AI Service Layer
 
-Worker route `POST /ai/chat` proxies to configurable provider:
+Worker routes `POST /ai/chat` (buffered) and `POST /ai/chat/stream` (SSE) proxy
+to a configurable provider.
+
+Resolution order (first match wins):
+`request.provider` → D1 `ai_settings` row `id='default'` (the admin's choice in
+Admin → AI Providers) → `env.AI_PROVIDER` → `nvidia`.
 
 ```
-env.AI_PROVIDER = "openai" | "anthropic" | "local"
-env.OPENAI_API_KEY / env.AI_BASE_URL
+env.AI_PROVIDER  = "nvidia" | "openrouter" | "openai" | "gemini"
+env.AI_MODEL     = the active provider's model id
+env.AI_FALLBACK  = "openrouter,openai,gemini"   # consulted only on failure
+env.NVIDIA_API_KEY / _OPENROUTER_ / _OPENAI_ / _GEMINI_   (or a D1-stored key)
 ```
+
+Guarantees (each one is pinned by `backend/src/aiModels.test.ts`):
+
+* **The active provider answers whenever it is healthy.** A fallback is used
+  only after the active provider genuinely fails, so the assistant can never
+  "always use Gemini" while NVIDIA is selected.
+* **Every provider is tried across its current model chain.** A retired or
+  unknown model id (404/410/400 "model not found") moves to the next model of
+  the SAME provider before any fallback provider is considered — in both the
+  buffered and the streaming path. Auth failures, rate limits and outages are
+  **not** treated as "model gone".
+* **Streaming has a buffered retry.** If `stream: true` is rejected but a normal
+  completion works, that same provider answers buffered (the client still gets
+  one SSE chunk) instead of the request falling through to another provider.
+* **Errors name the active provider first.** The offline reply and the
+  `attempts` array report the active provider's real failure — previously the
+  message only showed the LAST fallback's error, which made a working NVIDIA
+  setup look like a Gemini failure.
+* `POST /admin/ai/test` probes **both** the buffered and the streaming path for
+  that provider, so "Test OK" means the assistant can actually use it.
 
 Features: assistant, recommendations, tech support, docs. Rate-limited 30 req/min.
 

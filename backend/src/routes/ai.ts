@@ -214,6 +214,93 @@ function providerOrder(env: any, provider: Provider): Provider[] {
   return [provider, ...(((env.AI_FALLBACK as string) || 'openrouter,openai').split(',').map(s=>s.trim()).filter(Boolean) as Provider[])].filter((v,i,a)=>a.indexOf(v)===i) as Provider[];
 }
 
+/**
+ * Try ONE provider, walking its model chain when an id is gone.
+ *
+ * `stream: true` returns the provider's raw SSE body; the fallback to the next
+ * model is only attempted while no bytes have been sent (a non-2xx response
+ * happens before the stream starts), so a retry can never corrupt a partial
+ * answer.
+ *
+ * Why this exists: the streaming path used to call the ACTIVE provider with the
+ * configured model and, on ANY failure, jump straight to the fallback list —
+ * without trying the provider's current models and without reporting the active
+ * provider's real error. The assistant then blamed Gemini (the last fallback)
+ * and looked like it "always uses Gemini".
+ */
+interface Attempt {
+  ok: boolean;
+  provider: Provider;
+  /** The model that actually answered (may be a chain replacement). */
+  model: string;
+  text?: string;
+  stream?: ReadableStream;
+  error?: string;
+  /** True when the provider has no key at all (not an outage). */
+  noKey?: boolean;
+}
+
+async function attemptProvider(
+  env: any,
+  p: Provider,
+  preferredModel: string,
+  message: string,
+  systemPrompt: string,
+  opts: { stream?: boolean } = {},
+): Promise<Attempt> {
+  const { baseUrl, key } = await getProviderCreds(env, p);
+  if (!key) return { ok: false, provider: p, model: preferredModel, noKey: true, error: `No API key configured for ${p}` };
+
+  const chain = [preferredModel, ...PROVIDER_MODEL_CHAIN[p].filter((x) => x !== preferredModel)].filter(Boolean);
+  let lastError = '';
+  for (const candidate of chain.slice(0, 3)) {
+    try {
+      if (p === 'gemini') {
+        const text = await callGemini(baseUrl, key, candidate, message, systemPrompt);
+        if (!text) { lastError = `${p}: empty response`; continue; }
+        if (candidate !== preferredModel) console.warn(`[ai] ${p}: '${preferredModel}' unavailable, served '${candidate}'`);
+        return { ok: true, provider: p, model: candidate, text };
+      }
+      if (opts.stream) {
+        const stream = await streamOpenAICompatible(baseUrl, key, candidate, message, systemPrompt);
+        if (candidate !== preferredModel) console.warn(`[ai] ${p}: '${preferredModel}' unavailable, streamed '${candidate}'`);
+        return { ok: true, provider: p, model: candidate, stream };
+      }
+      const text = await callOpenAICompatible(baseUrl, key, candidate, message, systemPrompt);
+      if (!text) { lastError = `${p}: empty response`; continue; }
+      if (candidate !== preferredModel) console.warn(`[ai] ${p}: '${preferredModel}' unavailable, served '${candidate}'`);
+      return { ok: true, provider: p, model: candidate, text };
+    } catch (e: any) {
+      lastError = String(e?.message || e).slice(0, 300);
+      // Only a DEAD MODEL moves us down the chain. An auth error, a rate limit
+      // or an outage must fall through to the next PROVIDER (and be reported),
+      // never be hidden behind another model id.
+      if (!isModelGoneError(Number(e?.status || 0), String(e?.body || e?.message || ''))) break;
+    }
+  }
+  return { ok: false, provider: p, model: preferredModel, error: lastError || `${p}: no model responded` };
+}
+
+/**
+ * Human-readable summary of a failed chain.
+ *
+ * The ACTIVE provider's failure is stated first — reporting only the last
+ * fallback's error is what made a working NVIDIA setup look like "always
+ * Gemini".
+ */
+function failureSummary(active: Provider, results: Attempt[]): string {
+  const activeResult = results.find((r) => r.provider === active);
+  const others = results.filter((r) => r.provider !== active);
+  const parts: string[] = [];
+  if (activeResult?.error) parts.push(`${active}: ${activeResult.error}`);
+  for (const o of others) {
+    if (o.noKey) continue; // "no key" is configuration, not a failure worth shouting about
+    if (o.error) parts.push(`${o.provider}: ${o.error}`);
+  }
+  if (!parts.length) parts.push(`${active}: no API key configured`);
+  return parts.join(' | ');
+}
+
 // Wrap plain text as a one-chunk OpenAI-compatible SSE stream (for Gemini + offline replies)
 function sseSingle(text: string): Response {
   const enc = new TextEncoder();
@@ -233,38 +320,34 @@ export const aiRoutes = {
     const order = providerOrder(env, provider);
     const systemPrompt = await buildSystemPrompt(env);
 
-    let lastError = '';
+    // The ACTIVE provider is asked first, with its configured model; only a
+    // genuine failure moves on. Every attempt is recorded so the error we show
+    // names the active provider instead of whichever fallback spoke last.
+    const attempts: Attempt[] = [];
     for (const p of order) {
-      const { baseUrl, key } = await getProviderCreds(env, p);
-      const m = p === provider ? model : PROVIDER_CONFIG[p].defaultModel;
-      if (!key) { lastError = `No key for ${p}`; continue; }
-      try {
-        // Try the configured model, then the provider's current chain. A
-        // retired/unknown model id must never brick the assistant.
-        let text = '';
-        const chain = [m, ...PROVIDER_MODEL_CHAIN[p].filter((x) => x !== m)];
-        let lastErr: any = null;
-        for (const candidate of chain.slice(0, 3)) {
-          try {
-            text = p === 'gemini'
-              ? await callGemini(baseUrl, key, candidate, message, systemPrompt)
-              : await callOpenAICompatible(baseUrl, key, candidate, message, systemPrompt);
-            if (candidate !== m) console.warn(`[ai] model '${m}' is unavailable; served with '${candidate}' (${p})`);
-            break;
-          } catch (err: any) {
-            lastErr = err;
-            if (!isModelGoneError(Number(err?.status || 0), String(err?.body || err?.message || ''))) throw err;
-          }
-        }
-        if (!text) throw lastErr || new Error('No model in the provider chain responded');
-        if (text) return { response: text, provider: p, model: m, suggestions: ['Show me healthcare apps','Compare Clinical Rx vs CureLink','What apps work offline?'] };
-      } catch (e: any) { lastError = e.message || String(e); continue; }
+      const preferred = p === provider ? model : PROVIDER_CONFIG[p].defaultModel;
+      const r = await attemptProvider(env, p, preferred, message, systemPrompt);
+      attempts.push(r);
+      if (r.ok && r.text) {
+        return {
+          response: r.text,
+          provider: r.provider,
+          model: r.model,
+          // Honest: the configured model was replaced by a current one.
+          modelSubstituted: r.model !== preferred,
+          suggestions: ['Show me healthcare apps', 'Compare Clinical Rx vs CureLink', 'What apps work offline?'],
+        };
+      }
     }
-    // If all providers failed, return detailed error for debugging
-    if (lastError) {
-      console.log(`AI chat failed for ${provider}, tried ${order.join(',')}: ${lastError}`);
-    }
-    return { response: `I'm the RX Store Assistant (offline). ${lastError ? `(last error: ${lastError.slice(0,200)})` : ''} Browse the store directly — each app page lists full details.`, provider: 'offline', suggestions: ['Show me healthcare apps'] };
+    const summary = failureSummary(provider, attempts);
+    console.log(`AI chat failed on the active provider '${provider}': ${summary}`);
+    return {
+      response: `I'm the RX Store Assistant (offline). ${summary ? `(${summary.slice(0, 200)})` : ''} Browse the store directly — each app page lists full details.`,
+      provider: 'offline',
+      activeProvider: provider,
+      attempts: attempts.map((a) => ({ provider: a.provider, ok: a.ok, noKey: !!a.noKey, error: a.error })),
+      suggestions: ['Show me healthcare apps'],
+    };
   },
 
   // Streaming chat — first tokens arrive in ~1s instead of one slow final blob.
@@ -277,23 +360,38 @@ export const aiRoutes = {
     const order = providerOrder(env, provider);
     const systemPrompt = await buildSystemPrompt(env);
 
-    let lastError = '';
+    const attempts: Attempt[] = [];
     for (const p of order) {
-      const { baseUrl, key } = await getProviderCreds(env, p);
-      const m = p === provider ? model : PROVIDER_CONFIG[p].defaultModel;
-      if (!key) { lastError = `No key for ${p}`; continue; }
-      try {
-        if (p === 'gemini') {
-          // Gemini stays buffered (REST shape differs) — one SSE chunk keeps the client simple
-          const text = await callGemini(baseUrl, key, m, message, systemPrompt);
-          if (text) return sseSingle(text);
-          continue;
+      const preferred = p === provider ? model : PROVIDER_CONFIG[p].defaultModel;
+      const r = await attemptProvider(env, p, preferred, message, systemPrompt, { stream: true });
+      attempts.push(r);
+      if (!r.ok && !r.noKey) {
+        // Streaming can fail where a normal completion succeeds (provider
+        // rejects `stream:true`, proxy strips SSE, …). The ACTIVE provider gets
+        // one buffered retry before we hand the answer to a fallback provider.
+        const buffered = await attemptProvider(env, p, preferred, message, systemPrompt, { stream: false });
+        if (buffered.ok && buffered.text) {
+          console.warn(`[ai] ${p}: streaming unavailable, served buffered`);
+          return sseSingle(buffered.text);
         }
-        const stream = await streamOpenAICompatible(baseUrl, key, m, message, systemPrompt);
-        return new Response(stream, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' } });
-      } catch (e: any) { lastError = e.message || String(e); continue; }
+        if (!buffered.ok && buffered.error) r.error = `${r.error} | buffered: ${buffered.error}`;
+      }
+      if (r.ok && r.stream) {
+        // Provider/model actually used is visible to the client for debugging.
+        return new Response(r.stream, {
+          headers: {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'X-AI-Provider': r.provider,
+            'X-AI-Model': r.model,
+          },
+        });
+      }
+      if (r.ok && r.text) return sseSingle(r.text);
     }
-    return sseSingle(`I'm offline at the moment (${lastError.slice(0,120)}). Browse the store directly — each app page lists full details.`);
+    const summary = failureSummary(provider, attempts);
+    console.log(`AI stream failed on the active provider '${provider}': ${summary}`);
+    return sseSingle(`I'm the RX Store Assistant (offline). ${summary ? `(${summary.slice(0, 200)})` : ''} Browse the store directly — each app page lists full details.`);
   },
 
   async recommend(request: Request, env: any) {
@@ -346,15 +444,41 @@ export const aiRoutes = {
     }
     if (!model) model = PROVIDER_CONFIG[provider].defaultModel;
     const started = Date.now();
+    const probe = 'Reply with exactly: RX Store connection OK';
+    const probeSystem = 'You are a connectivity probe. Reply exactly as instructed.';
+    // The assistant streams by default, and a provider can pass a buffered call
+    // while its streaming request fails. Test BOTH so "Test OK" means "the
+    // assistant can actually answer with this provider".
+    let streamOk: boolean | null = null;
+    let streamError = '';
+    if (provider !== 'gemini') {
+      try {
+        const stream = await streamOpenAICompatible(baseUrl, key, model, probe, probeSystem);
+        await stream.cancel?.().catch?.(() => {});
+        streamOk = true;
+      } catch (e: any) {
+        streamOk = false;
+        streamError = String(e?.message || e).slice(0, 200);
+      }
+    }
     try {
-      const probe = 'Reply with exactly: RX Store connection OK';
-      const probeSystem = 'You are a connectivity probe. Reply exactly as instructed.';
       const text = provider === 'gemini'
         ? await callGemini(baseUrl, key, model, probe, probeSystem)
         : await callOpenAICompatible(baseUrl, key, model, probe, probeSystem);
-      return { ok: true, provider, model, usedStoredKey: key === storedKey, latencyMs: Date.now() - started, reply: (text || '').slice(0, 300) };
+      return {
+        ok: true, provider, model, usedStoredKey: key === storedKey, latencyMs: Date.now() - started,
+        reply: (text || '').slice(0, 300),
+        streamOk, streamError: streamError || undefined,
+        warning: streamOk === false
+          ? 'Buffered completion works but streaming fails — the assistant will answer this provider buffered.'
+          : undefined,
+      };
     } catch (e: any) {
-      return { ok: false, provider, model, latencyMs: Date.now() - started, error: (e.message || String(e)).slice(0, 400) };
+      return {
+        ok: false, provider, model, latencyMs: Date.now() - started,
+        error: (e.message || String(e)).slice(0, 400),
+        streamOk, streamError: streamError || undefined,
+      };
     }
   },
 

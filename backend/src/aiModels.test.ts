@@ -53,3 +53,149 @@ test('every provider has a current fallback chain that does not contain retired 
   assert.ok(PROVIDER_MODEL_CHAIN.openai[0].startsWith('gpt-4.1'), 'OpenAI leads with gpt-4.1');
   assert.ok(PROVIDER_MODEL_CHAIN.gemini[0].startsWith('gemini-2'), 'Gemini leads with the 2.x line');
 });
+
+// ---------------------------------------------------------------------------
+// THE ACTIVE PROVIDER MUST ANSWER
+//
+// Production: NVIDIA was the active provider with a valid key and a working
+// model (Admin → Test said "OK in 2296ms"), yet the assistant replied "I'm the
+// RX Store Assistant (offline). (last error: Gemini error 404 …)" — the error
+// of the LAST fallback, and the streaming path had no model-chain retry at all.
+// ---------------------------------------------------------------------------
+
+/** A tiny env whose D1 returns the admin's choice (nvidia + its model). */
+function aiEnv(opts: {
+  active?: 'nvidia' | 'openrouter' | 'openai' | 'gemini';
+  model?: string;
+  keys?: Record<string, string>;
+} = {}) {
+  const active = opts.active || 'nvidia';
+  const model = opts.model || 'nvidia/nemotron-3.5-lightning-30b-a3b';
+  const keys = opts.keys || {};
+  return {
+    AI_PROVIDER: active,
+    AI_FALLBACK: 'openrouter,openai,gemini',
+    AI_MODEL: model,
+    AI_BASE_URL_NVIDIA: 'https://integrate.api.nvidia.com/v1',
+    AI_BASE_URL_OPENROUTER: 'https://openrouter.ai/api/v1',
+    AI_BASE_URL_OPENAI: 'https://api.openai.com/v1',
+    AI_BASE_URL_GEMINI: 'https://generativelanguage.googleapis.com/v1beta',
+    NVIDIA_API_KEY: keys.nvidia,
+    OPENROUTER_API_KEY: keys.openrouter,
+    OPENAI_API_KEY: keys.openai,
+    GEMINI_API_KEY: keys.gemini,
+    DB: {
+      prepare(sql: string) {
+        const s = sql.replace(/\s+/g, ' ');
+        return {
+          bind() { return this; },
+          async first() {
+            if (s.includes("FROM ai_settings WHERE id='default'")) return { provider: active, model };
+            if (s.includes('FROM ai_settings WHERE id=?')) return null; // no D1-stored keys
+            if (s.includes('FROM applications')) return null;
+            return null;
+          },
+          async all() { return { results: [] }; },
+          async run() { return { meta: { changes: 0 } }; },
+        };
+      },
+    },
+  };
+}
+
+const jsonResponse = (obj: any, status = 200) =>
+  new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json' } });
+
+test('the ACTIVE provider answers — the fallback is never used while it works', async () => {
+  const { aiRoutes } = await import('./routes/ai.ts');
+  const calls: string[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: any) => {
+    const u = String(url);
+    calls.push(u);
+    if (u.startsWith('https://integrate.api.nvidia.com')) {
+      return jsonResponse({ choices: [{ message: { content: 'Here are two healthcare apps from the catalog.' } }] });
+    }
+    // A fallback answering would mean the active provider was skipped.
+    return jsonResponse({ choices: [{ message: { content: 'WRONG PROVIDER' } }] });
+  }) as any;
+  try {
+    const env = aiEnv({ keys: { nvidia: 'nvapi-test', gemini: 'gemini-test' } });
+    const out: any = await aiRoutes.chat(new Request('https://x/ai/chat', { method: 'POST', body: JSON.stringify({ message: 'healthcare apps?' }) }), env);
+    assert.equal(out.provider, 'nvidia', `the active provider must answer (got ${out.provider})`);
+    assert.equal(out.model, 'nvidia/nemotron-3.5-lightning-30b-a3b');
+    assert.match(out.response, /healthcare/);
+    assert.equal(calls.every((u) => u.includes('integrate.api.nvidia.com')), true, 'no fallback provider was called');
+  } finally { globalThis.fetch = original; }
+});
+
+test('the streaming path also uses the active provider, with its model chain', async () => {
+  const { aiRoutes } = await import('./routes/ai.ts');
+  const original = globalThis.fetch;
+  const tried: string[] = [];
+  globalThis.fetch = (async (url: any, init?: any) => {
+    tried.push(`${String(url)} :: ${String(init?.body || '')}`);
+    if (!String(url).includes('integrate.api.nvidia.com')) {
+      return jsonResponse({ error: { message: 'a fallback provider must not be reached' } }, 500);
+    }
+    const body = JSON.parse(String(init?.body || '{}'));
+    if (body.model === 'nvidia/nemotron-3.5-lightning-30b-a3b') {
+      // The configured streaming model is gone upstream…
+      return new Response('{"detail":"model not found"}', { status: 404 });
+    }
+    // …but a current model in the chain works.
+    return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  }) as any;
+  try {
+    const env = aiEnv({ keys: { nvidia: 'nvapi-test', gemini: 'gemini-test' } });
+    const res = await aiRoutes.chatStream(new Request('https://x/ai/chat/stream', { method: 'POST', body: JSON.stringify({ message: 'hi' }) }), env);
+    assert.equal(res.status, 200);
+    const usedModel = res.headers.get('X-AI-Model');
+    assert.equal(res.headers.get('X-AI-Provider'), 'nvidia');
+    assert.notEqual(usedModel, 'nvidia/nemotron-3.5-lightning-30b-a3b', 'the dead id was replaced');
+    assert.ok(PROVIDER_MODEL_CHAIN.nvidia.includes(String(usedModel)), `served with a current model (${usedModel})`);
+    const text = await res.text();
+    assert.match(text, /ok/, 'the streamed answer is returned');
+    assert.equal(tried.every((t) => t.includes('integrate.api.nvidia.com')), true, 'no fallback provider was reached');
+  } finally { globalThis.fetch = original; }
+});
+
+test('a streaming failure falls back to a buffered answer from the SAME provider', async () => {
+  const { aiRoutes } = await import('./routes/ai.ts');
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: any, init?: any) => {
+    const body = JSON.parse(String(init?.body || '{}'));
+    if (body.stream) return new Response('streaming not supported', { status: 400 });
+    return jsonResponse({ choices: [{ message: { content: 'buffered answer' } }] });
+  }) as any;
+  try {
+    const env = aiEnv({ keys: { nvidia: 'nvapi-test', gemini: 'gemini-test' } });
+    const res = await aiRoutes.chatStream(new Request('https://x/ai/chat/stream', { method: 'POST', body: JSON.stringify({ message: 'hi' }) }), env);
+    const text = await res.text();
+    assert.match(text, /buffered answer/, 'the active provider still answers, just not as a stream');
+    assert.doesNotMatch(text, /offline/);
+  } finally { globalThis.fetch = original; }
+});
+
+test('the offline message names the ACTIVE provider, never only the last fallback', async () => {
+  const { aiRoutes } = await import('./routes/ai.ts');
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: any) => {
+    const u = String(url);
+    if (u.includes('generativelanguage')) {
+      // The 404 that used to be reported on its own, blaming Gemini.
+      return new Response('{"error":{"code":404,"message":"models/gemini-3.8-flash is not found"}}', { status: 404 });
+    }
+    return new Response('{"error":{"message":"nvidia is rate limited"}}', { status: 429 });
+  }) as any;
+  try {
+    const env = aiEnv({ keys: { nvidia: 'nvapi-test', gemini: 'gemini-test' } });
+    const out: any = await aiRoutes.chat(new Request('https://x/ai/chat', { method: 'POST', body: JSON.stringify({ message: 'hi' }) }), env);
+    assert.equal(out.provider, 'offline');
+    assert.equal(out.activeProvider, 'nvidia');
+    assert.match(out.response, /nvidia/i, 'the active provider is named first');
+    assert.match(out.response, /rate limited/i, 'its real error is reported');
+    // The fallback error is still available (diagnostics), but second.
+    assert.ok(out.attempts.some((a: any) => a.provider === 'gemini' && !a.ok));
+  } finally { globalThis.fetch = original; }
+});
