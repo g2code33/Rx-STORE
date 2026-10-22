@@ -13,10 +13,17 @@ export default {
           'dark-secondary': 'rgb(var(--rx-dark-secondary, 26 35 50) / <alpha-value>)',
           'dark-tertiary': 'rgb(var(--rx-dark-tertiary, 36 48 68) / <alpha-value>)',
           'gray-light': '#F5F7FA',
-          'gray-medium': '#8899AA',
+          // Variable-driven so the light theme can darken muted text.
+          'gray-medium': 'rgb(var(--rx-muted, 136 153 170) / <alpha-value>)',
           'gray-dark': '#4A5568',
-          white: '#FFFFFF',
         },
+        /**
+         * The INK / OVERLAY base — one variable behind every `text-white`,
+         * `bg-white/5…20`, `border-white/5…25` and `divide-white/5` in the app
+         * (~1,700 usages). White in the dark theme; dark ink in the light
+         * theme, so no component had to be rewritten (see index.css).
+         */
+        white: 'rgb(var(--rx-ink, 255 255 255) / <alpha-value>)',
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],

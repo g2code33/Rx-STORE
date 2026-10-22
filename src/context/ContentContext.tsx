@@ -1,3 +1,4 @@
+import { currentTheme } from '../platform/theme.ts';
 import React, { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react';
 import toast from 'react-hot-toast';
 import { API_URL, isApiConfigured } from '../services/api';
@@ -53,9 +54,14 @@ function applyDesignTokens(content: ContentMap) {
   setVar('--rx-yellow', content['design.brandColor']);
   setVar('--rx-yellow-light', content['design.brandColorLight']);
   setVar('--rx-yellow-dark', content['design.brandColorDark']);
-  setVar('--rx-dark', content['design.bgColor']);
-  setVar('--rx-dark-secondary', content['design.surfaceColor']);
-  setVar('--rx-dark-tertiary', content['design.surfaceColor2']);
+  // Surfaces: a custom dark palette is an inline style, which would beat the
+  // light theme's CSS block and leave a "light" storefront painted dark. Brand
+  // colours still apply in both themes; the surface ramp belongs to the theme.
+  if (currentTheme() !== 'light') {
+    setVar('--rx-dark', content['design.bgColor']);
+    setVar('--rx-dark-secondary', content['design.surfaceColor']);
+    setVar('--rx-dark-tertiary', content['design.surfaceColor2']);
+  }
 }
 
 let memoryCache: { at: number; map: ContentMap } | null = null;
@@ -98,6 +104,18 @@ export function ContentProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { fetchContent(); }, [fetchContent]);
   useEffect(() => { applyDesignTokens(content); }, [content]);
+
+  // Re-apply when the appearance changes: a custom dark palette is skipped in
+  // light mode (it would override the light surfaces), so switching back to
+  // dark must restore it without a reload.
+  const contentRef = React.useRef(content);
+  contentRef.current = content;
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const reapply = () => applyDesignTokens(contentRef.current);
+    document.addEventListener('rx-theme-applied', reapply);
+    return () => document.removeEventListener('rx-theme-applied', reapply);
+  }, []);
   useEffect(() => { try { localStorage.setItem(PENDING_KEY, JSON.stringify(pending)); } catch {} }, [pending]);
 
   const get = useCallback((id: string, fallback = '') => {

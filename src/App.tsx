@@ -187,10 +187,12 @@ export default function App() {
       <Toaster
         position="top-right"
         toastOptions={{
+          // Theme-driven: follows light/dark automatically (a hard-coded dark
+          // toast would look pasted-on over a white page).
           style: {
-            background: '#1A2332',
-            color: '#fff',
-            border: '1px solid rgba(255,255,255,0.1)',
+            background: 'rgb(var(--rx-dark-secondary, 26 35 50))',
+            color: 'rgb(var(--rx-ink, 255 255 255))',
+            border: '1px solid rgb(var(--rx-ink, 255 255 255) / 0.1)',
             borderRadius: '12px',
           },
         }}

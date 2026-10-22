@@ -60,6 +60,12 @@ declare global {
       uninstallApp: (input?: { appSlug?: string; target?: string; quietTarget?: string; appImagePath?: string; platform?: 'windows' | 'linux' | 'android' | 'web' }) => Promise<boolean>;
       showNotification: (input: { title: string; body?: string }) => Promise<boolean>;
       onDownloadProgress: (cb: (s: any) => void) => () => void;
+      /**
+       * Appearance: mirror the renderer's theme choice so the native window
+       * background, native menus and system dialogs match. Optional — an older
+       * installed shell simply ignores it.
+       */
+      setTheme?: (theme: 'light' | 'dark' | 'system') => Promise<{ theme?: string; backgroundColor?: string } | void>;
       /** Deep links (rxstore://app/{slug}) — validated in the main process. */
       getPendingDeepLink?: () => Promise<string | null>;
       onDeepLink?: (cb: (payload: { url: string }) => void) => () => void;

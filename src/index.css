@@ -4,11 +4,14 @@
 
 @layer base {
   * {
-    border-color: rgba(255, 255, 255, 0.05);
+    /* Follows --rx-ink: white in the dark theme, dark ink in the light theme. */
+    border-color: rgb(var(--rx-ink, 255 255 255) / 0.05);
   }
 
   body {
     @apply bg-rx-dark text-white font-sans;
+    /* Keep the OS from painting a white/black canvas behind the app. */
+    background-color: rgb(var(--rx-dark, 15 20 25));
   }
 
   ::-webkit-scrollbar {
@@ -150,13 +153,40 @@
 }
 
 /* ===== Live Website Builder ===== */
-:root {
+:root,
+[data-theme='dark'] {
   --rx-yellow: 255 214 0;
   --rx-yellow-light: 255 224 51;
   --rx-yellow-dark: 230 194 0;
   --rx-dark: 15 20 25;
   --rx-dark-secondary: 26 35 50;
   --rx-dark-tertiary: 36 48 68;
+  /* Ink / overlay base (backs every text-white, bg-white/5, border-white/10). */
+  --rx-ink: 255 255 255;
+  /* Muted text (backs text-rx-gray-medium). */
+  --rx-muted: 136 153 170;
+  color-scheme: dark;
+}
+
+/**
+ * LIGHT THEME — the storefront's surfaces invert, the brand yellow does not.
+ *
+ * Every dark surface, every "white" overlay and every muted label is a CSS
+ * variable, so the whole app flips here without touching component markup.
+ * The handful of things a variable cannot express (bright yellow used as TEXT,
+ * the status colours tuned for a dark background, the few deliberate pure-white
+ * chips, the hero gradient) are corrected explicitly below.
+ */
+[data-theme='light'] {
+  --rx-yellow: 255 214 0;
+  --rx-yellow-light: 255 224 51;
+  --rx-yellow-dark: 230 194 0;
+  --rx-dark: 243 246 250;          /* page background */
+  --rx-dark-secondary: 255 255 255; /* cards / panels */
+  --rx-dark-tertiary: 232 237 243;  /* inputs, chips, hovers */
+  --rx-ink: 15 20 25;               /* text-white becomes ink */
+  --rx-muted: 88 104 122;           /* readable muted text on white */
+  color-scheme: light;
 }
 
 /* Editable element markers — admin-only, never rendered for visitors.
@@ -201,3 +231,112 @@
 }
 .rx-ed-group { outline-style: dashed; outline-width: 1.5px; outline-color: rgba(255, 214, 0, 0.3); }
 .rx-ed-group:hover { outline-style: solid; outline-color: rgba(255, 214, 0, 0.9); }
+
+/* =====================================================================
+   LIGHT THEME — literal-colour corrections
+   ---------------------------------------------------------------------
+   Surfaces, "white" overlays and muted text flip through the variables in
+   `:root` / `[data-theme='light']`. What a variable cannot express is
+   corrected here, once, instead of in ~1,500 component classes.
+   ===================================================================== */
+
+/* 1. Ink on an accent surface (yellow button, green badge, white chip) stays
+      dark in BOTH themes — `--rx-dark` flips to the page colour in light mode,
+      so `text-rx-dark` is pinned to real ink. */
+[data-theme='light'] .text-rx-dark {
+  color: #0f1419;
+}
+
+/* 2. The brand yellow is a FILL (buttons, badges, highlights). As TEXT on a
+      light surface it is unreadable (1.1:1), so it becomes a deep gold
+      (~5.6:1 on white) while every `bg-rx-yellow` stays brand-bright. */
+[data-theme='light'] .text-rx-yellow {
+  color: #6f5300;
+}
+[data-theme='light'] .text-rx-yellow\/80 {
+  color: rgb(111 83 0 / 0.8);
+}
+[data-theme='light'] .text-rx-yellow\/90 {
+  color: rgb(111 83 0 / 0.9);
+}
+[data-theme='light'] .hover\:text-rx-yellow:hover {
+  color: #6f5300;
+}
+[data-theme='light'] .group:hover .group-hover\:text-rx-yellow {
+  color: #6f5300;
+}
+
+/* 3. Status colours tuned for a dark background are too pale on white. These
+      keep the same meaning with an accessible contrast ratio. */
+[data-theme='light'] .text-green-400 { color: #15803d; }
+[data-theme='light'] .text-green-300 { color: #166534; }
+[data-theme='light'] .text-red-400   { color: #b91c1c; }
+[data-theme='light'] .text-red-300   { color: #991b1b; }
+[data-theme='light'] .text-red-200   { color: #7f1d1d; }
+[data-theme='light'] .text-amber-300 { color: #b45309; }
+[data-theme='light'] .text-amber-200 { color: #92400e; }
+[data-theme='light'] .text-blue-300  { color: #1d4ed8; }
+[data-theme='light'] .text-purple-300 { color: #6d28d9; }
+[data-theme='light'] .text-purple-400 { color: #6d28d9; }
+[data-theme='light'] .text-yellow-400 { color: #a16207; }
+[data-theme='light'] .text-gray-400 { color: #4b5563; }
+[data-theme='light'] .text-gray-600 { color: #374151; }
+/* Star ratings pair text-yellow-400 with fill-yellow-400 — keep them equal. */
+[data-theme='light'] .fill-yellow-400 { fill: #a16207; }
+[data-theme='light'] .text-yellow-300 { color: #854d0e; }
+[data-theme='light'] .hover\:text-red-400:hover { color: #b91c1c; }
+
+/* 4. A few elements are deliberately WHITE (the "Get" button on a paid app,
+      the chip over an app logo). Those must stay white in light mode instead
+      of inheriting the ink colour. */
+[data-theme='light'] .bg-white { background-color: #ffffff; }
+[data-theme='light'] .bg-white\/70 { background-color: rgb(255 255 255 / 0.7); }
+[data-theme='light'] .bg-white\/90 { background-color: rgb(255 255 255 / 0.9); }
+/* …and they need an edge so they do not dissolve into a white card. */
+[data-theme='light'] .bg-white { box-shadow: 0 1px 2px rgb(15 20 25 / 0.14); }
+
+/* 5. The hero gradient is a hard-coded dark ramp. Light mode gets its own. */
+[data-theme='light'] .bg-gradient-hero {
+  background-image: linear-gradient(135deg, #eef2f7 0%, #f8fafc 50%, #e7edf5 100%);
+}
+
+/* 6. Elevation reads differently on light: shadows must be softer/tinted. */
+[data-theme='light'] .card {
+  box-shadow: 0 1px 2px rgb(15 20 25 / 0.04), 0 1px 3px rgb(15 20 25 / 0.06);
+}
+[data-theme='light'] .shadow-glow {
+  box-shadow: 0 0 20px rgb(255 214 0 / 0.45);
+}
+
+/* 7. Scrollbars follow the theme. */
+[data-theme='light'] ::-webkit-scrollbar-thumb {
+  background-color: rgb(15 20 25 / 0.2);
+}
+[data-theme='light'] ::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(15 20 25 / 0.35);
+}
+
+/* 8. `bg-black/30` marks code blocks / quoted messages, not modal scrims.
+      On white it reads as muddy grey, so it becomes a neutral chip instead. */
+[data-theme='light'] .bg-black\/30 {
+  background-color: rgb(15 20 25 / 0.06);
+}
+
+/* 9. The gradient wordmark is brand yellow — unreadable as TEXT on white. */
+[data-theme='light'] .gradient-text {
+  color: #6f5300;
+  -webkit-text-fill-color: #6f5300;
+  background-image: linear-gradient(to right, #6f5300, #a17a00);
+}
+@supports ((background-clip: text) or (-webkit-background-clip: text)) {
+  [data-theme='light'] .gradient-text {
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+}
+
+/* 10. Selection + focus stay legible on white. */
+[data-theme='light'] ::selection {
+  background: rgb(255 214 0 / 0.45);
+  color: #0f1419;
+}

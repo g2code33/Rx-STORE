@@ -6,6 +6,7 @@ import { AuthProvider } from './context/AuthContext';
 import { AppProvider } from './context/AppContext';
 import { ContentProvider } from './context/ContentContext';
 import { DeviceProvider } from './context/DeviceContext';
+import { ThemeProvider } from './context/ThemeContext';
 import { capturePwaInstallPrompt } from './platform/pwaInstall';
 import './index.css';
 
@@ -13,13 +14,17 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <BrowserRouter>
       <AuthProvider>
-        <ContentProvider>
-          <AppProvider>
-            <DeviceProvider>
-              <App />
-            </DeviceProvider>
-          </AppProvider>
-        </ContentProvider>
+        {/* Theme sits inside Auth so the choice can follow the account, and
+            outside everything else so the first painted frame is correct. */}
+        <ThemeProvider>
+          <ContentProvider>
+            <AppProvider>
+              <DeviceProvider>
+                <App />
+              </DeviceProvider>
+            </AppProvider>
+          </ContentProvider>
+        </ThemeProvider>
       </AuthProvider>
     </BrowserRouter>
   </React.StrictMode>

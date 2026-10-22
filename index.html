@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/v1.png" />
@@ -16,6 +16,25 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
     <title>RX Store - Digital Marketplace by Calcitonin Technologies</title>
+    <!--
+      APPEARANCE — painted before the bundle loads so the first frame is already
+      the right theme (no white flash for dark-mode users, no dark flash for
+      light-mode users). Mirrors src/platform/theme.ts: key `rx-theme`, values
+      light | dark | system, default dark. React takes over afterwards.
+    -->
+    <script>
+      (function () {
+        try {
+          var pref = localStorage.getItem('rx-theme');
+          if (pref !== 'light' && pref !== 'dark' && pref !== 'system') pref = 'dark';
+          var dark = pref === 'dark' || (pref === 'system' &&
+            !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches));
+          var el = document.documentElement;
+          el.setAttribute('data-theme', dark ? 'dark' : 'light');
+          el.style.colorScheme = dark ? 'dark' : 'light';
+        } catch (e) { /* default markup value stays */ }
+      })();
+    </script>
   </head>
   <body class="bg-rx-dark text-white antialiased">
     <div id="root"></div>

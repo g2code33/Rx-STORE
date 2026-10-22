@@ -13,6 +13,12 @@ contextBridge.exposeInMainWorld('rxDesktop', {
     ipcRenderer.invoke('window:open', typeof target === 'string' ? { path: target } : target),
   /** Hand a URL to the operating system's default browser. */
   openInBrowser: (url: string) => ipcRenderer.invoke('window:openExternal', url),
+  /**
+   * Appearance: 'light' | 'dark' | 'system'. The renderer has already painted
+   * <html data-theme>; this keeps the native window background, menus and
+   * native dialogs in step with the user's choice.
+   */
+  setTheme: (theme: 'light' | 'dark' | 'system') => ipcRenderer.invoke('theme:set', theme),
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
   setUpdatePolicy: (policy: any) => ipcRenderer.invoke('update:policy', policy),

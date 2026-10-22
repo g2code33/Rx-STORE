@@ -84,6 +84,11 @@ export interface User {
     autoUpdate: boolean;
     wifiOnly: boolean;
     mobileDataUpdates?: boolean;
+    /**
+     * Appearance choice (light | dark | system). Absent means "no opinion" —
+     * the device's own theme choice is kept and never overwritten.
+     */
+    theme?: 'light' | 'dark' | 'system';
   };
 }
 

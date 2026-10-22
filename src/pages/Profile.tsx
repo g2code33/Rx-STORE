@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, Navigate, useSearchParams, useLocation } from 'react-router-dom';
-import { Download, CreditCard, Bell, Settings, LogOut, X, Trash2, RefreshCw, Rocket, Monitor, Smartphone, Globe, Laptop, UserCircle, Save, ShieldCheck, Link2 } from 'lucide-react';
+import { Download, CreditCard, Bell, Settings, LogOut, X, Trash2, RefreshCw, Rocket, Monitor, Smartphone, Globe, Laptop, UserCircle, Save, ShieldCheck, Link2, Sun, Moon } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import { useApps } from '../context/AppContext';
@@ -14,8 +14,15 @@ import AppLogo from '../components/apps/AppLogo';
 import UserAvatar from '../components/common/UserAvatar';
 import { useUpdateStatus, describeStatus, checkNow, installNow, isDesktopApp, applyUpdatePolicy, watchConnectionForUpdatePolicy } from '../desktop/updater';
 import { normalizeProfileTab, type ProfileTab } from '../utils/profileTabs';
+import { useTheme } from '../context/ThemeContext';
+import { THEME_OPTIONS } from '../platform/theme';
 import toast from 'react-hot-toast';
 
+/**
+ * Appearance is deliberately NOT defaulted here. A theme is written to the
+ * account only when the user actually chooses one (Settings → Appearance), so
+ * saving an unrelated preference can never overwrite a device's theme choice.
+ */
 const DEFAULT_PREFERENCES = {
   emailNotifications: true,
   autoUpdate: true,
@@ -509,6 +516,7 @@ export default function Profile() {
           <div className="space-y-6">
             {/* Personal details (name/email) live in the "Personal Details"
                 tab (/profile?tab=profile) — one section, one source of truth. */}
+            <AppearanceCard />
             <div className="card p-6 space-y-4">
               <h3 className="font-semibold text-white">Preferences</h3>
               {[
@@ -536,6 +544,60 @@ export default function Profile() {
   );
 }
 
+
+// ---------------------------------------------------------------------------
+// Appearance (Phase 24): light / dark / system, for every account.
+//
+// The choice is applied immediately (no reload), remembered on this device and
+// mirrored to the account so it follows the user to their other devices.
+// "System" follows the OS appearance live — including while the page is open.
+// ---------------------------------------------------------------------------
+function AppearanceCard() {
+  const { preference, resolved, systemDark, setPreference } = useTheme();
+
+  return (
+    <div className="card p-6 space-y-4">
+      <div>
+        <h3 className="font-semibold text-white">Appearance</h3>
+        <p className="text-xs text-rx-gray-medium mt-0.5">
+          Applies to the storefront and your account on every device.
+          {preference === 'system' && ` This device is currently ${systemDark ? 'dark' : 'light'}.`}
+        </p>
+      </div>
+      <div role="radiogroup" aria-label="Appearance" className="grid grid-cols-3 gap-2">
+        {THEME_OPTIONS.map((opt) => {
+          const active = preference === opt.value;
+          const Icon = opt.value === 'light' ? Sun : opt.value === 'dark' ? Moon : Monitor;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => setPreference(opt.value)}
+              title={opt.description}
+              className={`rounded-xl border px-3 py-3 text-left transition-colors ${
+                active
+                  ? 'border-rx-yellow bg-rx-yellow/10'
+                  : 'border-white/10 bg-rx-dark-tertiary hover:border-rx-yellow/40'
+              }`}
+            >
+              <Icon className={`w-4 h-4 mb-1.5 ${active ? 'text-rx-yellow' : 'text-rx-gray-medium'}`} />
+              <span className={`block text-sm font-semibold ${active ? 'text-rx-yellow' : 'text-white'}`}>{opt.label}</span>
+              <span className="block text-[10px] text-rx-gray-medium leading-tight mt-0.5">
+                {opt.value === 'system' ? 'Match device' : opt.description}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-rx-gray-medium">
+        Current: <span className="text-white font-medium capitalize">{resolved}</span>
+        {preference === 'system' ? ' (following this device)' : ' (always on)'}.
+      </p>
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Purchase history (Phase 18): real transactions, amounts, states, refunds.

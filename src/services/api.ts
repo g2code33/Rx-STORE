@@ -278,7 +278,7 @@ export const api = {
     async me() {
       return request<{ user: any }>('/users/me', { method: 'GET' });
     },
-    async updateProfile(updates: { name?: string; email?: string; preferences?: Record<string, boolean> }) {
+    async updateProfile(updates: { name?: string; email?: string; preferences?: Record<string, boolean | string | undefined> }) {
       return request<{ user: any }>('/users/me', {
         method: 'PATCH',
         body: JSON.stringify(updates),

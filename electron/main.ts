@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, protocol, net, shell, session, Notification } from 'electron';
+import { app, BrowserWindow, ipcMain, protocol, net, shell, session, Notification, nativeTheme } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chmod, access, copyFile } from 'node:fs/promises';
@@ -183,7 +183,7 @@ function openAppWindow(url: string): BrowserWindow {
     minHeight: 520,
     title: 'RX Store',
     icon: path.join(app.getAppPath(), 'build/icon.png'),
-    backgroundColor: '#0F1419',
+    backgroundColor: resolvedBackground(),
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -247,7 +247,7 @@ function createWindow(): BrowserWindow {
     title: 'RX Store',
     icon: path.join(app.getAppPath(), 'build/icon.png'),
     show: false,
-    backgroundColor: '#0F1419',
+    backgroundColor: resolvedBackground(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -383,6 +383,30 @@ function downloadNative(url: string, fileName: string, id: string) {
 // here ever executes the target application; it only reads registry metadata,
 // package-manager metadata, or file metadata.
 // ---------------------------------------------------------------------------
+
+/**
+ * APPEARANCE — the renderer owns the choice (Settings → Appearance), the main
+ * process mirrors it so native chrome matches: window background (no dark flash
+ * before the first paint), native menus/dialogs and `prefers-color-scheme`
+ * inside the renderer (`nativeTheme.themeSource`).
+ */
+type ThemePreference = 'light' | 'dark' | 'system';
+const THEME_BACKGROUNDS = { light: '#F3F6FA', dark: '#0F1419' } as const;
+let activeTheme: ThemePreference = 'dark';
+
+function resolvedBackground(theme: ThemePreference = activeTheme): string {
+  const dark = theme === 'dark' || (theme === 'system' && nativeTheme.shouldUseDarkColors);
+  return dark ? THEME_BACKGROUNDS.dark : THEME_BACKGROUNDS.light;
+}
+
+function applyThemeEverywhere(theme: ThemePreference) {
+  activeTheme = theme;
+  try { nativeTheme.themeSource = theme; } catch { /* unsupported platform */ }
+  const bg = resolvedBackground(theme);
+  for (const win of BrowserWindow.getAllWindows()) {
+    try { win.setBackgroundColor(bg); } catch { /* window closing */ }
+  }
+}
 
 const DETECT_TTL_MS = 60_000;
 const detectCache = new Map<string, { at: number; result: unknown }>();
@@ -1014,6 +1038,13 @@ function initIpc() {
     if (app.isPackaged) autoUpdater.quitAndInstall();
   });
   ipcMain.handle('app:version', () => app.getVersion());
+  // Appearance: the renderer paints <html data-theme>; this keeps the native
+  // window chrome in step (and nativeTheme drives system dialogs/menus).
+  ipcMain.handle('theme:set', (_e, theme: string) => {
+    const next: ThemePreference = theme === 'light' || theme === 'dark' ? theme : 'system';
+    applyThemeEverywhere(next);
+    return { theme: next, backgroundColor: resolvedBackground(next) };
+  });
   // Renderer-initiated new window: { path } for in-app destinations (e.g.
   // '/app/clinical-rx') or { url } for an external page.
   ipcMain.handle('window:open', (_e, payload: any) => {
