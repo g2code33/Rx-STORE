@@ -1016,9 +1016,29 @@ export async function publishGithubRelease(env: any, actor: { userId: string; la
       await audit(env, { action: 'publish_blocked', actorId: actor.userId, actorLabel: actor.label, appId: rel.application_id, releaseId, repositoryId: conn.repository_id, reason: 'asset identity changed', details: { asset: a.name } });
       return { ok: false, code: 'CONFLICT', message: `Asset ${a.name} changed on GitHub after review. The release was blocked — re-verify and approve again.` };
     }
+    // Bind the approval to the EXACT bytes — cheaply.
+    //
+    // GitHub publishes a sha256 digest for every asset it stores, computed over
+    // the bytes it serves. Comparing our recorded hash to THAT proves the file
+    // is unchanged without downloading it. Streaming every asset again at
+    // publish time meant ~750MB for a release like yayra v1.0.79 (161MB
+    // AppImage + three ~100MB installers) — the request was killed and the
+    // admin saw only 'network error'. The bytes are streamed ONLY when GitHub
+    // has no digest to compare against.
+    const digestMatch = /^sha256:([a-f0-9]{64})$/i.exec(String(meta.json?.digest || ''));
+    const recorded = String(a.sha256 || '').toLowerCase();
+    if (digestMatch) {
+      if (digestMatch[1].toLowerCase() !== recorded) {
+        await env.DB.prepare(`UPDATE github_releases SET status='blocked', block_reason=? WHERE id=?`)
+          .bind(`Asset ${a.name} bytes changed after review (GitHub digest mismatch) — re-verify and re-approve.`, releaseId).run();
+        await audit(env, { action: 'publish_blocked', actorId: actor.userId, actorLabel: actor.label, appId: rel.application_id, releaseId, repositoryId: conn.repository_id, reason: 'asset bytes changed', details: { asset: a.name } });
+        return { ok: false, code: 'CONFLICT', message: `Asset ${a.name} changed after review. The release was blocked — re-verify and approve again.` };
+      }
+      continue; // digest matches: the file is exactly what was approved
+    }
     try {
-      const ext = await loadExternalPackageBytes(a.download_url, { maxBytes: assetMaxBytes(env), authHeaders: await assetAuthHeaders(env, conn, a.is_private === 1) });
-      if (!ext || ext.sha256 !== a.sha256 || ext.size !== Number(a.size_bytes)) {
+      const ext = await loadExternalPackageBytes(a.download_url, { maxBytes: assetMaxBytes(env), timeoutMs: 180_000, authHeaders: await assetAuthHeaders(env, conn, a.is_private === 1) });
+      if (!ext || ext.sha256 !== recorded || ext.size !== Number(a.size_bytes)) {
         await env.DB.prepare(`UPDATE github_releases SET status='blocked', block_reason=? WHERE id=?`)
           .bind(`Asset ${a.name} bytes changed after review (hash mismatch) — re-verify and re-approve.`, releaseId).run();
         await audit(env, { action: 'publish_blocked', actorId: actor.userId, actorLabel: actor.label, appId: rel.application_id, releaseId, repositoryId: conn.repository_id, reason: 'asset bytes changed', details: { asset: a.name } });
@@ -1046,7 +1066,9 @@ export async function publishGithubRelease(env: any, actor: { userId: string; la
 
   // The shared gate (AUTOMATED / MANUAL_APPROVAL / SECURITY_OVERRIDE paths,
   // freshness-window re-verification with the current pipeline).
-  let gate = await publicationSecurityGate(env, canonical.id);
+  // reverify:false — the publish pass above already bound every asset to its
+  // exact bytes, and re-running the pipeline would download them all again.
+  let gate = await publicationSecurityGate(env, canonical.id, { reverify: false });
   if (!gate.ok && override) {
     // An explicit, audited override is recorded per blocking package through
     // the SAME package_security_overrides machinery the manual channel uses
@@ -1060,7 +1082,7 @@ export async function publishGithubRelease(env: any, actor: { userId: string; la
          VALUES (?,?,?,?,?,?,?)`
       ).bind(`pso_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`, pkg.id, actor.userId, reason.slice(0, 500), pkg.security_state, pkg.overall_security, String(pkg.sha256 || '')).run().catch(() => {});
     }
-    gate = await publicationSecurityGate(env, canonical.id);
+    gate = await publicationSecurityGate(env, canonical.id, { reverify: false });
   }
   if (!gate.ok) {
     const lines = gate.blockers.map((b: any) => `• ${b.filename} (${b.platform}): state=${b.state}, overall=${b.overall}` + (b.reasons?.length ? ` — ${b.reasons.slice(0, 3).join(' | ')}` : '')).join('\n');

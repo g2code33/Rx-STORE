@@ -148,7 +148,10 @@ function fakeEnv() {
             return { meta: { changes: 1 } };
           }
           if (s.includes('INSERT INTO package_manual_reviews')) {
-            T('package_manual_reviews').push({ id: a[0], package_id: a[1], release_id: a[2], sha256: a[3], platform: a[4], automated_integrity: a[5], automated_malware: a[6], automated_overall: a[7], reason: a[8], status: 'PENDING', created_at: new Date().toISOString(), reviewed_at: null, invalidated_at: null, admin_notes: null });
+            // The status is a SQL literal: 'APPROVED' for the admin manual-aid
+            // path, 'PENDING' for an automated review request.
+            const status = s.includes("'APPROVED'") ? 'APPROVED' : 'PENDING';
+            T('package_manual_reviews').push({ id: a[0], package_id: a[1], release_id: a[2], sha256: a[3], platform: a[4], automated_integrity: a[5], automated_malware: a[6], automated_overall: a[7], reason: a[8], status, created_at: new Date().toISOString(), reviewed_at: null, invalidated_at: null, admin_notes: null });
             return { meta: { changes: 1 } };
           }
           if (s.includes('INSERT INTO package_security_overrides')) {
@@ -442,6 +445,13 @@ function fakeEnv() {
             const d = m && T('developers').find((x) => x.id === m.developer_id);
             return (m && d) ? { member_id: m.id, role: m.role, member_since: 'now', ...d } : null;
           }
+          // Evidence counts (publication gate): terminal rows, then all rows.
+          if (s.includes('COUNT(*) AS n FROM package_security_results WHERE package_id=? AND status NOT IN')) {
+            return { n: T('package_security_results').filter((r) => r.package_id === a[0] && !['PENDING', 'SCANNING'].includes(String(r.status))).length };
+          }
+          if (s.includes('COUNT(*) AS n FROM package_security_results WHERE package_id=?')) {
+            return { n: T('package_security_results').filter((r) => r.package_id === a[0]).length };
+          }
           if (s.includes('FROM package_security_results WHERE package_id=? AND check_type=?')) {
             const rows = T('package_security_results').filter((r) => r.package_id === a[0] && r.check_type === a[1]);
             return rows.length ? rows[rows.length - 1] : null;
@@ -482,7 +492,9 @@ function fakeEnv() {
           }
           if (s.includes('FROM packages WHERE id=?')) {
             const rows = T('packages').filter((x) => x.id === a[0]);
-            return rows.length ? rows[rows.length - 1] : null;
+            // D1 hands back a COPY: a caller mutating the result must never
+            // rewrite stored state (the publication gate relies on that).
+            return rows.length ? { ...rows[rows.length - 1] } : null;
           }
           if (s.includes('FROM github_repo_connections WHERE application_id')) return T('github_repo_connections').find((c) => c.application_id === a[0]) || null;
           if (s.includes('FROM github_repo_connections WHERE repository_id')) return T('github_repo_connections').find((c) => c.repository_id === a[0] && c.status === 'active') || null;
@@ -3313,5 +3325,86 @@ test('APPROVE with no digest and an unhashable asset explains exactly what to do
     assert.match(out.message, /Retry verification/i, 'the message names the action that fixes it');
     assert.match(out.message, /digest/i);
     assert.notEqual(asset.state, 'verified');
+  } finally { globalThis.fetch = original; stubs.restore(); }
+});
+
+// ---------------------------------------------------------------------------
+// PUBLISH MUST NOT RE-DOWNLOAD THE ASSETS
+//
+// Production: "Approve & publish" on yayra v1.0.79 (161MB AppImage + three
+// ~100MB installers) died as a bare network error. Publish re-hashed EVERY
+// asset by streaming it, then the security gate re-ran the pipeline, which
+// streamed them ALL again — ~750MB inside one request, so the isolate was
+// killed and the edge error page (no CORS) reached the browser as a network
+// failure.
+// ---------------------------------------------------------------------------
+
+test('PUBLISH: assets are bound by GitHub\u2019s digest — zero byte downloads', async () => {
+  const stubs = installStubs(env);
+  const original = globalThis.fetch;
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-gh-1');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const digest = 'a'.repeat(64);
+    let downloads = 0;
+    (globalThis.fetch as any) = async (url: any, init?: any) => {
+      const u = String(url);
+      if (u.startsWith('https://api.github.com/repos/octo/app/releases/assets/')) {
+        return new Response(JSON.stringify({
+          id: 555001, name: 'clinical-rx_1.12.0_amd64.deb', size: DEB_FIXTURE.byteLength, digest: `sha256:${digest}`,
+        }), { status: 200 });
+      }
+      if (u.startsWith('https://github.com/octo/app/releases/download/')) {
+        downloads++;
+        return new Response('nope', { status: 503 });
+      }
+      return (original as any)(url, init);
+    };
+    // Manual approval records the digest WITHOUT downloading (also asserted).
+    const { manualVerifyAsset } = await import('./services/githubReleases.ts');
+    const asset = env.tables.github_release_assets[0];
+    const approved: any = await manualVerifyAsset(env, ADMIN, rel.id, asset.id, 'APPROVE', 'Vendor digest verified out of band; the CDN was unreachable.');
+    assert.ok(approved.ok, approved.message);
+
+    downloads = 0;
+    const out: any = await publishGithubRelease(env, ADMIN, rel.id, {});
+    assert.ok(out.ok, out.message);
+    assert.equal(downloads, 0, `publishing must not stream the assets again (saw ${downloads})`);
+  } finally { globalThis.fetch = original; stubs.restore(); }
+});
+
+test('PUBLISH: a digest that no longer matches blocks the release instead of publishing it', async () => {
+  const stubs = installStubs(env);
+  const original = globalThis.fetch;
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-gh-2');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const asset = env.tables.github_release_assets[0];
+    // Approve against digest A…
+    (globalThis.fetch as any) = (async (url: any, init?: any) => {
+      const u = String(url);
+      if (u.startsWith('https://api.github.com/repos/octo/app/releases/assets/')) {
+        return new Response(JSON.stringify({ id: 555001, name: 'clinical-rx_1.12.0_amd64.deb', size: 10, digest: `sha256:${'a'.repeat(64)}` }), { status: 200 });
+      }
+      return (original as any)(url, init);
+    });
+    const { manualVerifyAsset } = await import('./services/githubReleases.ts');
+    const ok: any = await manualVerifyAsset(env, ADMIN, rel.id, asset.id, 'APPROVE', 'Approved against the published digest of the vendor build.');
+    assert.ok(ok.ok, ok.message);
+    // …then the file is replaced on GitHub (digest B).
+    (globalThis.fetch as any) = (async (url: any, init?: any) => {
+      const u = String(url);
+      if (u.startsWith('https://api.github.com/repos/octo/app/releases/assets/')) {
+        return new Response(JSON.stringify({ id: 555001, name: 'clinical-rx_1.12.0_amd64.deb', size: 10, digest: `sha256:${'b'.repeat(64)}` }), { status: 200 });
+      }
+      return (original as any)(url, init);
+    });
+    const out: any = await publishGithubRelease(env, ADMIN, rel.id, {});
+    assert.equal(out.ok, false);
+    assert.equal(out.code, 'CONFLICT');
+    assert.equal(rel.status, 'blocked', 'a changed artifact re-blocks the release');
+    assert.ok(env.tables.github_audit_log.some((e: any) => e.action === 'publish_blocked'));
   } finally { globalThis.fetch = original; stubs.restore(); }
 });

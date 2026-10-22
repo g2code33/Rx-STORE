@@ -262,3 +262,30 @@ platform would publish **ungated**. Approval is therefore refused with
 Network failures while streaming now return `null` (an honest "could not read")
 instead of throwing, so a CDN outage surface as an actionable message rather
 than an opaque 500.
+
+## 10. Publishing a large release
+
+"Approve & publish" used to re-hash **and** re-scan every asset in the single
+publish request. For a release like yayra v1.0.79 (161 MB AppImage + three
+~100 MB installers) that is ~750 MB of downloads; the Worker was killed and the
+browser only saw a network error.
+
+The publish path now binds bytes **without downloading**:
+
+1. Each asset's GitHub `digest` is compared with the hash that was reviewed.
+   Equal → the exact approved file is on GitHub. Different → the release is
+   **blocked** and audited (`publish_blocked`).
+2. Only when GitHub publishes no digest does it stream the file (180 s budget).
+3. The security gate runs with `reverify: false` — the bytes were already bound
+   in step 1, and re-running the pipeline would download them all again.
+   Clearance semantics are unchanged: recorded evidence still has to authorize
+   each package (AUTOMATED / MANUAL_APPROVAL / SECURITY_OVERRIDE) and DETECTED
+   always blocks.
+
+### The evidence gate was a no-op (fixed)
+
+The gate demotes a `PASSED` badge that has no recorded checks by mutating its
+own read of the package row — but D1 returns a copy, and the next statement
+re-read it. A package flagged PASSED with zero evidence therefore still
+authorized publication. The demotion is now applied to the local decision
+(never to stored state), and requires at least one *terminal* recorded check.

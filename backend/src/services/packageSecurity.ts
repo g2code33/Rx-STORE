@@ -1740,7 +1740,22 @@ async function finish(env: any, packageId: string, state: PipelineStage, results
  * SECURITY_REVIEW_COMPLETE/PASSED (or carry an explicit admin override).
  * URL packages (web deployments) have nothing to gate.
  */
-export async function publicationSecurityGate(env: any, releaseId: string): Promise<{
+export async function publicationSecurityGate(env: any, releaseId: string, opts: {
+  /**
+   * Re-run the pipeline when the recorded evidence is indeterminate or older
+   * than the freshness window (default true).
+   *
+   * The GitHub publish path passes false: it has ALREADY re-bound every asset
+   * to its exact bytes (GitHub's digest, or a hash of the stream), and a
+   * re-run there means downloading every installer AGAIN. A release with a
+   * 161MB AppImage plus three ~100MB packages was downloading ~750MB in one
+   * request — the isolate was killed and the admin only saw a network error.
+   * Clearance is unchanged: recorded evidence still has to authorize the
+   * package (AUTOMATED / MANUAL_APPROVAL / SECURITY_OVERRIDE), and a DETECTED
+   * verdict still blocks unconditionally.
+   */
+  reverify?: boolean;
+} = {}): Promise<{
   ok: boolean;
   blockers: Array<{ packageId: string; platform: string; filename: string; state: string; overall: string; reasons: string[] }>;
   authorizations: Array<{ packageId: string; platform: string; publicationAuthorization: 'AUTOMATED' | 'MANUAL_APPROVAL' | 'SECURITY_OVERRIDE' }>;
@@ -1754,17 +1769,26 @@ export async function publicationSecurityGate(env: any, releaseId: string): Prom
     // per-check evidence (e.g. rows created by the GitHub path before the
     // pipeline ever ran). That badge must never claim a pass on no evidence:
     // treat it as UNVERIFIED and let the normal re-verification below run.
-    {
-      const evidence: any = await env.DB.prepare(
-        `SELECT COUNT(*) AS n FROM package_security_results WHERE package_id=?`
-      ).bind(p.id).first().catch(() => null);
-      if (!Number(evidence?.n || 0)) {
-        const fresh: any = await env.DB.prepare('SELECT * FROM packages WHERE id=?').bind(p.id).first().catch(() => null);
-        if (fresh) { fresh.overall_security = 'PENDING'; fresh.security_state = 'QUARANTINED'; }
-      }
-    }
+    const evidence: any = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM package_security_results WHERE package_id=?`
+    ).bind(p.id).first().catch(() => null);
+    let hasEvidence = Number(evidence?.n || 0) > 0;
     let fresh: any = await env.DB.prepare('SELECT * FROM packages WHERE id=?').bind(p.id).first().catch(() => null);
     if (!fresh) continue;
+    // SECOND line of defence, independent of the COUNT: the recorded checks must
+    // actually exist and be terminal. (D1 returns copies, so the previous
+    // implementation — which mutated its own read of the row and then re-read
+    // it — could never demote a PASSED badge here. The guard was a no-op.)
+    if (hasEvidence) {
+      const recorded: any = await env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM package_security_results WHERE package_id=? AND status NOT IN ('PENDING','SCANNING')`
+      ).bind(p.id).first().catch(() => null);
+      hasEvidence = Number(recorded?.n || 0) > 0;
+    }
+    if (!hasEvidence) {
+      // Local copy only — never claimed as stored state.
+      fresh = { ...fresh, overall_security: 'PENDING', security_state: 'QUARANTINED' };
+    }
 
     // Path 1 — the automated pipeline fully passed.
     if (fresh.overall_security === 'PASSED' && fresh.security_state === 'SECURITY_REVIEW_COMPLETE') {
@@ -1813,7 +1837,7 @@ export async function publicationSecurityGate(env: any, releaseId: string): Prom
       const lastAt = Date.parse(String(times?.malware_at || times?.integrity_at || '').replace(' ', 'T') + 'Z');
       reverify = !Number.isFinite(lastAt) || (Date.now() - lastAt) > windowMs;
     }
-    if (reverify) await runSecurityPipeline(env, p.id).catch(() => {});
+    if (reverify && opts.reverify !== false) await runSecurityPipeline(env, p.id).catch(() => {});
     fresh = await env.DB.prepare('SELECT * FROM packages WHERE id=?').bind(p.id).first().catch(() => null);
     if (!fresh) continue;
     // The fresh run may have completed an in-flight analysis or cleared a
