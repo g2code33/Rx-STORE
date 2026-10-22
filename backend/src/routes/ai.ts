@@ -131,6 +131,123 @@ async function getProviderCreds(env: any, provider: Provider) {
   return { baseUrl, key, model };
 }
 
+/**
+ * LIVE MODEL DISCOVERY.
+ *
+ * A hardcoded model chain rots: upstreams retire ids on a schedule (NVIDIA
+ * returned 410 "end of life" for every id we listed, so the assistant died even
+ * though the provider, the key and the network were fine). Each provider's own
+ * /models endpoint is the ONLY trustworthy list, so it is consulted when a
+ * configured/chain model is gone, and cached briefly.
+ */
+const MODELS_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h — retirements are announced, not sudden
+const modelsCache = new Map<string, { at: number; models: string[] }>();
+
+/** Ids that are not usable for chat (embeddings, moderation, …). */
+function isChatModel(id: string): boolean {
+  const m = String(id || '').toLowerCase();
+  if (!m) return false;
+  if (/(embed|embedding|rerank|moderation|whisper|tts|dall-e|image|vision-only|guard|safety)/.test(m)) return false;
+  return true;
+}
+
+/** Google returns `models/gemini-2.5-flash`; callers want `gemini-2.5-flash`. */
+function stripModelPrefix(id: string): string {
+  return String(id || '').replace(/^models\//, '');
+}
+
+/**
+ * The provider's CURRENT model ids, cached in KV (shared across isolates) and in
+ * memory. Returns [] when the endpoint is unavailable — callers then fall back
+ * to the static chain rather than failing outright.
+ */
+export async function listProviderModels(env: any, provider: Provider): Promise<string[]> {
+  const cacheKey = `ai:models:${provider}`;
+  const mem = modelsCache.get(cacheKey);
+  if (mem && Date.now() - mem.at < MODELS_CACHE_TTL_MS) return mem.models;
+  try {
+    if (env?.CACHE?.get) {
+      const raw = await env.CACHE.get(cacheKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length) {
+          const models = parsed.filter((x: any) => typeof x === 'string');
+          modelsCache.set(cacheKey, { at: Date.now(), models });
+          return models;
+        }
+      }
+    }
+  } catch { /* KV miss/failure → live request */ }
+
+  const { baseUrl, key } = await getProviderCreds(env, provider);
+  if (!key) return [];
+  let ids: string[] = [];
+  try {
+    if (provider === 'gemini') {
+      const res = await fetch(`${baseUrl.replace(/\/$/, '')}/models?key=${encodeURIComponent(key)}`, { signal: AbortSignal.timeout(8000) });
+      if (res.ok) {
+        const j: any = await res.json().catch(() => null);
+        ids = (j?.models || [])
+          .filter((m: any) => !Array.isArray(m?.supportedGenerationMethods) || m.supportedGenerationMethods.includes('generateContent'))
+          .map((m: any) => stripModelPrefix(String(m?.name || '')))
+          .filter(Boolean);
+      }
+    } else {
+      const res = await fetch(`${baseUrl.replace(/\/$/, '')}/models`, {
+        headers: { Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) {
+        const j: any = await res.json().catch(() => null);
+        ids = (j?.data || j?.models || []).map((m: any) => String(m?.id || m?.name || '')).map(stripModelPrefix).filter(Boolean);
+      }
+    }
+  } catch { ids = []; }
+
+  ids = [...new Set(ids.filter(isChatModel))];
+  if (!ids.length) return [];
+  modelsCache.set(cacheKey, { at: Date.now(), models: ids });
+  try { await env?.CACHE?.put?.(cacheKey, JSON.stringify(ids), { expirationTtl: Math.floor(MODELS_CACHE_TTL_MS / 1000) }); } catch { /* cache is best-effort */ }
+  return ids;
+}
+
+/**
+ * Rank the provider's live models for an unknown family.
+ *
+ * Deterministic and explainable: prefer the same family token as the model we
+ * were asked for (e.g. "nemotron"), then instruct/chat variants, then the
+ * highest version number, and never a retired id.
+ */
+export function rankModels(live: string[], preferred: string, provider: Provider): string[] {
+  void provider;
+  const pref = String(preferred || '').toLowerCase();
+  const prefPart = pref.split('/').pop() || '';
+  // Family token, e.g. 'nvidia/nemotron-3-nano-30b-a3b' → 'nemotron'
+  const family = prefPart.split(/[-_.]/)[0] || '';
+  // Major generation, e.g. 'nemotron-3.5-lightning-…' → '3'
+  const major = (prefPart.match(/-(\d+)/) || [])[1] || '';
+  const sameGen = family && major ? new RegExp(`^${family}-${major}(\\D|$)`) : null;
+
+  const score = (id: string): number => {
+    const part = String(id).toLowerCase().split('/').pop() || '';
+    let sc = 0;
+    if (family && part.startsWith(family)) sc += 50;        // this product line
+    else if (family && part.includes(family)) sc += 15;     // mentions it (llama-…-nemotron)
+    if (sameGen && sameGen.test(part)) sc += 40;            // same generation
+    if (/(instruct|chat|super|pro|flash|max)/.test(part)) sc += 10;
+    if (/(nano|tiny|mini|lite|small)/.test(part)) sc += 4;  // usable, just smaller
+    const ver = part.match(/(\d+)(?:\.(\d+))?/);
+    if (ver) sc += Math.min(Number(ver[1]) || 0, 9);
+    return sc;
+  };
+  return live
+    .filter((id) => !RETIRED_MODELS.has(id))
+    .map((id) => ({ id, s: score(id) }))
+    // Stable ordering: score desc, then id asc (deterministic for tests).
+    .sort((a, b) => (b.s - a.s) || a.id.localeCompare(b.id))
+    .map((x) => x.id);
+}
+
 function maskKey(k: string): string {
   if (!k) return '';
   if (k.length <= 10) return '•'.repeat(Math.max(k.length, 6));
@@ -253,11 +370,14 @@ async function attemptProvider(
 
   const chain = [preferredModel, ...PROVIDER_MODEL_CHAIN[p].filter((x) => x !== preferredModel)].filter(Boolean);
   let lastError = '';
-  for (const candidate of chain.slice(0, 3)) {
+  let sawModelGone = false;
+  const tried = new Set<string>();
+  const attemptModel = async (candidate: string): Promise<Attempt | null> => {
+    tried.add(candidate);
     try {
       if (p === 'gemini') {
         const text = await callGemini(baseUrl, key, candidate, message, systemPrompt);
-        if (!text) { lastError = `${p}: empty response`; continue; }
+        if (!text) { lastError = `${p}: empty response`; return null; }
         if (candidate !== preferredModel) console.warn(`[ai] ${p}: '${preferredModel}' unavailable, served '${candidate}'`);
         return { ok: true, provider: p, model: candidate, text };
       }
@@ -267,7 +387,7 @@ async function attemptProvider(
         return { ok: true, provider: p, model: candidate, stream };
       }
       const text = await callOpenAICompatible(baseUrl, key, candidate, message, systemPrompt);
-      if (!text) { lastError = `${p}: empty response`; continue; }
+      if (!text) { lastError = `${p}: empty response`; return null; }
       if (candidate !== preferredModel) console.warn(`[ai] ${p}: '${preferredModel}' unavailable, served '${candidate}'`);
       return { ok: true, provider: p, model: candidate, text };
     } catch (e: any) {
@@ -275,7 +395,53 @@ async function attemptProvider(
       // Only a DEAD MODEL moves us down the chain. An auth error, a rate limit
       // or an outage must fall through to the next PROVIDER (and be reported),
       // never be hidden behind another model id.
-      if (!isModelGoneError(Number(e?.status || 0), String(e?.body || e?.message || ''))) break;
+      if (isModelGoneError(Number(e?.status || 0), String(e?.body || e?.message || ''))) { sawModelGone = true; return null; }
+      throw e;
+    }
+  };
+
+  const runModel = async (candidate: string): Promise<Attempt | null> => {
+    try {
+      return await attemptModel(candidate);
+    } catch (e: any) {
+      // A real failure (auth, rate limit, outage, a streaming rejection): stop
+      // trying this provider and report it — the caller may use a fallback.
+      lastError = String(e?.message || e).slice(0, 300);
+      throw e;
+    }
+  };
+
+  for (const candidate of chain.slice(0, 3)) {
+    try {
+      const r = await runModel(candidate);
+      if (r) return r;
+    } catch {
+      return { ok: false, provider: p, model: preferredModel, error: lastError || `${p}: request failed` };
+    }
+  }
+
+  // The static chain is exhausted — the provider may have retired the whole
+  // family (NVIDIA retired every id we listed). Ask the provider what it
+  // actually serves right now and try its best live models. This is what keeps
+  // the assistant alive across upstream retirements with no redeploy.
+  if (sawModelGone) {
+    const live = await listProviderModels(env, p).catch(() => [] as string[]);
+    const ranked = rankModels(live, preferredModel, p).filter((id) => !tried.has(id)).slice(0, 2);
+    if (ranked.length) console.warn(`[ai] ${p}: configured/chain models are retired — trying live models: ${ranked.join(', ')}`);
+    for (const candidate of ranked) {
+      let r: Attempt | null = null;
+      try { r = await attemptModel(candidate); }
+      catch { return { ok: false, provider: p, model: preferredModel, error: lastError || `${p}: request failed` }; }
+      if (r) {
+        // Remember the working id so the next request skips discovery.
+        try {
+          await env?.CACHE?.put?.(`ai:model:${p}`, candidate, { expirationTtl: Math.floor(MODELS_CACHE_TTL_MS / 1000) });
+        } catch { /* best-effort */ }
+        return r;
+      }
+    }
+    if (!ranked.length) {
+      lastError = `${p}: every configured model is retired and the provider's live model list was unavailable. ${lastError}`.slice(0, 400);
     }
   }
   return { ok: false, provider: p, model: preferredModel, error: lastError || `${p}: no model responded` };
@@ -403,13 +569,23 @@ export const aiRoutes = {
   },
 
   async providers(request: Request, env: any) {
-    const { provider: active } = await getActiveProvider(env);
+    const { provider: active, model } = await getActiveProvider(env);
     const list = await Promise.all((['nvidia','openrouter','openai','gemini'] as Provider[]).map(async p => {
       const { key } = await getProviderCreds(env, p);
       const cfg = PROVIDER_CONFIG[p];
-      return { id: p, enabled: !!key, hasKey: !!key, maskedKey: maskKey(key), baseUrl: env[cfg.baseUrlEnv] || cfg.defaultBase, defaultModel: cfg.defaultModel, active: p===active };
+      // The live model list lets the admin pick an id the provider actually
+      // serves — the only reliable answer to upstream retirements.
+      const models = key ? await listProviderModels(env, p).catch(() => [] as string[]) : [];
+      return {
+        id: p, enabled: !!key, hasKey: !!key, maskedKey: maskKey(key),
+        baseUrl: env[cfg.baseUrlEnv] || cfg.defaultBase, defaultModel: cfg.defaultModel,
+        active: p === active,
+        models,
+        /** Is the saved model id still offered by the provider? */
+        modelAvailable: p !== active || !models.length ? null : models.includes(model),
+      };
     }));
-    return { active, providers: list };
+    return { active, model, providers: list };
   },
 
   // Admin only — returns full keys so the Admin UI can pre-fill fields (never expose publicly)

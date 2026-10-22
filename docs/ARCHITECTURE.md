@@ -221,6 +221,17 @@ Guarantees (each one is pinned by `backend/src/aiModels.test.ts`):
   `attempts` array report the active provider's real failure — previously the
   message only showed the LAST fallback's error, which made a working NVIDIA
   setup look like a Gemini failure.
+* **Live model discovery.** A hardcoded chain rots: NVIDIA retired every id we
+  shipped (`nvidia/nemotron-3-nano-30b-a3b` — "end of life on 2026-09-01"), and
+  the assistant died with a 410 while the provider, key and network were fine.
+  When a model id is reported gone, the provider's own `/models` endpoint is
+  consulted (cached 6h in KV), the live ids are ranked (same family and
+  generation first, chat/instruct over embed/moderation), and the best one is
+  tried before any fallback provider. The working id is cached per provider.
+* `GET /ai/providers` returns each provider's **live model list** plus
+  `modelAvailable` for the active one, and Admin → AI Providers renders the
+  Model field as a datalist of those ids with a refresh button and a warning
+  when the saved id is no longer offered.
 * `POST /admin/ai/test` probes **both** the buffered and the streaming path for
   that provider, so "Test OK" means the assistant can actually use it.
 

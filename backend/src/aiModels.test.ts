@@ -199,3 +199,98 @@ test('the offline message names the ACTIVE provider, never only the last fallbac
     assert.ok(out.attempts.some((a: any) => a.provider === 'gemini' && !a.ok));
   } finally { globalThis.fetch = original; }
 });
+
+// ---------------------------------------------------------------------------
+// LIVE MODEL DISCOVERY
+//
+// Production: NVIDIA retired EVERY id in our hardcoded chain
+// (`nvidia/nemotron-3-nano-30b-a3b` — "reached its end of life on
+// 2026-09-01"). The assistant died with a 410 even though the provider, key and
+// network were healthy. A hardcoded list will always rot, so the provider's own
+// /models endpoint is consulted when a configured/chain id is gone.
+// ---------------------------------------------------------------------------
+
+test('rankModels: prefers the same family, then chat/instruct, never a retired id', async () => {
+  const { rankModels } = await import('./routes/ai.ts');
+  const live = [
+    'nvidia/nemotron-3-super-120b-a12b',
+    'nvidia/nemotron-3-nano-30b-a3b',
+    'nvidia/llama-3.3-nemotron-super-49b-v1',
+    'meta/llama-3.1-8b-instruct', // retired
+    'nvidia/embed-qa-4',          // not a chat model
+  ].filter((x) => !x.includes('embed')); // (isChatModel is applied upstream)
+  const ranked = rankModels(live, 'nvidia/nemotron-3.5-lightning-30b-a3b', 'nvidia');
+  assert.equal(ranked[0], 'nvidia/nemotron-3-super-120b-a12b', 'the family + biggest wins');
+  assert.ok(!ranked.includes('meta/llama-3.1-8b-instruct'), 'retired ids are never proposed');
+  // Deterministic: same input, same order.
+  assert.deepEqual(rankModels(live, 'nvidia/nemotron-3.5-lightning-30b-a3b', 'nvidia'), ranked);
+});
+
+test('a retired chain is replaced by a model the provider actually serves', async () => {
+  const { aiRoutes } = await import('./routes/ai.ts');
+  const original = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = (async (url: any, init?: any) => {
+    const u = String(url);
+    calls.push(u);
+    // The provider's live list.
+    if (u.endsWith('/models')) {
+      return jsonResponse({ data: [
+        { id: 'nvidia/nemotron-3-nano-30b-a3b' },   // retired (below)
+        { id: 'nvidia/nemotron-4-super-250b' },     // actually served
+        { id: 'nvidia/embed-qa-4' },
+      ] });
+    }
+    const body = JSON.parse(String(init?.body || '{}'));
+    // Every hardcoded id is gone…
+    if (['nvidia/nemotron-3.5-lightning-30b-a3b', 'nvidia/nemotron-3-super-120b-a12b', 'nvidia/nemotron-3-nano-30b-a3b'].includes(body.model)) {
+      return new Response(JSON.stringify({ title: 'Gone', status: 410, detail: `The model \`${body.model}\` has reached its end of life` }), { status: 410 });
+    }
+    // …but the live one answers.
+    return jsonResponse({ choices: [{ message: { content: 'live model answered' } }] });
+  }) as any;
+  try {
+    const env = aiEnv({ keys: { nvidia: 'nvapi-test' } });
+    const out: any = await aiRoutes.chat(new Request('https://x/ai/chat', { method: 'POST', body: JSON.stringify({ message: 'hi' }) }), env);
+    assert.equal(out.provider, 'nvidia', `the active provider must answer (got ${JSON.stringify(out).slice(0, 300)})`);
+    assert.equal(out.model, 'nvidia/nemotron-4-super-250b', 'served by a model the provider really offers');
+    assert.match(out.response, /live model answered/);
+    assert.ok(calls.some((u) => u.endsWith('/models')), 'the live list was consulted');
+  } finally { globalThis.fetch = original; }
+});
+
+test('when even discovery fails, the error explains that every model is retired', async () => {
+  const { aiRoutes } = await import('./routes/ai.ts');
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: any) => {
+    const u = String(url);
+    if (u.endsWith('/models')) return new Response('nope', { status: 503 });
+    return new Response(JSON.stringify({ title: 'Gone', status: 410, detail: 'The model has reached its end of life' }), { status: 410 });
+  }) as any;
+  try {
+    const env = aiEnv({ keys: { nvidia: 'nvapi-test' } });
+    const out: any = await aiRoutes.chat(new Request('https://x/ai/chat', { method: 'POST', body: JSON.stringify({ message: 'hi' }) }), env);
+    assert.equal(out.provider, 'offline');
+    assert.match(out.response, /nvidia/i);
+    assert.match(out.response, /retired|end of life/i);
+  } finally { globalThis.fetch = original; }
+});
+
+test('/ai/providers exposes live models and whether the saved id still exists', async () => {
+  const { aiRoutes } = await import('./routes/ai.ts');
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: any) => {
+    if (String(url).endsWith('/models')) {
+      return jsonResponse({ data: [{ id: 'nvidia/nemotron-4-super-250b' }, { id: 'nvidia/embed-qa-4' }] });
+    }
+    return jsonResponse({ data: [] });
+  }) as any;
+  try {
+    const env = aiEnv({ keys: { nvidia: 'nvapi-test' } });
+    const out: any = await aiRoutes.providers(new Request('https://x/ai/providers'), env);
+    const nv = out.providers.find((p: any) => p.id === 'nvidia');
+    assert.ok(nv.models.includes('nvidia/nemotron-4-super-250b'), 'the live list reaches the admin UI');
+    assert.ok(!nv.models.some((m: string) => /embed/.test(m)), 'non-chat models are filtered out');
+    assert.equal(nv.modelAvailable, false, 'the saved (retired) id is flagged so the UI can warn');
+  } finally { globalThis.fetch = original; }
+});

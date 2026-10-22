@@ -1,9 +1,16 @@
 import { useEffect, useState } from 'react';
-import { Bot, Check, Key, Save, Zap, Sparkles, AlertCircle, Loader2, Eye, EyeOff, FlaskConical } from 'lucide-react';
+import { Bot, Check, Key, Save, Zap, Sparkles, AlertCircle, Loader2, Eye, EyeOff, FlaskConical, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { API_URL } from '../../services/api';
 
-type ProviderInfo = { id: string; enabled: boolean; hasKey: boolean; maskedKey?: string; baseUrl: string; defaultModel: string; active: boolean };
+type ProviderInfo = {
+  id: string; enabled: boolean; hasKey: boolean; maskedKey?: string; baseUrl: string;
+  defaultModel: string; active: boolean;
+  /** Live ids the provider currently serves (empty when it could not be read). */
+  models?: string[];
+  /** For the ACTIVE provider: is the saved model still offered? null = unknown. */
+  modelAvailable?: boolean | null;
+};
 
 export default function AIProviderPanel() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -44,6 +51,12 @@ export default function AIProviderPanel() {
       } catch { /* not admin or offline — fields stay empty */ }
     }
     setLoading(false);
+  };
+
+  /** Reload the provider list (and therefore the live model lists). */
+  const load = async (announce = false) => {
+    await fetchProviders();
+    if (announce) toast.success('Model lists refreshed from the providers.');
   };
 
   useEffect(() => { fetchProviders(); }, []);
@@ -151,8 +164,42 @@ export default function AIProviderPanel() {
 
               <div className="mt-4 space-y-3">
                 <div>
-                  <label className="text-xs text-rx-gray-medium">Model</label>
-                  <input value={models[p.id] ?? ''} placeholder={p.defaultModel} onChange={e=>setModels(m=>({...m,[p.id]:e.target.value}))} className="mt-1 w-full bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-rx-gray-medium/60 focus:outline-none focus:border-rx-yellow/40"/>
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs text-rx-gray-medium">Model</label>
+                    {(p.models?.length || 0) > 0 && (
+                      <span className="text-[10px] text-green-400/80">{p.models!.length} live model(s)</span>
+                    )}
+                  </div>
+                  <div className="mt-1 flex gap-2">
+                    <input
+                      list={`ai-models-${p.id}`}
+                      value={models[p.id] ?? ''}
+                      placeholder={p.defaultModel}
+                      onChange={e=>setModels(m=>({...m,[p.id]:e.target.value}))}
+                      className="flex-1 min-w-0 bg-rx-dark border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-rx-gray-medium/60 focus:outline-none focus:border-rx-yellow/40"
+                    />
+                    {/* The provider's OWN current ids — a hardcoded list rots
+                        (NVIDIA retired every id we shipped). */}
+                    <datalist id={`ai-models-${p.id}`}>
+                      {(p.models || []).map(id => <option key={id} value={id} />)}
+                    </datalist>
+                    <button type="button" onClick={(e) => { e.preventDefault(); void load(true); }}
+                      title="Reload the model list from the provider"
+                      className="px-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-rx-gray-medium hover:text-white">
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  {p.modelAvailable === false && (
+                    <p className="text-[11px] text-amber-300 mt-1 flex items-start gap-1">
+                      <AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                      This model id is no longer offered by the provider — pick one from the list.
+                    </p>
+                  )}
+                  {(p.models?.length || 0) > 0 && (
+                    <p className="text-[10px] text-rx-gray-medium/70 mt-1 truncate">
+                      e.g. {p.models!.slice(0, 3).join(' · ')}
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="text-xs text-rx-gray-medium flex items-center gap-1"><Key className="w-3 h-3"/> API Key {p.hasKey ? <span className="text-green-400/80">(saved{p.maskedKey ? `: ${p.maskedKey}` : ''})</span> : ''}</label>
