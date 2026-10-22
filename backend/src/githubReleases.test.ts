@@ -3204,3 +3204,114 @@ test('VERIFY: an asset GitHub can digest but we cannot stream still gets an hone
     assert.match(String(asset.error), /could not be streamed/i, 'the limitation is recorded, not hidden');
   } finally { globalThis.fetch = original; stubs.restore(); }
 });
+
+// ---------------------------------------------------------------------------
+// THE BROWSER PATH (web + desktop)
+//
+// The admin panel does not call the service directly: it POSTs
+//   /admin/github/releases/<releaseId>/assets/<assetId>/manual-verify
+// and the Worker parses the ids out of the PATH. A mismatch there means the
+// button "does nothing" on the website even though the service works, so the
+// exact URL the panel builds is exercised here.
+// ---------------------------------------------------------------------------
+
+async function postAdmin(path: string, body: any, env2: any = env) {
+  const { githubAdminRoutes } = await import('./routes/githubIntegration.ts');
+  // index.ts strips the /v1 prefix before the route sees the request — the
+  // path the route parses is the normalized one.
+  const req: any = new Request(`https://api.example.com${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  req.user = { userId: 'admin-1', role: 'admin' };
+  return githubAdminRoutes.manualVerifyAsset(req, env2);
+}
+
+test('ROUTE: the panel’s manual-verify URL resolves the right release + asset', async () => {
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-route-manual');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const asset = env.tables.github_release_assets[0];
+
+    const out: any = await postAdmin(
+      `/admin/github/releases/${encodeURIComponent(rel.id)}/assets/${encodeURIComponent(asset.id)}/manual-verify`,
+      { decision: 'APPROVE', note: 'Vendor digest confirmed out of band; scanner was rate limited.' },
+    );
+    assert.ok(out?.success, JSON.stringify(out));
+    assert.equal(asset.state, 'verified');
+    assert.equal(asset.sha256, DEB_SHA);
+
+    // A wrong asset id in the path must NOT approve anything.
+    const other = await postAdmin(
+      `/admin/github/releases/${encodeURIComponent(rel.id)}/assets/ast_does_not_exist/manual-verify`,
+      { decision: 'APPROVE', note: 'Trying to approve a non-existent asset row.' },
+    );
+    assert.equal((other as any).success, undefined);
+    assert.equal((other as any).code, 'NOT_FOUND');
+  } finally { stubs.restore(); }
+});
+
+test('ROUTE: decision is validated before anything is written', async () => {
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-route-bad');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const asset = env.tables.github_release_assets[0];
+    const out: any = await postAdmin(
+      `/admin/github/releases/${rel.id}/assets/${asset.id}/manual-verify`,
+      { decision: 'MAYBE', note: 'Neither approve nor reject should ever be accepted.' },
+    );
+    assert.equal(out.code, 'VALIDATION_ERROR');
+    assert.notEqual(asset.state, 'verified');
+  } finally { stubs.restore(); }
+});
+
+test('APPROVE without a canonical package row is refused (never an ungated platform)', async () => {
+  const { manualVerifyAsset } = await import('./services/githubReleases.ts');
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-no-pkg');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const asset = env.tables.github_release_assets[0];
+    // Simulate a release whose packages rows were never created.
+    env.tables.packages.length = 0;
+    const out: any = await manualVerifyAsset(env, ADMIN, rel.id, asset.id, 'APPROVE', 'The evidence looks fine to me, approve it.');
+    assert.equal(out.ok, false);
+    assert.equal(out.code, 'CONFLICT');
+    assert.match(out.message, /package row/i);
+    assert.notEqual(asset.state, 'verified', 'nothing may be marked verified without a gateable package');
+  } finally { stubs.restore(); }
+});
+
+test('APPROVE with no digest and an unhashable asset explains exactly what to do', async () => {
+  const { manualVerifyAsset } = await import('./services/githubReleases.ts');
+  const stubs = installStubs(env);
+  const original = globalThis.fetch;
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-nodigest');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const asset = env.tables.github_release_assets[0];
+    (globalThis.fetch as any) = async (url: any, init?: any) => {
+      const u = String(url);
+      if (u.startsWith('https://api.github.com/repos/octo/app/releases/assets/')) {
+        // Old-style asset: no `digest` field at all.
+        return new Response(JSON.stringify({ id: 555001, name: 'clinical-rx_1.12.0_amd64.deb', size: DEB_FIXTURE.byteLength }), { status: 200 });
+      }
+      if (u.startsWith('https://github.com/octo/app/releases/download/')) {
+        throw new TypeError('Failed to fetch'); // CDN unreachable / budget
+      }
+      return (original as any)(url, init);
+    };
+    const out: any = await manualVerifyAsset(env, ADMIN, rel.id, asset.id, 'APPROVE', 'Trying to approve a file we cannot hash.');
+    assert.equal(out.ok, false);
+    assert.match(out.message, /Retry verification/i, 'the message names the action that fixes it');
+    assert.match(out.message, /digest/i);
+    assert.notEqual(asset.state, 'verified');
+  } finally { globalThis.fetch = original; stubs.restore(); }
+});

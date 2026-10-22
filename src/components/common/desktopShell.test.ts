@@ -88,3 +88,15 @@ test('the manual-approve flow sends the reason to the audited endpoint', () => {
   }
   assert.match(src, /setAskReason\(\{/, 'actions ask for a reason in-app');
 });
+
+test('the manual-verify URL the panel builds matches what the Worker parses', () => {
+  // The browser calls this exact path; the Worker splits it and reads the ids
+  // from positions 4 and 6. If either side drifts, the button "does nothing".
+  const api = readFileSync(join(SRC, 'services/api.ts'), 'utf8');
+  const route = readFileSync(join('backend/src/routes/githubIntegration.ts'), 'utf8');
+  const m = /`\/admin\/github\/releases\/\$\{encodeURIComponent\(releaseId\)\}\/assets\/\$\{encodeURIComponent\(assetId\)\}\/manual-verify`/.exec(api);
+  assert.ok(m, 'the client must POST /admin/github/releases/:id/assets/:assetId/manual-verify');
+  assert.match(route, /async manualVerifyAsset\(request: Request, env: any\)/);
+  assert.match(route, /const releaseId = parts\[4\]/, 'Worker reads the release id from position 4');
+  assert.match(route, /const assetId = parts\[6\]/, 'Worker reads the asset id from position 6');
+});

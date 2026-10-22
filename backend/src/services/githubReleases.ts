@@ -1307,6 +1307,20 @@ export async function manualVerifyAsset(
   }
 
   // APPROVE — real identity first, never blind trust.
+  //
+  // The canonical package row is what the publication gate inspects. Approving
+  // an asset that has NO package row would let that platform publish WITHOUT
+  // ever passing the security gate, so it is refused instead of silently
+  // "succeeding".
+  if (!canonical) {
+    return { ok: false, code: 'CONFLICT', message: 'The canonical release row for this version is missing — re-detect the release (webhook redelivery or Sync repositories), then approve again.' };
+  }
+  if (!pkgRow) {
+    return {
+      ok: false, code: 'CONFLICT',
+      message: `No package row exists for ${asset.platform}/${asset.architecture}, so this asset could never be security-gated. Re-detect the release (Sync repositories) and approve again.`,
+    };
+  }
   const meta = await ghApi(env, `/repos/${conn.repository_full_name}/releases/assets/${asset.github_asset_id}`, { installationId: conn.installation_id });
   if (!meta.ok || !meta.json) return { ok: false, code: 'CONFLICT', message: 'GitHub no longer reports this asset.' };
 
@@ -1330,14 +1344,23 @@ export async function manualVerifyAsset(
       size = metaSize;
       hashSource = 'github_digest';
     } else {
-      // One bounded stream: compute the authoritative hash for THIS asset only.
+      // No digest to trust (assets uploaded before GitHub started publishing
+      // one): hash the REAL bytes once, in this request. Bounded and linear;
+      // a generous timeout so a 100MB+ installer is not cut off mid-stream.
       const ext = await loadExternalPackageBytes(asset.download_url, {
         maxBytes: assetMaxBytes(env),
+        timeoutMs: 180_000,
         authHeaders: asset.is_private === 1 ? { Authorization: `Bearer ${await installationToken(env, String(conn.installation_id))}` } : undefined,
       });
-      if (!ext) return { ok: false, code: 'SERVICE_UNAVAILABLE', message: 'The asset could not be streamed to compute its SHA-256. Try manual approval again shortly.' };
-      if (Number(meta.json.size) !== ext.size) {
-        return { ok: false, code: 'CONFLICT', message: `GitHub reports ${meta.json.size} bytes but the asset serves ${ext.size} — refusing to approve a changed file.` };
+      if (!ext) {
+        return {
+          ok: false, code: 'SERVICE_UNAVAILABLE',
+          message: `GitHub publishes no sha256 digest for "${asset.name}", and the file could not be hashed in this request (network, size cap, or Worker budget). Press Retry verification on this release — it hashes ONE asset per request — then approve, or use the audited security override when publishing.`,
+        };
+      }
+      const metaSize = Number(meta.json.size);
+      if (Number.isFinite(metaSize) && metaSize > 0 && metaSize !== ext.size) {
+        return { ok: false, code: 'CONFLICT', message: `GitHub reports ${metaSize} bytes but the asset serves ${ext.size} — refusing to approve a changed file.` };
       }
       sha = ext.sha256; size = ext.size;
       hashSource = 'streamed';

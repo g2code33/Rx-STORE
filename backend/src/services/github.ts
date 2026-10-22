@@ -768,6 +768,11 @@ export async function ghApi(
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       Accept: 'application/vnd.github+json',
+      // Pin the REST API version: release assets carry `digest`
+      // ("sha256:<hex>") from this version on. That digest lets RX Store
+      // verify a 100MB installer WITHOUT downloading it, so it must never
+      // depend on GitHub's default version changing.
+      'X-GitHub-Api-Version': '2022-11-28',
       'User-Agent': 'rx-store-github',
     },
     signal: AbortSignal.timeout(15000),

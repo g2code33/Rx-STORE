@@ -202,7 +202,9 @@ export default function GithubReleasesPanel() {
         setBusyId(rel.id);
         try {
           const r = await api.githubAdmin.manualVerifyAsset(rel.id, asset.id, decision, reason);
-          toast.success(approve ? `Asset approved — ${r.remaining} asset(s) left.` : 'Asset rejected.');
+          if (!approve) toast.success('Asset rejected.');
+          else if (r.remaining > 0) toast.success(`Asset approved — ${r.remaining} asset(s) left.`);
+          else toast.success('Asset approved — the release is ready for approval.', { duration: 6000 });
           load();
         } catch (e: any) { toast.error(e?.message || 'Manual action failed.', { duration: 9000 }); }
         finally { setBusyId(null); }

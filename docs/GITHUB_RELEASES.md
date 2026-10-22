@@ -229,3 +229,36 @@ Verification follows the same rule: **one download per asset**. GitHub's own
 streamed bytes when both exist — a disagreement is a `mismatch`), and the bytes
 streamed for hashing are passed into the security pipeline instead of being
 downloaded a second time.
+
+## 9. Manual approval on the website (and why digests matter)
+
+The panel's Manual approve button posts to
+`/v1/admin/github/releases/:id/assets/:assetId/manual-verify`; the Worker strips
+`/v1` and reads the ids from positions 4 and 6 of the remaining path. A
+route-level test exercises that exact URL so the two can never drift.
+
+To bind an approval to real bytes it needs a SHA-256, and it gets one in this
+order — the cheapest correct source first:
+
+1. the hash already recorded on the asset row (a previous verification),
+2. **GitHub's own `digest: "sha256:…"`** from the release-asset API — this is
+   what makes a 160 MB AppImage approvable in milliseconds, with zero download
+   (`ghApi` pins `X-GitHub-Api-Version: 2022-11-28` so the field is always
+   returned),
+3. otherwise the real bytes are streamed once and hashed (180 s budget).
+
+Verified against the live API: every asset of `g2code33/yayra` v1.0.78 reports a
+`sha256:` digest, including the 161 MB AppImage — so the previous "cannot hash
+inside one request" failure cannot recur for these releases.
+
+If none of the three succeeds, the response names the fix ("press Retry
+verification — it hashes ONE asset per request") instead of a generic failure.
+
+**Approval requires a canonical package row.** Without it the release would be
+marked verified but the publication gate only walks *package* rows — so that
+platform would publish **ungated**. Approval is therefore refused with
+`CONFLICT` and instructions to re-detect the release.
+
+Network failures while streaming now return `null` (an honest "could not read")
+instead of throwing, so a CDN outage surface as an actionable message rather
+than an opaque 500.

@@ -166,11 +166,19 @@ export async function loadExternalPackageBytes(url: string, opts: {
       const check = validateAssetUrl(current);
       if (!check.ok) return null;
     }
-    resp = await fetch(current, {
-      redirect: 'manual',
-      headers: { 'User-Agent': 'rx-store-github', Accept: 'application/octet-stream', ...(opts.authHeaders || {}) },
-      signal: AbortSignal.timeout(opts.timeoutMs || 60_000),
-    });
+    try {
+      resp = await fetch(current, {
+        redirect: 'manual',
+        headers: { 'User-Agent': 'rx-store-github', Accept: 'application/octet-stream', ...(opts.authHeaders || {}) },
+        signal: AbortSignal.timeout(opts.timeoutMs || 60_000),
+      });
+    } catch {
+      // Network error / aborted stream (CDN unreachable, Worker budget). Return
+      // an honest null — the caller reports it. Throwing here used to escape as
+      // an uncaught exception, so the admin saw "something went wrong" instead
+      // of the reason.
+      return null;
+    }
     if (resp.status >= 300 && resp.status < 400) {
       const loc = resp.headers.get('Location');
       if (!loc) return null;
