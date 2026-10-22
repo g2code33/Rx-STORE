@@ -155,6 +155,17 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   const lastPlatformRef = useRef<string | null>(null);
   // Artifact filename of the current/last attempt, for the live download card.
   const lastFileNameRef = useRef<string | null>(null);
+  /**
+   * The in-page download panel is visible while something is happening AND
+   * after a failure/cancel so the user can retry — but never once the install
+   * succeeded (the finished state is the Open/Update button).
+   */
+  const showDownloadPanel = React.useMemo(() => {
+    if (installTx.state === 'IDLE' || installTx.state === 'INSTALLED') return false;
+    if (txBusy) return true;
+    return ['DOWNLOAD_FAILED', 'VERIFICATION_FAILED', 'INSTALL_FAILED', 'INSTALLATION_NOT_DETECTED', 'CANCELLED'].includes(installTx.state);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [installTx.state, txBusy]);
   React.useEffect(() => {
     const state = installTx.state;
     if (state === lastTxStateRef.current) return;
@@ -691,6 +702,33 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
         </div>
       </div>
       {showDownload && <DownloadModal app={app} onClose={()=>setShowDownload(false)} onDownload={doDownload} />}
+
+      {/* IN-PAGE DOWNLOAD PANEL — the download is a first-class part of the app
+          page, not a toast. It sits directly under the Get/Update/Open buttons
+          and carries the controls (pause / resume / cancel / retry). */}
+      {showDownloadPanel && (
+        <div className="section-container pt-2">
+          <DownloadCard
+            variant="panel"
+            state={installTx.state}
+            received={installTx.progress.received}
+            total={installTx.progress.total}
+            percent={installTx.progress.percent}
+            paused={!!installTx.paused}
+            appName={app.name}
+            version={installTx.targetVersion || app.version}
+            fileName={lastFileNameRef.current || undefined}
+            platformLabel={lastPlatformRef.current ? formatSizeLabel(lastPlatformRef.current) : undefined}
+            controls={downloadCtl}
+            busy={txBusy}
+            error={installTx.message}
+            onPause={() => { void pauseDownload(); }}
+            onResume={() => { void resumeDownload(); }}
+            onCancel={() => { void cancelDownload(); }}
+            onRetry={() => { resetTransaction(); if (lastPlatformRef.current) void doDownload(lastPlatformRef.current); else setShowDownload(true); }}
+          />
+        </div>
+      )}
 
       {(app as any).videoUrl && (
         <div className="section-container pt-6">

@@ -150,3 +150,35 @@ test('formatBytes / formatDuration stay readable at real installer sizes', () =>
   assert.equal(formatDuration(200), '3m 20s');
   assert.equal(formatDuration(120), '2m');
 });
+
+// ---------------------------------------------------------------------------
+// The download UI lives IN THE PAGE (not only in a toast).
+//
+// Production: clicking Update on a 130MB installer produced a stack of
+// "Downloading the package…" toasts with no percentage and no way to stop it.
+// The controls must be part of the app page, where Get/Update/Open live.
+// ---------------------------------------------------------------------------
+test('the app page renders the download panel inline, with the controls', async () => {
+  const { readFileSync } = await import('node:fs');
+  const page = readFileSync(new URL('../pages/AppDetail.tsx', import.meta.url), 'utf8');
+
+  // The full-width panel is rendered inside the page…
+  assert.match(page, /variant="panel"/, 'AppDetail renders the full-width download panel');
+  assert.match(page, /showDownloadPanel/, 'the panel has an explicit visibility rule');
+  // …and it is wired to the live controls.
+  for (const handler of ['onPause', 'onResume', 'onCancel', 'onRetry']) {
+    assert.match(page, new RegExp(`${handler}=\\{`), `${handler} must be wired on the panel`);
+  }
+  // The stacking toast is gone.
+  assert.doesNotMatch(page, /toast\('Downloading the package/,
+    'per-transition download toasts must not come back (they stacked up)');
+});
+
+test('the panel hides when nothing is happening and after success', async () => {
+  const { readFileSync } = await import('node:fs');
+  const page = readFileSync(new URL('../pages/AppDetail.tsx', import.meta.url), 'utf8');
+  const rule = /const showDownloadPanel = React\.useMemo\(\(\) => \{([\s\S]*?)\}, \[/.exec(page)?.[1] || '';
+  assert.match(rule, /'IDLE'/, 'nothing to show while idle');
+  assert.match(rule, /'INSTALLED'/, 'a finished install is represented by the Open/Update button');
+  assert.match(rule, /DOWNLOAD_FAILED/, 'failures stay visible so the user can retry');
+});

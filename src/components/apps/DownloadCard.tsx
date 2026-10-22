@@ -35,6 +35,11 @@ export interface DownloadCardProps {
   /** Retry after a failure/cancel. */
   onRetry?: () => void;
   error?: string;
+  /**
+   * 'panel'  — the prominent in-page surface (full width, big buttons).
+   * 'compact' — the small indicator beside the Get/Update button.
+   */
+  variant?: 'panel' | 'compact';
 }
 
 const FAILED = ['DOWNLOAD_FAILED', 'VERIFICATION_FAILED', 'INSTALL_FAILED', 'INSTALLATION_NOT_DETECTED', 'CANCELLED'];
@@ -43,6 +48,7 @@ export default function DownloadCard(props: DownloadCardProps) {
   const {
     state, received, total, percent, paused, appName, version, fileName, platformLabel,
     controls, busy, onPause, onResume, onCancel, onRetry, error,
+    variant = 'compact',
   } = props;
 
   // Rate sampling (one sample per 500ms is plenty and keeps re-renders cheap).
@@ -71,17 +77,24 @@ export default function DownloadCard(props: DownloadCardProps) {
   const pct = Math.max(0, Math.min(100, Math.round(percent)));
   const eta = etaSeconds(received, total, rate);
 
+  const panel = variant === 'panel';
+
   return (
-    <div className={`card p-4 ${failed ? 'border-red-500/20' : ''}`} role="status" aria-live="polite">
+    <div
+      className={`card ${panel ? 'p-5 w-full' : 'p-4'} ${failed ? 'border-red-500/20' : ''}`}
+      role="status"
+      aria-live="polite"
+      aria-label={panel ? 'Download' : undefined}
+    >
       <div className="flex items-start gap-3">
-        <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${failed ? 'bg-red-500/10 text-red-400' : 'bg-rx-yellow/10 text-rx-yellow'}`}>
-          {failed ? <AlertTriangle className="w-4 h-4" />
-            : installing ? <Loader2 className="w-4 h-4 animate-spin" />
-              : <Download className="w-4 h-4" />}
+        <div className={`${panel ? 'w-11 h-11' : 'w-9 h-9'} rounded-xl flex items-center justify-center flex-shrink-0 ${failed ? 'bg-red-500/10 text-red-400' : 'bg-rx-yellow/10 text-rx-yellow'}`}>
+          {failed ? <AlertTriangle className={panel ? 'w-5 h-5' : 'w-4 h-4'} />
+            : installing ? <Loader2 className={`${panel ? 'w-5 h-5' : 'w-4 h-4'} animate-spin`} />
+              : <Download className={panel ? 'w-5 h-5' : 'w-4 h-4'} />}
         </div>
 
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-white truncate">
+          <p className={`${panel ? 'text-base' : 'text-sm'} font-semibold text-white truncate`}>
             {failed
               ? (state === 'CANCELLED' ? 'Download cancelled' : 'Download failed')
               : paused
@@ -90,7 +103,7 @@ export default function DownloadCard(props: DownloadCardProps) {
                   ? `Finishing ${appName || ''} v${version || ''}`
                   : `Downloading ${appName || ''} v${version || ''}`}
           </p>
-          <p className="text-[11px] text-rx-gray-medium truncate">
+          <p className={`${panel ? 'text-xs' : 'text-[11px]'} text-rx-gray-medium truncate`}>
             {failed
               ? (error || 'You can retry any time — nothing was installed.')
               : installing
@@ -100,13 +113,13 @@ export default function DownloadCard(props: DownloadCardProps) {
 
           {!failed && (
             <>
-              <div className="mt-2 h-1.5 rounded-full bg-white/10 overflow-hidden">
+              <div className={`mt-2 ${panel ? 'h-2.5' : 'h-1.5'} rounded-full bg-white/10 overflow-hidden`}>
                 <div
                   className={`h-full rounded-full transition-[width] duration-300 ease-out ${paused ? 'bg-rx-gray-medium' : 'bg-rx-yellow'}`}
                   style={{ width: `${installing ? 100 : pct}%` }}
                 />
               </div>
-              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-rx-gray-medium tabular-nums">
+              <div className={`mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 ${panel ? 'text-xs' : 'text-[11px]'} text-rx-gray-medium tabular-nums`}>
                 <span className="text-white/80 font-medium">{installing ? '100%' : `${pct}%`}</span>
                 <span>
                   {formatBytes(received)}{total > 0 ? ` of ${formatBytes(total)}` : ''}
@@ -126,26 +139,27 @@ export default function DownloadCard(props: DownloadCardProps) {
               {paused
                 ? controls.resume && (
                   <button onClick={onResume} title="Resume download"
-                    className="px-2.5 py-1.5 rounded-lg bg-rx-yellow text-[#0f1419] text-[11px] font-bold flex items-center gap-1 hover:bg-rx-yellow-light">
-                    <Play className="w-3 h-3" /> Resume
+                    className={`rounded-lg bg-rx-yellow text-[#0f1419] font-bold flex items-center gap-1 hover:bg-rx-yellow-light ${panel ? 'px-4 py-2 text-sm' : 'px-2.5 py-1.5 text-[11px]'}`}>
+                    <Play className={panel ? 'w-4 h-4' : 'w-3 h-3'} /> Resume
                   </button>
                 )
                 : controls.pause && (
                   <button onClick={onPause} title="Pause download"
-                    className="px-2.5 py-1.5 rounded-lg bg-white/10 text-white text-[11px] font-semibold flex items-center gap-1 hover:bg-white/20">
-                    <Pause className="w-3 h-3" /> Pause
+                    className={`rounded-lg bg-white/10 text-white font-semibold flex items-center gap-1 hover:bg-white/20 ${panel ? 'px-4 py-2 text-sm' : 'px-2.5 py-1.5 text-[11px]'}`}>
+                    <Pause className={panel ? 'w-4 h-4' : 'w-3 h-3'} /> Pause
                   </button>
                 )}
               {controls.cancel && (
                 <button onClick={onCancel} title="Cancel download"
-                  className="p-1.5 rounded-lg bg-white/5 text-red-400 hover:bg-red-400/10" aria-label="Cancel download">
-                  <X className="w-3.5 h-3.5" />
+                  className={`rounded-lg bg-white/5 text-red-400 hover:bg-red-400/10 flex items-center gap-1 ${panel ? 'px-3 py-2 text-sm' : 'p-1.5'}`} aria-label="Cancel download">
+                  <X className={panel ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
+                  {panel && 'Cancel'}
                 </button>
               )}
             </>
           )}
           {failed && onRetry && (
-            <button onClick={onRetry} className="px-3 py-1.5 rounded-lg bg-rx-yellow text-[#0f1419] text-[11px] font-bold hover:bg-rx-yellow-light">
+            <button onClick={onRetry} className={`rounded-lg bg-rx-yellow text-[#0f1419] font-bold hover:bg-rx-yellow-light ${panel ? 'px-4 py-2 text-sm' : 'px-3 py-1.5 text-[11px]'}`}>
               Retry
             </button>
           )}
@@ -157,7 +171,7 @@ export default function DownloadCard(props: DownloadCardProps) {
 
       {/* Honest note where the OS owns the transfer. */}
       {downloading && !paused && !controls.pause && !controls.cancel && (
-        <p className="text-[10px] text-rx-gray-medium mt-2 pl-12">
+        <p className={`text-rx-gray-medium mt-2 ${panel ? 'text-[11px] pl-14' : 'text-[10px] pl-12'}`}>
           Your device's download manager is handling this transfer — use its notification to manage it.
         </p>
       )}
