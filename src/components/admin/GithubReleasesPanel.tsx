@@ -149,6 +149,30 @@ export default function GithubReleasesPanel() {
     } finally { setBusyId(null); }
   };
 
+  /**
+   * Re-run the security pipeline for this release. The VirusTotal analysis id
+   * is cached by SHA-256, so an in-flight scan is polled (not re-uploaded) —
+   * this is how a SCANNING/UNAVAILABLE verdict gets its final answer.
+   */
+  const doRecheck = async (rel: any) => {
+    setBusyId(rel.id);
+    try {
+      const r = await api.githubAdmin.recheck(rel.id);
+      const clean = (r.scanner || []).filter((x) => x.status === 'CLEAN').length;
+      const total = (r.scanner || []).length;
+      if (r.status === 'pending_approval') {
+        toast.success(`Security re-check complete — ${clean}/${total} clean. Ready for approval.`);
+      } else {
+        const notDone = (r.scanner || []).filter((x) => x.status !== 'CLEAN' && x.status !== 'DETECTED');
+        toast(`Security re-check: ${clean}/${total} clean${notDone.length ? ` — ${notDone[0].status}${notDone[0].detail ? ` (${String(notDone[0].detail).slice(0, 90)})` : ''}` : ''}`, { icon: '🛡️', duration: 8000 });
+      }
+      load();
+    } catch (e: any) {
+      toast.error(e?.message || 'Security re-check failed.', { duration: 9000 });
+      load();
+    } finally { setBusyId(null); }
+  };
+
   const doManualAsset = async (rel: any, asset: any, decision: 'APPROVE' | 'REJECT') => {
     const note = window.prompt(
       decision === 'APPROVE'
@@ -342,7 +366,7 @@ export default function GithubReleasesPanel() {
                               {a.scanner_detail && <p className="text-white/50 text-[10px] mt-0.5 leading-tight">{a.scanner_detail}</p>}
                               {a.error && <p className="text-red-300 text-[10px] mt-0.5">{a.error}</p>}
                             </div>
-                            {(a.state !== 'verified' || !a.sha256) && (
+                            {(a.state !== 'verified' || !a.sha256 || (a.scanner_status && !['CLEAN', 'DETECTED'].includes(String(a.scanner_status)))) && (
                               <div className="sm:col-span-2 lg:col-span-4 flex flex-wrap gap-2 pt-1">
                                 <button onClick={() => doManualAsset(rel, a, 'APPROVE')} disabled={busyId === rel.id}
                                   className="text-[11px] px-2.5 py-1 rounded-lg text-green-300 bg-green-500/10 hover:bg-green-500/20 disabled:opacity-50">
@@ -392,6 +416,7 @@ export default function GithubReleasesPanel() {
                                   <div key={c.check_type} className="px-2 py-1 rounded-lg bg-white/[0.03] border border-white/5" title={`${c.result}${c.details ? ` — ${c.details}` : ''}`}>
                                     <p className="text-[10px] text-rx-gray-medium">{c.check_type}</p>
                                     <p className={`text-[11px] font-medium ${c.status === 'PASSED' || c.status === 'CLEAN' ? 'text-green-300' : c.status === 'FAILED' || c.status === 'DETECTED' ? 'text-red-300' : c.status === 'NOT_APPLICABLE' ? 'text-rx-gray-medium' : 'text-amber-300'}`}>{c.status}</p>
+                                    {c.result && <p className="text-[10px] text-rx-gray-medium/80 leading-tight mt-0.5 break-words">{String(c.result).slice(0, 120)}</p>}
                                   </div>
                                 ))}
                                 {(p.checks || []).length === 0 && <p className="text-[11px] text-rx-gray-medium">No checks recorded yet — run verification.</p>}
@@ -436,6 +461,13 @@ export default function GithubReleasesPanel() {
                       {['detected', 'verifying', 'verification_failed', 'blocked'].includes(rel.status) && (
                         <button onClick={() => doRetry(rel)} disabled={busyId === rel.id} className="btn-secondary text-sm flex items-center gap-2 disabled:opacity-50">
                           {busyId === rel.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />} Retry verification
+                        </button>
+                      )}
+                      {['detected', 'verifying', 'pending_approval', 'verification_failed', 'blocked'].includes(rel.status) && (
+                        <button onClick={() => doRecheck(rel)} disabled={busyId === rel.id}
+                          title="Re-run the security pipeline. A VirusTotal analysis already in flight is polled, not uploaded again — this resolves SCANNING / UNAVAILABLE verdicts."
+                          className="btn-secondary text-sm flex items-center gap-2 disabled:opacity-50">
+                          {busyId === rel.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldAlert className="w-4 h-4" />} Re-check security
                         </button>
                       )}
                       {rel.status === 'published' && (

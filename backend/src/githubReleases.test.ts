@@ -1670,6 +1670,48 @@ test('GATE scanner never completes (timeout): honest SCANNING — never clean; p
   } finally { stubs.restore(); }
 });
 
+test('RE-CHECK SECURITY: a SCANNING verdict is POLLED again (never re-uploaded) and can clear the release', async () => {
+  const { recheckSecurity } = await import('./services/githubReleases.ts');
+  const stubs = installStubs(env, { asset: 'deb', vtVerdict: 'SCANNING' });
+  await connect();
+  await signedDelivery(env, 'release', ghReleasePayload(), 'd-recheck');
+  const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+  await verifyGithubRelease(env, rel.id);
+  assert.equal(env.tables.github_release_assets[0].scanner_status, 'SCANNING');
+  assert.equal(env.tables.scanner_cache[0].verdict, 'SCANNING', 'the in-flight analysis id is cached by SHA-256');
+  const cachedAnalysis = env.tables.scanner_cache[0].analysis_id;
+  stubs.restore();
+
+  const stubs2 = installStubs(env, { asset: 'deb', vtVerdict: 'CLEAN' });
+  try {
+    const evidenceBefore = env.tables.package_security_results.length;
+    const out: any = await recheckSecurity(env, ADMIN, rel.id);
+    assert.ok(out.ok, out.message);
+    assert.equal(out.status, 'pending_approval', JSON.stringify(out));
+    assert.equal(env.tables.github_release_assets[0].scanner_status, 'CLEAN', 'the finished analysis is recorded');
+    assert.equal(env.tables.scanner_cache[0].analysis_id, cachedAnalysis, 'the SAME analysis was polled, not a new upload');
+    const malwareRows = env.tables.package_security_results.filter((r: any) => r.check_type === 'malware');
+    assert.equal(malwareRows[malwareRows.length - 1].status, 'CLEAN');
+    assert.ok(env.tables.package_security_results.length > evidenceBefore, 'a fresh evidence row is written');
+    assert.ok(env.tables.github_audit_log.some((e: any) => e.action === 'security_recheck'), 'the re-check is audited');
+    assert.equal(rel.status, 'pending_approval', 'the release is ready for approval again');
+  } finally { stubs2.restore(); }
+});
+
+test('RE-CHECK SECURITY: a release that is already decided cannot be reopened', async () => {
+  const { recheckSecurity } = await import('./services/githubReleases.ts');
+  const stubs = installStubs(env, { asset: 'deb' });
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-recheck-closed');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    rel.status = 'rejected';
+    const out: any = await recheckSecurity(env, ADMIN, rel.id);
+    assert.equal(out.ok, false);
+    assert.equal(out.code, 'CONFLICT');
+  } finally { stubs.restore(); }
+});
+
 test('GATE duplicate binary: same SHA-256 under another app → WARNING + review; no silent publication', async () => {
   const stubs = installStubs(env, { asset: 'deb', vtVerdict: 'CLEAN' });
   try {

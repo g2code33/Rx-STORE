@@ -25,6 +25,7 @@ import {
   adminOverview, adminQueue, adminAudit, verifyPendingDetections, ensureGithubTables,
   adminConnectionsOverview, adminSetConnectionStatus, appIsFree,
   deleteGithubRelease, deleteSupersededReleases, manualVerifyAsset, refreshVerificationStatus,
+  recheckSecurity,
 } from '../services/githubReleases.ts';
 import { issueOneTimeToken, consumeOneTimeToken, restoreOneTimeToken } from '../services/oauth.ts';
 
@@ -621,6 +622,21 @@ export const githubAdminRoutes = {
       success: out.ok, status: out.status, message: out.message,
       remaining: out.remaining ?? 0, verifiedAssets: out.verifiedAssets ?? 0, totalAssets: out.totalAssets ?? 0,
     };
+  },
+
+  /**
+   * POST /admin/github/releases/:id/recheck — re-run the security pipeline.
+   * The SCANNING/UNAVAILABLE states tell the admin to "re-run the security
+   * pipeline to poll for the final verdict"; this is that action. It resumes
+   * the cached VirusTotal analysis (never re-uploads) and never publishes.
+   */
+  async recheck(request: Request, env: any) {
+    const admin = requireAdmin(request);
+    if ('error' in admin) return { code: 'UNAUTHORIZED', message: admin.error };
+    const id = new URL(request.url).pathname.split('/')[4] || '';
+    const out = await recheckSecurity(env, admin, id);
+    if (!out.ok) return { code: out.code, message: out.message };
+    return { success: true, status: out.status, remaining: out.remaining ?? 0, scanner: out.scanner || [] };
   },
 
   /** POST /admin/github/releases/:id/assets/:assetId/manual-verify {decision, note} */

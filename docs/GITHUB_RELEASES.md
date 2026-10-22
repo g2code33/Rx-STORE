@@ -179,3 +179,20 @@ hashing it inside the Worker.
 * **Confirm the deployed pipeline.** `GET /v1/health` returns
   `securityPipelineVersion`; it changes whenever the verification code changes,
   so a stale Worker is visible immediately after a deploy.
+
+### When the scanner says SCANNING / UNAVAILABLE
+
+`SCANNING` means the VirusTotal analysis was still running when the polling
+budget ran out; `UNAVAILABLE` means the scanner was rate limited or unreachable.
+Neither is a pass, so publication stays blocked. The scanner cache is keyed by
+the package SHA-256 and stores the analysis id, so **Re-check security**
+(`POST /v1/admin/github/releases/:id/recheck`) polls the SAME analysis instead of
+uploading the file again, then re-evaluates the release. Retry verification
+cannot do this on its own — it only works through assets that still lack
+verified bytes.
+
+A `FAILED` check (for example `native_identity: package identity mismatch`) is a
+real finding and is shown with its reason under the badge. Fix the app record
+(Admin → Applications → `linux_package_name` / `android_package_id`) or take an
+explicit, audited **Manual approve** on that asset. A `DETECTED` malware verdict
+can never be approved.

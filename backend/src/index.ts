@@ -338,6 +338,7 @@ export default {
           else if (relId && action === 'reject' && request.method === 'POST') data = await githubAdminRoutes.reject(normalizedRequest as any, env);
           else if (relId && action === 'withdraw' && request.method === 'POST') data = await githubAdminRoutes.withdraw(normalizedRequest as any, env);
           else if (relId && action === 'retry' && request.method === 'POST') data = await githubAdminRoutes.retry(normalizedRequest as any, env);
+          else if (relId && action === 'recheck' && request.method === 'POST') data = await githubAdminRoutes.recheck(normalizedRequest as any, env);
           else if (relId && action === 'assets' && request.method === 'POST') data = await githubAdminRoutes.manualVerifyAsset(normalizedRequest as any, env);
           else return respond({ success: false, error: { code: 'NOT_FOUND', message: 'Unknown GitHub admin route' } }, 404, origin);
         }

@@ -422,7 +422,10 @@ export interface ArMember { name: string; offset: number; size: number; }
 
 /** Parse an `ar` archive (.deb packages are ar archives). */
 export function parseAr(pb: PackageBytes): ArMember[] | null {
-  const h = pb.head;
+  // Walk the whole file when it is buffered (small/medium .deb) so a layout
+  // whose control member sits after a large data.tar is still readable; the
+  // head window remains the fallback for big installers.
+  const h = pb.full || pb.head;
   const magic = '!<arch>\n';
   for (let i = 0; i < 8; i++) if (h[i] !== magic.charCodeAt(i)) return null;
   const members: ArMember[] = [];

@@ -1353,6 +1353,88 @@ export async function manualVerifyAsset(
 }
 
 /**
+ * RE-CHECK SECURITY — the action the SCANNING/UNAVAILABLE state asks for.
+ *
+ * A malware check that ends SCANNING (the VirusTotal analysis did not finish
+ * inside the polling budget) or UNAVAILABLE (rate limit / outage) leaves the
+ * release blocked, and the asset rows themselves are already 'verified'. Retry
+ * verification only works through assets that still lack verified bytes, so it
+ * could never poll those analyses again — the release was stuck with no button
+ * that did what the message said ("re-run the security pipeline").
+ *
+ * This re-runs the pipeline for every GitHub package of the release. The
+ * scanner cache is keyed by SHA-256 and stores the analysis id, so an analysis
+ * already in flight is POLLED, not uploaded again. Nothing here publishes: the
+ * ordinary publication gate and an explicit admin approval still apply.
+ */
+export async function recheckSecurity(
+  env: any,
+  actor: { userId: string; label: string },
+  releaseId: string,
+): Promise<{ ok: boolean; code?: string; message?: string; status?: string; remaining?: number; scanner?: Array<{ package: string; status: string; detail?: string }> }> {
+  await ensureGithubTables(env);
+  const rel: any = await env.DB.prepare(`SELECT * FROM github_releases WHERE id=?`).bind(releaseId).first().catch(() => null);
+  if (!rel) return { ok: false, code: 'NOT_FOUND', message: 'Release not found.' };
+  if (['published', 'rejected', 'withdrawn'].includes(rel.status)) {
+    return { ok: false, code: 'CONFLICT', message: `Release is already ${rel.status}; a re-check does not reopen decisions.` };
+  }
+  const canonical: any = await env.DB.prepare(
+    `SELECT id FROM releases WHERE application_id=? AND version=?`
+  ).bind(rel.application_id, rel.version).first().catch(() => null);
+  if (!canonical) return { ok: false, code: 'CONFLICT', message: 'The canonical release row is missing — re-detect the release first.' };
+  const pkgs: any = await env.DB.prepare(
+    `SELECT * FROM packages WHERE release_id=? AND provider='github'`
+  ).bind(canonical.id).all().catch(() => ({ results: [] }));
+  const packages: any[] = pkgs?.results || [];
+  if (!packages.length) return { ok: false, code: 'CONFLICT', message: 'This release has no GitHub packages to re-check.' };
+
+  // The asset rows carry the platform/architecture mapping the packages share.
+  const assetRowsRes: any = await env.DB.prepare(
+    `SELECT * FROM github_release_assets WHERE release_id=?`
+  ).bind(releaseId).all().catch(() => ({ results: [] }));
+  const assetRows: any[] = assetRowsRes?.results || [];
+
+  const scanner: Array<{ package: string; status: string; detail?: string }> = [];
+  for (const p of packages) {
+    try {
+      const run = await runSecurityPipeline(env, p.id);
+      const malware = await latestCheckStatus(env, p.id, 'malware').catch(() => null);
+      const detail = (run?.results?.malware?.details || run?.results?.malware?.result || null);
+      const asset = assetRows.find((x: any) => x.platform === p.platform && x.architecture === p.architecture);
+      if (asset) {
+        await env.DB.prepare(
+          `UPDATE github_release_assets SET scanner_status=?, scanner_detail=?, scanned_at=datetime('now') WHERE id=?`
+        ).bind(malware || 'UNAVAILABLE', detail, asset.id).run().catch(() => {});
+        asset.scanner_status = malware || 'UNAVAILABLE';
+        asset.scanner_detail = detail;
+      }
+      scanner.push({ package: p.filename, status: malware || 'UNAVAILABLE', detail: detail || undefined });
+    } catch (e: any) {
+      scanner.push({ package: p.filename, status: 'ERROR', detail: String(e?.message || e).slice(0, 200) });
+    }
+  }
+
+  // Recompute from the asset rows: a genuinely failed asset keeps the release
+  // blocked, an unfinished scan keeps 'verifying', everything verified is ready.
+  const badCount = assetRows.filter((x: any) => ['failed', 'mismatch', 'missing'].includes(String(x.state))).length;
+  const remaining = await refreshVerificationStatus(env, releaseId).catch(() => 0);
+  let status: string;
+  if (badCount > 0) {
+    status = 'verification_failed';
+    await env.DB.prepare(`UPDATE github_releases SET status='verification_failed', block_reason=? WHERE id=?`)
+      .bind(`${badCount} asset(s) still failed verification — see the asset rows for the exact reason (manual approve or reject each one).`, releaseId).run().catch(() => {});
+  } else {
+    status = remaining > 0 ? 'verifying' : 'pending_approval';
+  }
+  await audit(env, {
+    action: 'security_recheck', actorId: actor.userId, actorLabel: actor.label,
+    appId: rel.application_id, releaseId, reason: 'Re-ran the security pipeline (scanner poll).',
+    details: { scanner, status },
+  });
+  return { ok: true, status, remaining, scanner };
+}
+
+/**
  * Recompute a release's status from its assets: ready for approval only when
  * EVERY asset is verified; otherwise stay 'verifying' with a count so the UI
  * can keep working through them. Returns the remaining count.

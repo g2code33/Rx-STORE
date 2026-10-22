@@ -1074,6 +1074,17 @@ export const api = {
         { method: 'POST', body: JSON.stringify(opts) },
       );
     },
+    /**
+     * Re-run the security pipeline for this release's packages. The scanner
+     * cache is keyed by SHA-256, so an analysis already in flight is POLLED
+     * instead of uploaded again. Never publishes.
+     */
+    recheck(releaseId: string) {
+      return request<{ success: true; status: string; remaining: number; scanner: Array<{ package: string; status: string; detail?: string }> }>(
+        `/admin/github/releases/${encodeURIComponent(releaseId)}/recheck`,
+        { method: 'POST', body: '{}' },
+      );
+    },
     /** Manual aid: approve or reject ONE asset with an audited note. */
     manualVerifyAsset(releaseId: string, assetId: string, decision: 'APPROVE' | 'REJECT', note: string) {
       return request<{ success: true; remaining: number }>(
