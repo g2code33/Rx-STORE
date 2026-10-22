@@ -31,6 +31,9 @@ import { invalidateDetectionCache } from '../platform/nativeDetection.ts';
 import { isAndroidShell, isDesktopShell } from '../platform/nativeInstaller.ts';
 import { saveAttempt, clearAttempt, type PersistedPhase } from './transactionRecovery.ts';
 import { log, recordMetric, reportFailure } from './logger.ts';
+import {
+  NO_DOWNLOAD_CONTROLS, createBytePump, registerDownloadControl, unregisterDownloadControl,
+} from './downloadControls.ts';
 
 export interface PackageResolution {
   platform: string;
@@ -50,7 +53,7 @@ export const DETECT_POLL_MS = 2_500;
 /** How the coordinator performs platform-specific IO. Injected for tests. */
 export interface PlatformOps {
   /** Download the artifact, streaming progress. Returns bytes + optional path. */
-  download: (url: string, meta: PackageMetadata, onProgress: (p: TransactionProgress) => void) => Promise<{ data: ArrayBuffer; path?: string }>;
+  download: (url: string, meta: PackageMetadata, onProgress: (p: TransactionProgress) => void, ctx: { attemptId: string }) => Promise<{ data: ArrayBuffer; path?: string }>;
   /** Hash bytes (crypto.subtle). For artifacts stored on disk, callers hash via a
    * platform hook (main-process file hash / Android plugin) before this. */
   hash: (data: ArrayBuffer) => Promise<string>;
@@ -62,30 +65,54 @@ function defaultHash(data: ArrayBuffer): Promise<string> {
   return sha256Hex(data);
 }
 
-/** Download the artifact, streaming progress, using the real shell/web bridge. */
+/**
+ * Download the artifact, streaming progress, using the real shell/web bridge.
+ *
+ * `ctx.attemptId` lets the caller pause/resume/cancel THIS transfer through
+ * src/native/downloadControls.ts. Each platform reports the controls it really
+ * has — an unsupported one is never advertised.
+ */
 async function defaultDownload(
   url: string, meta: PackageMetadata, onProgress: (p: TransactionProgress) => void,
+  ctx: { attemptId: string },
 ): Promise<{ data: ArrayBuffer; path?: string }> {
   if (isDesktopShell()) {
-    // Download via Electron main (returns a local path). Hashing of the file is
-    // done through the main process elsewhere (see hashFile hook in Electron).
-    const remove = (window as any).rxDesktop?.onDownloadProgress?.((p: any) => {
+    const bridge = (window as any).rxDesktop;
+    registerDownloadControl(ctx.attemptId, {
+      capabilities: {
+        pause: typeof bridge?.pauseDownload === 'function',
+        resume: typeof bridge?.resumeDownload === 'function',
+        cancel: typeof bridge?.cancelDownload === 'function',
+      },
+      pause: () => bridge.pauseDownload(ctx.attemptId),
+      resume: () => bridge.resumeDownload(ctx.attemptId),
+      cancel: () => bridge.cancelDownload(ctx.attemptId),
+    });
+    const remove = bridge?.onDownloadProgress?.((p: any) => {
       onProgress({ received: p.received || 0, total: p.total || 0, percent: p.percent || 0 });
     });
     try {
-      const res = await (window as any).rxDesktop.downloadApp({ url, fileName: meta.fileName, id: meta.slug || 'download' });
+      const res = await bridge.downloadApp({ url, fileName: meta.fileName, id: ctx.attemptId });
       // The renderer cannot reliably read arbitrary file:// bytes under CSP;
       // the main process computes sha256 via `hashFile` (see Electron IPC).
       return { data: new ArrayBuffer(0), path: res.path };
     } finally {
       remove?.();
+      unregisterDownloadControl(ctx.attemptId);
     }
   }
   // Android: downloadAndInstall handles DownloadManager + installer launch and
   // streams progress; bytes are not surfaced here (plugin hashes on completion,
-  // reported on the 'complete' event). We rely on post-install detection to
-  // confirm the real installed package/version.
+  // reported on the 'complete' event). DownloadManager has no public
+  // pause/resume/cancel API, so no controls are advertised — the OS notification
+  // is the system-level control.
   if (isAndroidShell()) {
+    registerDownloadControl(ctx.attemptId, {
+      capabilities: { ...NO_DOWNLOAD_CONTROLS },
+      pause: () => {},
+      resume: () => {},
+      cancel: () => {},
+    });
     const { androidDownloadAndInstall, androidOnDownloadProgress } = await import('../platform/nativeInstaller.ts');
     const handle = await androidOnDownloadProgress((d) => {
       onProgress({ received: d.receivedBytes, total: d.totalBytes, percent: d.percent });
@@ -99,30 +126,48 @@ async function defaultDownload(
       await androidDownloadAndInstall(url, meta.fileName || 'package.apk');
     } finally {
       try { await handle.remove(); } catch { /* ignore */ }
+      unregisterDownloadControl(ctx.attemptId);
     }
     return { data: new ArrayBuffer(0) };
   }
-  // Web/PWA: stream the body so we can hash in place.
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Download failed (${res.status})`);
-  const total = parseInt(res.headers.get('content-length') || '0', 10) || meta.size || 0;
-  const reader = res.body?.getReader();
-  const chunks: BlobPart[] = [];
-  let received = 0;
-  if (reader) {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      received += value.byteLength;
-      onProgress({ received, total, percent: total ? Math.round((received / total) * 100) : 0 });
+
+  // Web/PWA: stream the body so we can hash in place. A paused pump simply stops
+  // pulling from the reader — the browser's backpressure pauses the transfer.
+  const pump = createBytePump();
+  const controller = new AbortController();
+  registerDownloadControl(ctx.attemptId, {
+    capabilities: { pause: true, resume: true, cancel: true },
+    pause: () => pump.pause(),
+    resume: () => pump.resume(),
+    cancel: () => { pump.cancel(); controller.abort(); },
+  });
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error(`Download failed (${res.status})`);
+    const total = parseInt(res.headers.get('content-length') || '0', 10) || meta.size || 0;
+    const reader = res.body?.getReader();
+    const chunks: BlobPart[] = [];
+    let received = 0;
+    if (reader) {
+      for (;;) {
+        await pump.waitWhilePaused();
+        if (pump.state() === 'cancelled') throw new Error('Download cancelled');
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.byteLength;
+        onProgress({ received, total, percent: total ? Math.round((received / total) * 100) : 0 });
+      }
+    } else {
+      const blob = await res.blob();
+      received = blob.size;
+      chunks.push(blob);
     }
-  } else {
-    const blob = await res.blob();
-    received = blob.size;
-    chunks.push(blob);
+    if (pump.state() === 'cancelled') throw new Error('Download cancelled');
+    return { data: await new Blob(chunks).arrayBuffer() };
+  } finally {
+    unregisterDownloadControl(ctx.attemptId);
   }
-  return { data: await new Blob(chunks).arrayBuffer() };
 }
 
 /** Default install launcher: opens the installer for desktop, triggers download on web. */
@@ -196,7 +241,7 @@ export class InstallCoordinator {
       const dl = await this.ops.download(packageMeta.url, packageMeta, (p) => {
         emit(transition(tx, { state: 'DOWNLOADING', progress: p }));
         if (input.onProgress) input.onProgress(p);
-      });
+      }, { attemptId: tx.attemptId });
       data = dl.data; path = dl.path;
     } catch (e: any) {
       recordMetric('download_failure');

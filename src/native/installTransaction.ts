@@ -59,6 +59,10 @@ export interface TransactionResult {
   verification?: VerificationResult;
   /** Where the artifact was saved (native path / blob url). */
   artifactPath?: string;
+  /** The user paused the transfer (state stays DOWNLOADING). */
+  paused?: boolean;
+  /** Which download controls this platform actually supports. */
+  controls?: { pause: boolean; resume: boolean; cancel: boolean };
   startedAt: number;
   updatedAt: number;
 }

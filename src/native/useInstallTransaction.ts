@@ -14,6 +14,9 @@ import type { TransactionProgress, TransactionResult, TransactionState } from '.
 import { loadAttempt, decideRecovery, clearAttempt, phaseNeedsRecovery } from './transactionRecovery.ts';
 import { detectInstalledApp } from '../platform/nativeDetection.ts';
 import { reportCurrentInstallation } from './accountSync.ts';
+import {
+  downloadCapabilities, pauseDownload, resumeDownload, cancelDownload,
+} from './downloadControls.ts';
 
 export interface InstallTransactionApi {
   tx: TransactionResult;
@@ -30,6 +33,12 @@ export interface InstallTransactionApi {
   recoveryMessage: string;
   /** True while startup crash-recovery is running. */
   recovering: boolean;
+  /** Pause / resume / cancel the live download (see DownloadControl). */
+  pause: () => Promise<boolean>;
+  resume: () => Promise<boolean>;
+  cancel: () => Promise<boolean>;
+  /** Which controls this platform truly supports — hide the rest. */
+  controls: { pause: boolean; resume: boolean; cancel: boolean };
 }
 
 /**
@@ -114,10 +123,37 @@ export function useInstallTransaction(initial?: { previousVersion?: string; targ
     setTx(createTransaction(initial));
   }, [initial]);
 
+  // Live download controls, bound to THIS attempt (never "whatever is newest").
+  const pause = useCallback(async () => {
+    const ok = await pauseDownload(tx.attemptId);
+    if (ok) setTx((t) => ({ ...t, paused: true }));
+    return ok;
+  }, [tx.attemptId]);
+
+  const resume = useCallback(async () => {
+    const ok = await resumeDownload(tx.attemptId);
+    if (ok) setTx((t) => ({ ...t, paused: false }));
+    return ok;
+  }, [tx.attemptId]);
+
+  const cancel = useCallback(async () => {
+    const ok = await cancelDownload(tx.attemptId);
+    // Mark it immediately: the platform may take a moment to tear the transfer
+    // down, and the UI must not look stuck in between.
+    setTx((t) => (t.state === 'DOWNLOADING' || t.state === 'DOWNLOAD_STARTED'
+      ? { ...t, state: 'CANCELLED', paused: false, message: 'Download cancelled.' }
+      : { ...t, paused: false }));
+    return ok;
+  }, [tx.attemptId]);
+
   return {
     tx,
     recoveryMessage,
     recovering,
+    pause,
+    resume,
+    cancel,
+    controls: downloadCapabilities(tx.attemptId),
     busy: tx.state !== 'IDLE' && !['INSTALLED', 'DOWNLOAD_FAILED', 'VERIFICATION_FAILED', 'INSTALL_FAILED', 'INSTALLATION_NOT_DETECTED', 'CANCELLED'].includes(tx.state),
     failed: isFailed(tx.state),
     label: describeTransaction(tx.state),

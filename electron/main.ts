@@ -347,6 +347,19 @@ async function installDebPackage(filePath: string): Promise<{ launched: boolean;
   }
 }
 
+/**
+ * LIVE DOWNLOADS — the renderer can pause, resume and cancel an in-flight
+ * transfer. Electron's DownloadItem exposes exactly those three, so the main
+ * process keeps a registry keyed by the id the renderer chose.
+ */
+const activeDownloads = new Map<string, Electron.DownloadItem>();
+
+function requireDownload(id: string): Electron.DownloadItem {
+  const item = activeDownloads.get(String(id || ''));
+  if (!item) throw new Error('This download is no longer active.');
+  return item;
+}
+
 function downloadNative(url: string, fileName: string, id: string) {
   if (!mainWindow || mainWindow.isDestroyed()) throw new Error('RX Store window is unavailable');
   const parsed = new URL(url);
@@ -356,14 +369,24 @@ function downloadNative(url: string, fileName: string, id: string) {
     const listener = (_event: Electron.Event, item: Electron.DownloadItem) => {
       const destination = path.join(app.getPath('downloads'), safeFileName(fileName || item.getFilename()));
       item.setSavePath(destination);
+      activeDownloads.set(id, item);
       item.on('updated', (_e, state) => {
         const total = item.getTotalBytes();
         const received = item.getReceivedBytes();
-        sendToRenderer('native-download:progress', { id, state, received, total, percent: total > 0 ? Math.round(received * 100 / total) : 0 });
+        sendToRenderer('native-download:progress', {
+          id,
+          state,
+          // `interrupted` is what Electron reports for a paused download.
+          paused: item.isPaused(),
+          received, total,
+          percent: total > 0 ? Math.round(received * 100 / total) : 0,
+        });
       });
       item.once('done', (_e, state) => {
         ses.removeListener('will-download', listener);
+        activeDownloads.delete(id);
         if (state === 'completed') resolve({ path: destination, fileName: path.basename(destination), size: item.getReceivedBytes() });
+        else if (state === 'cancelled') reject(new Error('Download cancelled'));
         else reject(new Error(`Download ${state}`));
       });
     };
@@ -919,6 +942,26 @@ function initIpc() {
   ipcMain.handle('native:download', async (_event, input: { url: string; fileName?: string; id?: string }) =>
     downloadNative(input.url, input.fileName || 'download', input.id || 'download')
   );
+  // Live controls for an in-flight download (all three are real Electron
+  // DownloadItem capabilities — nothing here is simulated).
+  ipcMain.handle('download:pause', (_e, id: string) => {
+    const item = requireDownload(id);
+    if (item.isPaused()) return { paused: true };
+    item.pause();
+    return { paused: item.isPaused() };
+  });
+  ipcMain.handle('download:resume', (_e, id: string) => {
+    const item = requireDownload(id);
+    if (item.canResume()) item.resume();
+    return { paused: item.isPaused() };
+  });
+  ipcMain.handle('download:cancel', (_e, id: string) => {
+    const item = activeDownloads.get(String(id || ''));
+    if (!item) return { cancelled: false };
+    item.cancel();
+    activeDownloads.delete(String(id));
+    return { cancelled: true };
+  });
   ipcMain.handle('native:install', async (_event, filePath: string, opts?: { replacePath?: string }) => {
     await access(filePath);
     // --- Linux .deb: NEVER shell.openPath — xdg-open on a .deb launches GNOME

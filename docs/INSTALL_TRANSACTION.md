@@ -219,3 +219,30 @@ State indicators are not color-only (text labels + icons for busy/alert).
 percent, verifying/checking labels, installing ≠ open, retry on all failures,
 updating wording, accessible statuses, and that current-device detection decides
 OPEN (never other-device data).
+
+## Live download controls (pause / resume / cancel)
+
+A download is no longer fire-and-forget. `App Detail` renders a live card with
+the percentage, transferred/total bytes, a smoothed transfer rate, an ETA and
+only the controls the current platform really has:
+
+| Shell | Pause | Resume | Cancel | Mechanism |
+| --- | --- | --- | --- | --- |
+| Electron desktop | ✓ | ✓ | ✓ | `DownloadItem.pause/resume/cancel` in the main process, tracked by attempt id (`download:pause|resume|cancel` IPC) |
+| Web / PWA | ✓ | ✓ | ✓ | a resumable byte pump: a paused download simply stops pulling from the `ReadableStream` reader (browser backpressure); cancel aborts the fetch |
+| Android | ✗ | ✗ | ✗ | `DownloadManager` exposes no public pause/resume/cancel API — the card says so and points at the OS notification instead of faking a button |
+
+Rules:
+
+- Controls come from `src/native/downloadControls.ts`; a capability reported as
+  `false` is never rendered and never simulated.
+- They are bound to the **attempt id**, so a stale click can never act on a
+  later download.
+- Cancel settles the transaction as `CANCELLED` immediately (the platform may
+  take a moment to tear the transfer down), and nothing is installed.
+- The per-transition "Downloading the package…" toasts are gone — they stacked
+  up behind the card. Verification/install phases still toast.
+
+Progress maths (`transferRate`, `etaSeconds`, `formatBytes`, `formatDuration`)
+lives in `src/native/downloadProgress.ts` and is unit-tested, including the
+cases where an estimate would be a guess (no rate yet, unknown total, paused).

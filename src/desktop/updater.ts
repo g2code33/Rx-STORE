@@ -54,6 +54,10 @@ declare global {
       detectApp: (identity: any) => Promise<{ installed: boolean; version?: string; launchTarget?: string; executable?: string; uninstallString?: string; quietUninstallString?: string; packageName?: string; appImagePath?: string; source?: string; platform?: 'windows' | 'linux' }>;
       invalidateDetect: (appId?: string) => Promise<boolean>;
       downloadApp: (input: { url: string; fileName?: string; id?: string }) => Promise<{ path: string; fileName: string; size: number }>;
+      /** Live download controls (all three are real in the desktop shell). */
+      pauseDownload?: (id: string) => Promise<{ paused?: boolean }>;
+      resumeDownload?: (id: string) => Promise<{ paused?: boolean }>;
+      cancelDownload?: (id: string) => Promise<{ cancelled?: boolean }>;
       hashFile: (filePath: string) => Promise<{ sha256: string; size: number }>;
       installApp: (filePath: string, opts?: { replacePath?: string }) => Promise<{ launched: boolean; installed?: boolean; method?: string }>;
       openApp: (target: string) => Promise<boolean>;

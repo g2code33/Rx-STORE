@@ -32,6 +32,10 @@ contextBridge.exposeInMainWorld('rxDesktop', {
   detectApp: (identity: any) => ipcRenderer.invoke('native:detect', identity),
   invalidateDetect: (appId?: string) => ipcRenderer.invoke('native:invalidate-detect', appId),
   downloadApp: (input: { url: string; fileName?: string; id?: string }) => ipcRenderer.invoke('native:download', input),
+  /** Live controls for an in-flight download (pause/resume/cancel). */
+  pauseDownload: (id: string) => ipcRenderer.invoke('download:pause', id),
+  resumeDownload: (id: string) => ipcRenderer.invoke('download:resume', id),
+  cancelDownload: (id: string) => ipcRenderer.invoke('download:cancel', id),
   hashFile: (filePath: string) => ipcRenderer.invoke('native:hash-file', filePath),
   installApp: (filePath: string, opts?: { replacePath?: string }) => ipcRenderer.invoke('native:install', filePath, opts),
   openApp: (target: string) => ipcRenderer.invoke('native:open', target),

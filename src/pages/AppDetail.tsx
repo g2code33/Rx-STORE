@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Star, Download, ArrowLeft, Share2, ExternalLink, Check, ChevronRight, Shield, Clock, Monitor, Calendar, Tag, ThumbsUp, AlertTriangle, ShieldCheck, LifeBuoy, Flag} from 'lucide-react';
 import PromptDialog from '../components/common/PromptDialog';
+import DownloadCard from '../components/apps/DownloadCard';
 import DownloadModal from '../components/apps/DownloadModal';
 import AppLogo from '../components/apps/AppLogo';
 import { useApps } from '../context/AppContext';
@@ -133,7 +134,10 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   const { state: detectedState, detection: systemInstalled, installed: osInstalled, refresh: refreshDetection } = useInstalledState(app as any);
   // Central install/update transaction (the single source of truth for the
   // Get/Download/Verify/Install state machine — never inferred per-component).
-  const { tx: installTx, busy: txBusy, start: startTransaction, reset: resetTransaction, recoveryMessage } = useInstallTransaction();
+  const {
+    tx: installTx, busy: txBusy, start: startTransaction, reset: resetTransaction, recoveryMessage,
+    pause: pauseDownload, resume: resumeDownload, cancel: cancelDownload, controls: downloadCtl,
+  } = useInstallTransaction();
 
   // Surface an interrupted-attempt recovery once, so a crashed install never
   // leaves a silently stuck state.
@@ -149,6 +153,8 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
   // The platform of the most recent download attempt — RETRY re-runs exactly
   // what the user last chose (never silently switches package type).
   const lastPlatformRef = useRef<string | null>(null);
+  // Artifact filename of the current/last attempt, for the live download card.
+  const lastFileNameRef = useRef<string | null>(null);
   React.useEffect(() => {
     const state = installTx.state;
     if (state === lastTxStateRef.current) return;
@@ -156,9 +162,12 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
     lastTxStateRef.current = state;
     if (prev === 'IDLE' && state === 'IDLE') return; // nothing happening
     switch (state) {
+      // Downloads are shown in the live DownloadCard (progress + pause/resume/
+      // cancel). A toast per transition stacked up behind it, so none is fired.
       case 'DOWNLOAD_STARTED':
       case 'DOWNLOADING':
-        toast('Downloading the package…', { icon: '⬇️', duration: 2500 });
+      case 'DOWNLOAD_COMPLETED':
+      case 'VERIFYING':
         break;
       case 'VERIFIED':
         toast('Package verified (SHA-256 ✓)', { icon: '🔒', duration: 2500 });
@@ -379,6 +388,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
         isPwa: !!data.isPWA,
       };
 
+      lastFileNameRef.current = pkg.fileName;
       // Run the full transaction pipeline: download → verify size+SHA-256 →
       // install → detect → sync. Never treats a download as installed.
       const result = await startTransaction(app, pkg, {
@@ -570,20 +580,23 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
             </div>
             <div className="flex flex-col items-end gap-3 flex-shrink-0">
               {txBusy ? (
-                <div className="w-full sm:w-[240px]">
+                <div className="w-full sm:w-[260px]">
                   {(installTx.state === 'DOWNLOADING' || installTx.state === 'DOWNLOAD_STARTED') ? (
-                    <>
-                      <div className="flex items-center justify-between text-xs mb-1">
-                        <span className="text-white/80 font-medium flex items-center gap-1.5" role="status"><Download className="w-3.5 h-3.5 text-rx-yellow" /> {unifiedInstallBtn.label}</span>
-                        <span className="text-rx-yellow font-bold tabular-nums">{installTx.progress.percent}%</span>
-                      </div>
-                      <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
-                        <div className="h-full bg-rx-yellow rounded-full transition-[width] duration-200 ease-out" style={{ width: `${Math.min(Math.max(installTx.progress.percent, 0), 100)}%` }} />
-                      </div>
-                      <div className="text-[11px] text-rx-gray-medium mt-1 tabular-nums">
-                        {installTx.progress.total ? `${formatBytes(installTx.progress.received)} of ${formatBytes(installTx.progress.total)}` : `${formatBytes(installTx.progress.received)} downloaded`}
-                      </div>
-                    </>
+                    <DownloadCard
+                      state={installTx.state}
+                      received={installTx.progress.received}
+                      total={installTx.progress.total}
+                      percent={installTx.progress.percent}
+                      paused={!!installTx.paused}
+                      appName={app.name}
+                      version={installTx.targetVersion || app.version}
+                      fileName={lastFileNameRef.current || undefined}
+                      controls={downloadCtl}
+                      busy
+                      onPause={() => { void pauseDownload(); }}
+                      onResume={() => { void resumeDownload(); }}
+                      onCancel={() => { void cancelDownload(); }}
+                    />
                   ) : (
                     <div className="flex items-center gap-2 text-sm text-white/80" role="status">
                       <div className="w-4 h-4 border-2 border-rx-yellow border-t-transparent rounded-full animate-spin" />
