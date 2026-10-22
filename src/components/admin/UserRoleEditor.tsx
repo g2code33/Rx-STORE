@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Users, Shield, Crown, Wrench, Loader2, Search, Save, KeyRound, Megaphone, LogOut } from 'lucide-react';
 import toast from 'react-hot-toast';
+import PromptDialog from '../common/PromptDialog';
 import { API_URL } from '../../services/api';
 
 type U = { id: string; name: string; email: string; role: string; created_at?: string; advertiser?: number | boolean };
@@ -74,17 +75,27 @@ export default function UserRoleEditor() {
     finally { setSaving(''); }
   };
 
+  /**
+   * Password dialog state. `window.prompt` throws in Electron ("prompt() is and
+   * will not be supported"), which made this admin action impossible in the
+   * desktop app — and a generated password must never be lost.
+   */
+  const [pwDialog, setPwDialog] = useState<null | {
+    mode: 'ask' | 'result';
+    name: string;
+    email: string;
+    password?: string;
+  }>(null);
+
   /** Reset a user's login — hand them the new password once, it's never stored in plain text. */
-  const resetLogin = async (u: U) => {
+  const resetLogin = (u: U) => {
     if (!API_URL) { toast('Set VITE_API_URL for live updates', { icon: '⚠️' }); return; }
-    const typed = window.prompt(
-      `Reset the login for ${u.name} (${u.email}).\n\n` +
-      `Type a NEW password (8+ characters) — or leave EMPTY to auto-generate a temporary one.\n` +
-      `(They can change it after signing in.)`,
-      ''
-    );
-    if (typed === null) return; // cancelled
-    if (typed.trim() && typed.trim().length < 8) { toast.error('Password must be at least 8 characters'); return; }
+    setPwDialog({ mode: 'ask', name: u.name, email: u.email });
+  };
+
+  const submitResetLogin = async (u: U, typed: string) => {
+    if (!API_URL) { toast('Set VITE_API_URL for live updates', { icon: '⚠️' }); return; }
+    setPwDialog(null);
     setSaving(`pw-${u.id}`);
     try {
       const res = await fetch(`${API_URL}/admin/users/${u.id}/reset-password`, {
@@ -95,7 +106,9 @@ export default function UserRoleEditor() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || (res.status === 404 ? 'Redeploy the worker first (npx wrangler deploy --config backend/wrangler.toml)' : 'Failed'));
       const pwd = data.data?.tempPassword || typed.trim();
-      window.prompt(`Login reset ✓ — give this to ${u.name} (shown once, store it nowhere else):\n\nEmail: ${u.email}\nPassword:`, pwd);
+      // Shown ONCE, in-app, with a copy button (a browser prompt would throw in
+      // the desktop shell and the password would be lost).
+      setPwDialog({ mode: 'result', name: u.name, email: u.email, password: pwd });
       toast.success(`Login reset for ${u.name} ✓`);
     } catch (e: any) { toast.error(e.message); }
     finally { setSaving(''); }
@@ -199,6 +212,40 @@ export default function UserRoleEditor() {
         </div>
       </div>
       <p className="text-xs text-rx-gray-medium">Tip: to make yourself admin quickly: <code className="px-1 py-0.5 bg-white/10 rounded">npx wrangler d1 execute rx-store-db --command "UPDATE users SET role='admin' WHERE email='YOUR_EMAIL'" --remote</code></p>
+
+      {/* ASK for the new password (blank = auto-generate). */}
+      <PromptDialog
+        open={pwDialog?.mode === 'ask'}
+        title={pwDialog ? `Reset login for ${pwDialog.name}` : 'Reset login'}
+        description={pwDialog ? <>{pwDialog.email}<br />Type a new password (8+ characters) or leave it empty to generate a temporary one. They can change it after signing in.</> : null}
+        label="New password (optional)"
+        placeholder="Leave empty to auto-generate"
+        secret
+        minLength={0}
+        maxLength={128}
+        confirmLabel="Reset login"
+        onCancel={() => setPwDialog(null)}
+        onConfirm={(value) => {
+          if (value && value.length < 8) { toast.error('Password must be at least 8 characters'); return; }
+          const target = users.find((x) => x.email === pwDialog?.email);
+          if (target) void submitResetLogin(target, value);
+        }}
+      />
+
+      {/* SHOW the new password ONCE, copyable — never a browser prompt. */}
+      <PromptDialog
+        open={pwDialog?.mode === 'result'}
+        title="Login reset ✓"
+        description={pwDialog ? <>Give this to <b className="text-white">{pwDialog.name}</b> ({pwDialog.email}). It is shown ONCE — store it nowhere else.</> : null}
+        label="Temporary password"
+        defaultValue={pwDialog?.password || ''}
+        copyable
+        secret
+        confirmLabel="Done"
+        cancelLabel="Close"
+        onCancel={() => setPwDialog(null)}
+        onConfirm={() => setPwDialog(null)}
+      />
     </div>
   );
 }

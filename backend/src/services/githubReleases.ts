@@ -64,7 +64,24 @@ export function vtMaxBytes(env: any): number {
 // canonical DDL for production)
 // ---------------------------------------------------------------------------
 
+/**
+ * Which envs already have the GitHub schema.
+ *
+ * ensureGithubTables issues ~20 DDL statements (CREATE TABLE/INDEX IF NOT
+ * EXISTS + no-op ALTERs). Running that on EVERY service call burned a large
+ * part of the per-request D1 subrequest budget — the admin queue, which also
+ * enriches up to 100 releases, ran out and the Worker was killed. The schema
+ * cannot change while an isolate lives, so it is ensured ONCE per env object.
+ */
+const schemaReady = new WeakSet<object>();
+
 export async function ensureGithubTables(env: any): Promise<void> {
+  if (env && typeof env === 'object' && schemaReady.has(env)) return;
+  await createGithubTables(env);
+  if (env && typeof env === 'object') schemaReady.add(env);
+}
+
+async function createGithubTables(env: any): Promise<void> {
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS github_repo_connections (
     id TEXT PRIMARY KEY, application_id TEXT NOT NULL UNIQUE, repository_id TEXT NOT NULL UNIQUE,
     repository_owner TEXT NOT NULL, repository_name TEXT NOT NULL, repository_full_name TEXT NOT NULL,
@@ -751,13 +768,36 @@ export async function verifyGithubRelease(
         failures++; failureReasons.push(`${a.name}: renamed on GitHub`);
         continue;
       }
-      // 2. PASS 1 — stream the ACTUAL bytes (validated redirects, hashed
-      //    in-stream, head/tail windows captured). Never persisted.
+      // 2. PASS 1 — the authoritative hash, then the bytes for inspection.
+      //
+      //    GitHub computes a sha256 over every uploaded asset and returns it as
+      //    `digest`. That is the same hash we would compute by downloading the
+      //    file, so when it exists we take it and download the bytes ONCE (for
+      //    the checks) instead of TWICE. Two full downloads of a 100MB
+      //    installer in one request is what pushed large releases past the
+      //    Worker's budget.
+      const digestMatch = /^sha256:([a-f0-9]{64})$/i.exec(String((meta.json as any)?.digest || ''));
+      const githubHash = digestMatch ? digestMatch[1].toLowerCase() : null;
       const ext = await loadExternalPackageBytes(a.download_url, { maxBytes: assetMaxBytes(env), authHeaders: await assetAuthHeaders(env, conn, a.is_private === 1) });
       if (!ext) {
+        // With a GitHub digest the hash is already known — record it and let
+        // the pipeline fail honestly rather than blocking the asset.
+        if (githubHash && Number(meta.json.size) > 0) {
+          await env.DB.prepare(`UPDATE github_release_assets SET state='verified', size_bytes=?, sha256=?, error=?, verified_at=datetime('now') WHERE id=?`)
+            .bind(Number(meta.json.size), githubHash, 'Bytes could not be streamed for structural inspection; the hash comes from GitHub’s own digest.', a.id).run();
+          verifiedInBatch++;
+          continue;
+        }
         await env.DB.prepare(`UPDATE github_release_assets SET state='failed', error=? WHERE id=?`)
           .bind(`The asset could not be streamed for verification (unreachable, redirect-rejected, or above the ${Math.floor(assetMaxBytes(env) / 1048576)}MB cap).`, a.id).run();
         failures++; failureReasons.push(`${a.name}: could not be streamed`);
+        continue;
+      }
+      if (githubHash && githubHash !== ext.sha256) {
+        // The bytes disagree with GitHub's own digest — never accept that.
+        await env.DB.prepare(`UPDATE github_release_assets SET state='mismatch', size_bytes=?, sha256=?, error=? WHERE id=?`)
+          .bind(ext.size, ext.sha256, 'The streamed bytes do not match GitHub’s digest for this asset.', a.id).run();
+        failures++; failureReasons.push(`${a.name}: bytes disagree with GitHub's digest`);
         continue;
       }
       if (Number(meta.json.size) !== ext.size) {
@@ -825,7 +865,9 @@ export async function verifyGithubRelease(
         failures++; failureReasons.push(`${a.name}: canonical package row missing`);
         continue;
       }
-      const run = await runSecurityPipeline(env, pkgRow.id).catch(() => null);
+      // Re-use the bytes streamed in PASS 1 — the second download was pure
+      // waste and the reason 100MB assets timed out.
+      const run = await runSecurityPipeline(env, pkgRow.id, { preloadedBytes: ext }).catch(() => null);
       const malware = await latestCheckStatus(env, pkgRow.id, 'malware').catch(() => null);
       const overall = run?.overall || 'FAILED';
       const scannerDetail = (run?.results?.malware?.details || run?.results?.malware?.result || null);
@@ -1649,52 +1691,121 @@ export async function adminQueue(env: any, filters: { status?: string; appId?: s
      ORDER BY CASE g.status WHEN 'pending_approval' THEN 0 WHEN 'verifying' THEN 1 WHEN 'detected' THEN 2 WHEN 'withdrawn' THEN 9 ELSE 3 END, g.detected_at DESC
      LIMIT 100`
   ).bind(...binds).all().catch(() => ({ results: [] }));
-  const out = [];
-  for (const r of rows?.results || []) {
-    // One unreadable release record must never blank the WHOLE queue: the
-    // admin would just see a failed request with no explanation and no way to
-    // act on the other releases. Each row is enriched in isolation.
-    try {
-      const assets: any = await env.DB.prepare(`SELECT * FROM github_release_assets WHERE release_id=?`).bind(r.id).all().catch(() => ({ results: [] }));
-      // Full per-check security evidence from the REAL pipeline: the canonical
-      // packages rows + their latest package_security_results + manual-review
-      // state (the admin reviews the same evidence the manual channel shows).
-      const canonical: any = await env.DB.prepare(
-        `SELECT id, status AS canonical_status FROM releases WHERE application_id=? AND version=?`
-      ).bind(r.application_id, r.version).first().catch(() => null);
-      let packages: any[] = [];
-      if (canonical?.id) {
-        const pkgs: any = await env.DB.prepare(`SELECT * FROM packages WHERE release_id=?`).bind(canonical.id).all().catch(() => ({ results: [] }));
-        packages = pkgs?.results || [];
-        const checks = await latestChecksForPackages(env, packages.map((p: any) => p.id)).catch(() => ({} as Record<string, any[]>));
-        for (const p of packages) {
-          (p as any).checks = checks[p.id] || [];
-          (p as any).manualReview = await env.DB.prepare(
-            `SELECT status, reason, admin_notes, created_at, reviewed_at, invalidated_at FROM package_manual_reviews WHERE package_id=? ORDER BY created_at DESC LIMIT 1`
-          ).bind(p.id).first().catch(() => null);
-        }
-      }
-      let ignored: any = null;
-      try { ignored = r.ignored_assets ? JSON.parse(r.ignored_assets) : null; } catch { ignored = null; }
-      out.push({
-        ...r,
-        status: displayStatus(r),
-        assets: assets?.results || [],
-        ignoredAssets: ignored?.ignored || [], unmappedAssets: ignored?.unmapped || [],
-        canonicalReleaseId: canonical?.id || null, canonicalStatus: canonical?.canonical_status || null, packages,
-      });
-    } catch (e: any) {
-      console.error(`[github] adminQueue could not enrich release ${r?.id}:`, String(e?.message || e));
-      let ignored: any = null;
-      try { ignored = r.ignored_assets ? JSON.parse(r.ignored_assets) : null; } catch { ignored = null; }
-      out.push({
-        ...r,
-        status: displayStatus(r),
-        assets: [], ignoredAssets: ignored?.ignored || [], unmappedAssets: ignored?.unmapped || [],
-        canonicalReleaseId: null, canonicalStatus: null, packages: [],
-        enrichmentError: String(e?.message || e).slice(0, 200),
-      });
+  const list: any[] = rows?.results || [];
+  if (!list.length) return [];
+
+  // ---------------------------------------------------------------------
+  // BATCHED ENRICHMENT — a fixed handful of queries for the WHOLE queue.
+  //
+  // This used to run 4+ queries PER RELEASE (assets, canonical release,
+  // packages, then one security-results query PER PACKAGE). With ~40 queued
+  // releases that is 150+ D1 subrequests in one request: the Worker exceeded
+  // its budget, the isolate was killed, and the edge error page (no CORS)
+  // surfaced in the admin UI as a bare network failure — the approval queue
+  // itself became unloadable.
+  // ---------------------------------------------------------------------
+  const releaseIds = list.map((r) => String(r.id));
+  const inList = (ids: string[]) => ids.map(() => '?').join(',');
+  const chunk = <T,>(arr: T[], size = 40): T[][] => {
+    const out: T[][] = [];
+    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+    return out;
+  };
+
+  // 1. Assets for every queued release.
+  const assetsByRelease = new Map<string, any[]>();
+  for (const part of chunk(releaseIds)) {
+    const r: any = await env.DB.prepare(
+      `SELECT * FROM github_release_assets WHERE release_id IN (${inList(part)})`
+    ).bind(...part).all().catch(() => ({ results: [] }));
+    for (const a of r?.results || []) {
+      const key = String(a.release_id);
+      if (!assetsByRelease.has(key)) assetsByRelease.set(key, []);
+      assetsByRelease.get(key)!.push(a);
     }
+  }
+
+  // 2. The canonical (unpublished) release row each queued release maps to.
+  const apps = [...new Set(list.map((r) => String(r.application_id)))];
+  const versions = [...new Set(list.map((r) => String(r.version)))];
+  const canonicals: any[] = [];
+  for (const appPart of chunk(apps)) {
+    for (const verPart of chunk(versions, 20)) {
+      if (!appPart.length || !verPart.length) continue;
+      const r: any = await env.DB.prepare(
+        `SELECT id, application_id, version, status FROM releases
+          WHERE application_id IN (${inList(appPart)}) AND version IN (${inList(verPart)})`
+      ).bind(...appPart, ...verPart).all().catch(() => ({ results: [] }));
+      canonicals.push(...(r?.results || []));
+    }
+  }
+  const canonicalByKey = new Map<string, any>();
+  for (const c of canonicals) {
+    // Prefer a published row over any other duplicate, as before.
+    const key = `${c.application_id}::${c.version}`;
+    const prev = canonicalByKey.get(key);
+    if (!prev || (prev.status !== 'published' && c.status === 'published')) canonicalByKey.set(key, c);
+  }
+
+  // 3. Packages for those canonical releases.
+  const canonicalIds = [...new Set(canonicals.map((c) => String(c.id)))];
+  const packagesByRelease = new Map<string, any[]>();
+  for (const part of chunk(canonicalIds)) {
+    const r: any = await env.DB.prepare(
+      `SELECT * FROM packages WHERE release_id IN (${inList(part)})`
+    ).bind(...part).all().catch(() => ({ results: [] }));
+    for (const p of r?.results || []) {
+      const key = String(p.release_id);
+      if (!packagesByRelease.has(key)) packagesByRelease.set(key, []);
+      packagesByRelease.get(key)!.push(p);
+    }
+  }
+
+  // 4. Security evidence — ONE batched query (see latestChecksForPackages).
+  const allPackages = [...packagesByRelease.values()].flat();
+  const checks = await latestChecksForPackages(env, allPackages.map((p) => String(p.id))).catch(() => ({} as Record<string, any[]>));
+
+  // 5. Latest manual review per package.
+  const reviewByPackage = new Map<string, any>();
+  for (const part of chunk(allPackages.map((p) => String(p.id)))) {
+    const r: any = await env.DB.prepare(
+      `SELECT package_id, status, reason, admin_notes, created_at, reviewed_at, invalidated_at
+         FROM package_manual_reviews
+        WHERE package_id IN (${inList(part)})
+        ORDER BY created_at DESC, id DESC`
+    ).bind(...part).all().catch(() => ({ results: [] }));
+    for (const m of r?.results || []) {
+      const key = String(m.package_id);
+      if (!reviewByPackage.has(key)) reviewByPackage.set(key, m); // first = newest
+    }
+  }
+
+  const parseIgnored = (raw: any) => {
+    try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+  };
+
+  const out: any[] = [];
+  for (const r of list) {
+    const key = `${r.application_id}::${r.version}`;
+    const canonical = canonicalByKey.get(key) || null;
+    const packages = canonical ? (packagesByRelease.get(String(canonical.id)) || []) : [];
+    const enrichedPackages = packages.map((p: any) => ({
+      ...p,
+      checks: checks[String(p.id)] || [],
+      manualReview: reviewByPackage.get(String(p.id)) || null,
+    }));
+    const ignored = parseIgnored(r.ignored_assets);
+    out.push({
+      ...r,
+      // The queue renders at most a couple of KB of notes; keeping the full
+      // body for 100 releases only inflates the response.
+      release_notes: r.release_notes ? String(r.release_notes).slice(0, 4000) : r.release_notes,
+      status: displayStatus(r),
+      assets: assetsByRelease.get(String(r.id)) || [],
+      ignoredAssets: ignored?.ignored || [], unmappedAssets: ignored?.unmapped || [],
+      canonicalReleaseId: canonical?.id || null, canonicalStatus: canonical?.status || null,
+      packages: enrichedPackages,
+    });
   }
   return out;
 }

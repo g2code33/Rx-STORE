@@ -196,3 +196,36 @@ real finding and is shown with its reason under the badge. Fix the app record
 (Admin → Applications → `linux_package_name` / `android_package_id`) or take an
 explicit, audited **Manual approve** on that asset. A `DETECTED` malware verdict
 can never be approved.
+
+## 7. Desktop shell: why reasons are captured in-app
+
+`window.prompt()` is **not implemented by Electron** — calling it throws
+`Error: prompt() is and will not be supported.` Every admin action that asked
+for a reason through it (Manual approve, Reject, Withdraw, Delete, Suspend /
+Disconnect a repository, reset a user's login) therefore did *nothing* in the
+desktop app: no dialog, no request, no audit entry.
+
+All of those now use `src/components/common/PromptDialog.tsx`: a real modal with
+inline validation (10+ characters), Escape to close and a visible character
+count. `src/components/common/desktopShell.test.ts` fails the build if
+`window.prompt` returns to any source file. `window.confirm` **is** supported by
+Electron, so confirmations may keep using it.
+
+## 8. Request budget (why the approval queue batches its queries)
+
+The queue used to enrich each release with 4+ D1 queries, plus one
+security-results query **per package**. With ~40 queued releases that was 150+
+subrequests in a single request; the Worker exceeded its budget, the isolate was
+killed, and the edge error page (which has no CORS headers) surfaced in the
+browser as a bare network error — the queue could not be loaded at all.
+
+Now: `ensureGithubTables()` runs once per isolate, `latestChecksForPackages()`
+is one batched query, and `adminQueue()` uses a fixed handful of queries
+(assets, canonicals, packages, checks, manual reviews) regardless of how many
+releases it returns. Long release notes are trimmed to 4 KB.
+
+Verification follows the same rule: **one download per asset**. GitHub's own
+`digest: sha256:…` is used as the authoritative hash (and checked against the
+streamed bytes when both exist — a disagreement is a `mismatch`), and the bytes
+streamed for hashing are passed into the security pipeline instead of being
+downloaded a second time.

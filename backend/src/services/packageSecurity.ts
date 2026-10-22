@@ -1579,7 +1579,15 @@ async function recordStateTransition(env: any, pkg: any, prevState: string, prev
  * Stops at the first FAILED stage (later stages are not run — the state
  * machine records where it stopped).
  */
-export async function runSecurityPipeline(env: any, packageId: string): Promise<{
+export async function runSecurityPipeline(env: any, packageId: string, opts: {
+  /**
+   * Bytes already streamed by the caller (GitHub verification hashes the asset
+   * first). Re-using them avoids downloading a 100MB installer TWICE in the
+   * same request — the second download is what pushed big releases past the
+   * Worker's budget.
+   */
+  preloadedBytes?: PackageBytes | null;
+} = {}): Promise<{
   state: PipelineStage; overall: 'PASSED' | 'FAILED' | 'NEEDS_REVIEW'; results: Partial<Record<CheckType, CheckResult>>;
 }> {
   const pkg: any = await env.DB.prepare('SELECT * FROM packages WHERE id=?').bind(packageId).first().catch(() => null);
@@ -1602,9 +1610,11 @@ export async function runSecurityPipeline(env: any, packageId: string): Promise<
   // GitHub-hosted packages: the bytes come from the VERIFIED external asset
   // URL (validated redirects, hashed in-stream) — the same PackageBytes shape,
   // so every check below runs unchanged. Nothing is persisted.
-  const bytes = pkg.provider === 'github' && pkg.external_url
-    ? await loadExternalPackageBytes(String(pkg.external_url), { maxBytes: Number(env?.GITHUB_ASSET_MAX_BYTES) || 500 * 1024 * 1024 })
-    : await loadPackageBytes(env, pkg.quarantine_key || pkg.storage_key);
+  const bytes = opts.preloadedBytes
+    ? opts.preloadedBytes
+    : pkg.provider === 'github' && pkg.external_url
+      ? await loadExternalPackageBytes(String(pkg.external_url), { maxBytes: Number(env?.GITHUB_ASSET_MAX_BYTES) || 500 * 1024 * 1024 })
+      : await loadPackageBytes(env, pkg.quarantine_key || pkg.storage_key);
   const results: Partial<Record<CheckType, CheckResult>> = {};
   let lastStage: PipelineStage = 'QUARANTINED';
   // A github package without a recorded hash has never been through the
@@ -1940,16 +1950,45 @@ export async function resolveDownloadGrant(env: any, token: string): Promise<
   };
 }
 
-/** Latest check results per package (for admin + developer security views). */
+/**
+ * Latest check results per package (for admin + developer security views).
+ *
+ * ONE query for every requested package. This used to run a separate D1 query
+ * per package id; the admin approval queue calls it for every package of every
+ * queued release, so with ~40 releases it issued 150+ queries in a single
+ * request. That exhausted the Worker's subrequest budget, the isolate was
+ * killed, and the browser only saw 'Failed to fetch' (the edge error page has
+ * no CORS headers). Batching here fixes every caller at once.
+ */
 export async function latestChecksForPackages(env: any, packageIds: string[]): Promise<Record<string, any[]>> {
   const out: Record<string, any[]> = {};
-  for (const id of packageIds) {
+  const ids = [...new Set(packageIds.filter(Boolean).map(String))];
+  for (const id of ids) out[id] = [];
+  if (!ids.length) return out;
+
+  // D1 caps bound parameters per statement; chunk so a big queue still works.
+  const CHUNK = 40;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    const marks = chunk.map(() => '?').join(',');
     const rows: any = await env.DB.prepare(
-      `SELECT check_type, status, classification, provider, provider_version, result, details, fingerprint, error, completed_at, started_at, scanner_analysis_id, scanner_verdict, scanner_raw_summary, scanner_started_at, scanner_completed_at FROM package_security_results
-       WHERE id IN (SELECT MAX(id) FROM package_security_results WHERE package_id=? GROUP BY check_type)
-       ORDER BY check_type`
-    ).bind(id).all().catch(() => ({ results: [] }));
-    out[id] = rows?.results || [];
+      `SELECT package_id, check_type, status, classification, provider, provider_version, result, details, fingerprint, error, completed_at, started_at, scanner_analysis_id, scanner_verdict, scanner_raw_summary, scanner_started_at, scanner_completed_at
+         FROM package_security_results
+        WHERE id IN (
+                SELECT MAX(id) FROM package_security_results
+                 WHERE package_id IN (${marks})
+                 GROUP BY package_id, check_type
+              )
+        ORDER BY package_id, check_type`
+    ).bind(...chunk).all().catch(() => ({ results: [] }));
+    for (const r of rows?.results || []) {
+      const key = String(r.package_id);
+      if (!out[key]) out[key] = [];
+      // The caller's shape never included package_id; keep it identical.
+      const { package_id, ...rest } = r;
+      void package_id;
+      out[key].push(rest);
+    }
   }
   return out;
 }

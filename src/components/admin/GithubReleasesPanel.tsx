@@ -13,6 +13,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Github, RefreshCw, CheckCircle2, XCircle, ShieldAlert, Clock, Link2, Unlink, History, ChevronDown, ExternalLink, Loader2, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '../../services/api';
+import PromptDialog from '../common/PromptDialog';
 
 const STATUS_STYLES: Record<string, string> = {
   detected: 'bg-white/10 text-rx-gray-medium',
@@ -54,6 +55,19 @@ export default function GithubReleasesPanel() {
   const [publishFor, setPublishFor] = useState<any>(null);
   const [override, setOverride] = useState(false);
   const [overrideReason, setOverrideReason] = useState('');
+  /**
+   * Reason capture MUST NOT use window.prompt: Electron throws
+   * "prompt() is and will not be supported", which made Manual approve /
+   * Reject / Delete / Withdraw silently do nothing in the desktop app.
+   */
+  const [askReason, setAskReason] = useState<null | {
+    title: string;
+    description?: React.ReactNode;
+    label: string;
+    confirmLabel: string;
+    tone?: 'default' | 'danger';
+    onConfirm: (reason: string) => void;
+  }>(null);
 
   /**
    * The two reads are independent: a failure in one must not blank the other
@@ -173,36 +187,47 @@ export default function GithubReleasesPanel() {
     } finally { setBusyId(null); }
   };
 
-  const doManualAsset = async (rel: any, asset: any, decision: 'APPROVE' | 'REJECT') => {
-    const note = window.prompt(
-      decision === 'APPROVE'
-        ? `Manually APPROVE "${asset.name}" for ${rel.app_name || ''} v${rel.version}?\n\nRX Store will compute and record the SHA-256 from the actual bytes, store a manual-approval record bound to that hash, and audit your decision. A scanner DETECTED verdict can never be overridden.\n\nReason (required, 10+ chars):`
-        : `REJECT "${asset.name}"? It will stay blocked and can never be published.\n\nReason (required, 10+ chars):`,
-    );
-    if (note == null) return;
-    if (note.trim().length < 10) { toast.error('A note of at least 10 characters is required.'); return; }
-    setBusyId(rel.id);
-    try {
-      const r = await api.githubAdmin.manualVerifyAsset(rel.id, asset.id, decision, note.trim());
-      toast.success(decision === 'APPROVE' ? `Asset approved — ${r.remaining} asset(s) left.` : 'Asset rejected.');
-      load();
-    } catch (e: any) { toast.error(e?.message || 'Manual action failed.', { duration: 9000 }); }
-    finally { setBusyId(null); }
+  const doManualAsset = (rel: any, asset: any, decision: 'APPROVE' | 'REJECT') => {
+    const approve = decision === 'APPROVE';
+    setAskReason({
+      title: `${approve ? 'Manually approve' : 'Reject'} “${asset.name}”`,
+      description: approve
+        ? <>For <b className="text-white">{rel.app_name || 'this app'}</b> v{rel.version}. RX Store records the SHA-256 from GitHub’s own digest (or the real bytes when GitHub has none), stores a manual-approval record bound to that hash, and audits your decision. A scanner DETECTED verdict can never be overridden.</>
+        : <>This asset stays blocked and can never be published. The decision is audited.</>,
+      label: 'Reason (required)',
+      confirmLabel: approve ? 'Approve asset' : 'Reject asset',
+      tone: approve ? 'default' : 'danger',
+      onConfirm: async (reason: string) => {
+        setAskReason(null);
+        setBusyId(rel.id);
+        try {
+          const r = await api.githubAdmin.manualVerifyAsset(rel.id, asset.id, decision, reason);
+          toast.success(approve ? `Asset approved — ${r.remaining} asset(s) left.` : 'Asset rejected.');
+          load();
+        } catch (e: any) { toast.error(e?.message || 'Manual action failed.', { duration: 9000 }); }
+        finally { setBusyId(null); }
+      },
+    });
   };
 
-  const doDelete = async (rel: any) => {
-    const reason = window.prompt(
-      `Delete this release record (${rel.app_name || ''} v${rel.version})?\n\nThis removes it from RX Store history — the GitHub release itself is untouched. Published releases must be withdrawn first.\n\nReason (required, 10+ chars):`,
-    );
-    if (reason == null) return;
-    if (reason.trim().length < 10) { toast.error('A deletion reason of at least 10 characters is required.'); return; }
-    setBusyId(rel.id);
-    try {
-      await api.githubAdmin.removeRelease(rel.id, reason.trim());
-      toast.success(`Removed ${rel.version} from the list.`);
-      load();
-    } catch (e: any) { toast.error(e?.message || 'Could not delete the release.', { duration: 8000 }); }
-    finally { setBusyId(null); }
+  const doDelete = (rel: any) => {
+    setAskReason({
+      title: `Delete ${rel.version}?`,
+      description: <>This removes the release record for <b className="text-white">{rel.app_name || 'this app'}</b> v{rel.version} from RX Store history — the GitHub release itself is untouched. Published releases must be withdrawn first. The deletion is audited.</>,
+      label: 'Reason (required)',
+      confirmLabel: 'Delete record',
+      tone: 'danger',
+      onConfirm: async (reason: string) => {
+        setAskReason(null);
+        setBusyId(rel.id);
+        try {
+          await api.githubAdmin.removeRelease(rel.id, reason);
+          toast.success(`Removed ${rel.version} from the list.`);
+          load();
+        } catch (e: any) { toast.error(e?.message || 'Could not delete the release.', { duration: 8000 }); }
+        finally { setBusyId(null); }
+      },
+    });
   };
 
   const doDeleteSuperseded = async (appId?: string) => {
@@ -216,17 +241,24 @@ export default function GithubReleasesPanel() {
     finally { setBusyId(null); }
   };
 
-  const doWithdraw = async (rel: any) => {
-    const reason = prompt(`Withdraw v${rel.version} from users? Update checks stop recommending it.\nReason (required):`);
-    if (reason == null) return;
-    if (reason.trim().length < 10) { toast.error('A withdrawal reason of at least 10 characters is required.'); return; }
-    setBusyId(rel.id);
-    try {
-      await api.githubAdmin.withdraw(rel.id, reason);
-      toast.success('Release withdrawn.');
-      load();
-    } catch (e: any) { toast.error(e?.message || 'Withdrawal failed.'); }
-    finally { setBusyId(null); }
+  const doWithdraw = (rel: any) => {
+    setAskReason({
+      title: `Withdraw v${rel.version}?`,
+      description: 'Update checks stop recommending it immediately and the previous live version is restored. The withdrawal is audited.',
+      label: 'Reason (required)',
+      confirmLabel: 'Withdraw release',
+      tone: 'danger',
+      onConfirm: async (reason: string) => {
+        setAskReason(null);
+        setBusyId(rel.id);
+        try {
+          await api.githubAdmin.withdraw(rel.id, reason);
+          toast.success('Release withdrawn.');
+          load();
+        } catch (e: any) { toast.error(e?.message || 'Withdrawal failed.'); }
+        finally { setBusyId(null); }
+      },
+    });
   };
 
   const scannerUnreachable = (rel: any) => (rel.assets || []).some((a: any) => a.scanner_status && a.scanner_status !== 'CLEAN' && a.scanner_status !== 'DETECTED');
@@ -600,6 +632,23 @@ export default function GithubReleasesPanel() {
           </div>
         </div>
       )}
+
+      {/* One in-app reason dialog for Manual approve / Reject / Delete /
+          Withdraw. NEVER window.prompt — Electron does not implement it. */}
+      <PromptDialog
+        open={!!askReason}
+        title={askReason?.title || ''}
+        description={askReason?.description}
+        label={askReason?.label}
+        placeholder="Explain the decision — this is recorded in the audit log"
+        minLength={10}
+        maxLength={1000}
+        multiline
+        confirmLabel={askReason?.confirmLabel || 'Confirm'}
+        tone={askReason?.tone || 'danger'}
+        onCancel={() => setAskReason(null)}
+        onConfirm={(value) => askReason?.onConfirm(value)}
+      />
     </div>
   );
 }

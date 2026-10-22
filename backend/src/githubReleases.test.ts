@@ -62,9 +62,13 @@ function fakeEnv() {
   };
   const storagePuts: any[] = [];
 
+  const queryLog: string[] = [];
   const DB = {
+    /** Every statement prepared during this env's lifetime (query-budget tests). */
+    __queryLog: queryLog,
     prepare(sql: string) {
       const s = sql.replace(/\s+/g, ' ');
+      queryLog.push(s);
       return {
         _binds: [] as any[],
         bind(...args: any[]) { this._binds = args; return this; },
@@ -331,9 +335,15 @@ function fakeEnv() {
             return { meta: { changes: r ? 1 : 0 } };
           }
           if (s.includes("UPDATE github_release_assets SET state='verified'")) {
-            // (size_bytes, sha256, id)
-            const r = T('github_release_assets').find((x) => x.id === a[2]);
-            if (r) { r.state = 'verified'; r.size_bytes = a[0]; r.sha256 = a[1]; r.error = null; r.verified_at = 'now'; }
+            // Two call shapes: (size_bytes, sha256, id) — and the digest-only
+            // record (size_bytes, sha256, error, id).
+            const withError = s.includes('error=?,');
+            const id = withError ? a[3] : a[2];
+            const r = T('github_release_assets').find((x) => x.id === id);
+            if (r) {
+              r.state = 'verified'; r.size_bytes = a[0]; r.sha256 = a[1];
+              r.error = withError ? a[2] : null; r.verified_at = 'now';
+            }
             return { meta: { changes: r ? 1 : 0 } };
           }
           if (s.includes('UPDATE github_release_assets SET scanner_status=?')) {
@@ -500,6 +510,38 @@ function fakeEnv() {
         async all() {
           const a = this._binds;
           const T = (name: string) => tables[name];
+          // ---- BATCHED queue enrichment (IN (...)) — must precede the
+          // single-release handlers below, which would also match.
+          if (s.includes('FROM github_release_assets WHERE release_id IN (')) {
+            return { results: T('github_release_assets').filter((r) => a.includes(r.release_id)) };
+          }
+          if (s.includes('FROM releases WHERE application_id IN (') && s.includes('version IN (')) {
+            // Two IN lists — split the binds by the number of placeholders in each.
+            const marks = (re: RegExp) => (s.match(re)?.[1].match(/\?/g) || []).length;
+            const appCount = marks(/application_id IN \(([^)]*)\)/);
+            const apps = a.slice(0, appCount);
+            const vers = a.slice(appCount);
+            return { results: T('releases').filter((r) => apps.includes(r.application_id) && vers.includes(r.version)) };
+          }
+          if (s.includes('FROM packages WHERE release_id IN (')) {
+            return { results: T('packages').filter((x) => a.includes(x.release_id)) };
+          }
+          if (s.includes('FROM package_security_results') && s.includes('GROUP BY package_id, check_type')) {
+            // Latest row per (package, check_type) for every requested package.
+            const latest = new Map<string, any>();
+            for (const r of T('package_security_results')) {
+              if (!a.includes(r.package_id)) continue;
+              latest.set(`${r.package_id}::${r.check_type}`, r);
+            }
+            return { results: [...latest.values()].map((r) => ({ ...r })) };
+          }
+          if (s.includes('FROM package_manual_reviews') && s.includes('package_id IN (')) {
+            return {
+              results: T('package_manual_reviews')
+                .filter((r) => a.includes(r.package_id))
+                .sort((x, y) => String(y.created_at || '').localeCompare(String(x.created_at || ''))),
+            };
+          }
           if (s.includes('FROM github_release_assets WHERE release_id')) return { results: T('github_release_assets').filter((r) => r.release_id === a[0]) };
           if (s.includes("state IN ('failed','mismatch','missing')")) {
             return { results: T('github_release_assets').filter((r) => r.release_id === a[0] && ['failed', 'mismatch', 'missing'].includes(r.state)) };
@@ -2954,4 +2996,211 @@ test('MANUAL REJECT: the asset stays blocked and is audited', async () => {
     const pub = await publishGithubRelease(env, ADMIN, rel.id, {});
     assert.equal(pub.ok, false, 'a rejected asset cannot be published');
   } finally { stubs.restore(); }
+});
+
+// ---------------------------------------------------------------------------
+// QUEUE QUERY BUDGET
+//
+// Production: the admin approval queue returned a bare network failure. The
+// queue used to issue 4+ D1 queries PER RELEASE (assets, canonical release,
+// packages, then one security-results query PER PACKAGE). With ~40 queued
+// releases that was 150+ subrequests in one request: the Worker ran out of
+// budget, the isolate was killed and the edge error page (which carries no CORS
+// headers) surfaced in the browser as a network error — the queue could not be
+// loaded at all.
+//
+// The enrichment is now batched: a fixed handful of queries for the whole
+// queue, independent of how many releases it holds.
+// ---------------------------------------------------------------------------
+
+test('QUEUE: enrichment is batched — the query count does not grow with the number of releases', async () => {
+  const { adminQueue } = await import('./services/githubReleases.ts');
+  const stubs = installStubs(env);
+  try {
+    await connect();
+
+    // Seed 12 queued releases, each with 3 packages and full check evidence.
+    const appId = 'app-q1';
+    for (let i = 0; i < 12; i++) {
+      const version = `2.${i}.0`;
+      const relId = `ghr_q_${i}`;
+      const canonId = `rel_q_${i}`;
+      env.tables.releases.push({ id: canonId, application_id: appId, version, status: 'under_review', channel: 'stable' });
+      env.tables.github_releases.push({
+        id: relId, application_id: appId, connection_id: env.tables.github_repo_connections[0].id,
+        github_release_id: String(9000 + i), tag_name: `v${version}`, version, release_name: `v${version}`,
+        status: 'verification_failed', detected_at: '2026-10-22 10:00:00', ignored_assets: null, release_notes: 'x'.repeat(9000),
+      });
+      for (const [platform, architecture] of [['android', 'universal'], ['linux_deb', 'x64'], ['windows', 'x64']]) {
+        const pkgId = `pkg_q_${i}_${platform}`;
+        env.tables.github_release_assets.push({
+          id: `ast_q_${i}_${platform}`, release_id: relId, github_asset_id: `55${i}${platform}`, name: `${platform}.bin`,
+          platform, architecture, download_url: 'https://github.com/octo/app/releases/download/v2.0.0/x',
+          state: 'verified', sha256: 'b'.repeat(64), size_bytes: 10, scanner_status: 'CLEAN', error: null, arch_assumed: 0,
+        });
+        env.tables.packages.push({
+          id: pkgId, application_id: appId, release_id: canonId, platform, architecture, filename: `${platform}.bin`,
+          storage_key: null, file_size: 10, sha256: 'b'.repeat(64), version, provider: 'github', status: 'stored',
+          security_state: 'SECURITY_REVIEW_COMPLETE', overall_security: 'NEEDS_REVIEW', quarantine_key: null,
+          deployment_url: null, security_scan_status: 'clean', signature_status: 'SIGNED',
+        });
+        for (const [check, status] of [['integrity', 'PASSED'], ['malware', 'SCANNING'], ['structure', 'PASSED']]) {
+          env.tables.package_security_results.push({
+            id: `psr_${pkgId}_${check}`, package_id: pkgId, release_id: canonId, app_id: appId,
+            check_type: check, status, provider: 'virustotal', result: 'ok', details: null,
+            created_at: '2026-10-22 10:00:00',
+          });
+        }
+      }
+    }
+
+    env.DB.__queryLog.length = 0;
+    const queue: any[] = await adminQueue(env, {});
+    const queries = env.DB.__queryLog.length;
+
+    const ours = queue.filter((r) => String(r.id).startsWith('ghr_q_'));
+    assert.equal(ours.length, 12, 'every queued release is returned');
+    // 12 releases × 3 packages = 36 packages; the OLD implementation needed
+    // 12 × (1 assets + 1 canonical + 1 packages + 3 per-package checks)
+    // ≈ 72+ statements for this alone. The batched version needs ~6 total.
+    assert.ok(queries <= 15, `expected a fixed query budget, issued ${queries}`);
+    // ...and the payload is still complete.
+    for (const r of ours) {
+      assert.equal(r.assets.length, 3, 'assets are attached');
+      assert.equal(r.packages.length, 3, 'packages are attached');
+      for (const p of r.packages) {
+        assert.equal(p.checks.length, 3, 'per-check evidence is attached');
+        assert.ok('manualReview' in p, 'manual-review state is attached');
+      }
+      assert.ok(String(r.release_notes).length <= 4000, 'long notes are trimmed (the UI shows 2k)');
+    }
+  } finally { stubs.restore(); }
+});
+
+test('QUEUE: doubling the releases doubles almost nothing but the rows', async () => {
+  const { adminQueue } = await import('./services/githubReleases.ts');
+  const seedReleases = (from: number, to: number) => {
+    for (let i = from; i < to; i++) {
+      const version = `4.${i}.0`;
+      env.tables.releases.push({ id: `rel_d_${i}`, application_id: APP_ID, version, status: 'under_review', channel: 'stable' });
+      env.tables.github_releases.push({
+        id: `ghr_d_${i}`, application_id: APP_ID, connection_id: env.tables.github_repo_connections[0].id,
+        github_release_id: String(6000 + i), tag_name: `v${version}`, version, release_name: `v${version}`,
+        status: 'verification_failed', detected_at: '2026-10-22 09:00:00', ignored_assets: null, release_notes: null,
+      });
+      env.tables.github_release_assets.push({
+        id: `ast_d_${i}`, release_id: `ghr_d_${i}`, github_asset_id: `79${i}`, name: 'app.apk',
+        platform: 'android', architecture: 'universal', download_url: 'u', state: 'verified',
+        sha256: 'c'.repeat(64), size_bytes: 1, scanner_status: 'CLEAN', error: null, arch_assumed: 0,
+      });
+    }
+  };
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    seedReleases(0, 6);
+    const before = await adminQueue(env, {});
+    env.DB.__queryLog.length = 0;
+    await adminQueue(env, {});
+    const baseQueries = env.DB.__queryLog.length;
+
+    seedReleases(6, 12);
+    env.DB.__queryLog.length = 0;
+    const after = await adminQueue(env, {});
+    const grownQueries = env.DB.__queryLog.length;
+
+    assert.ok(after.length > before.length, 'more releases are returned');
+    assert.ok(grownQueries <= baseQueries + 4,
+      `query count must stay bounded when the queue grows (${baseQueries} → ${grownQueries})`);
+  } finally { stubs.restore(); }
+});
+
+// ---------------------------------------------------------------------------
+// ONE DOWNLOAD PER ASSET
+//
+// Verifying a 100MB installer used to stream the bytes TWICE: once to hash and
+// once inside the security pipeline. With GitHub's own `digest` there is no
+// need for the hashing download at all, and the pipeline can re-use the bytes
+// PASS 1 already streamed. Both halves are pinned here.
+// ---------------------------------------------------------------------------
+
+test('VERIFY: the asset is streamed ONCE per verification (pipeline re-uses the bytes)', async () => {
+  const stubs = installStubs(env);
+  const original = globalThis.fetch;
+  try {
+    await connect();
+    let downloads = 0;
+    (globalThis.fetch as any) = (async (url: any, init?: any) => {
+      const u = String(url);
+      if (u.startsWith('https://github.com/octo/app/releases/download/')) downloads++;
+      // VirusTotal already knows these bytes (CLEAN) → no upload transfer.
+      if (/^https:\/\/www\.virustotal\.com\/api\/v3\/files\/[0-9a-f]{64}$/.test(u)) {
+        return new Response(JSON.stringify({ data: { attributes: { last_analysis_stats: { malicious: 0, suspicious: 0, harmless: 60, undetected: 5 } } } }), { status: 200 });
+      }
+      return (original as any)(url, init);
+    });
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-one-download');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const out = await verifyGithubRelease(env, rel.id, { maxAssets: 1 });
+    assert.equal(out.status, 'pending_approval', JSON.stringify(out));
+    assert.equal(downloads, 1, `the bytes must be fetched once, not twice (saw ${downloads})`);
+    const asset = env.tables.github_release_assets[0];
+    assert.equal(asset.state, 'verified');
+    assert.equal(asset.sha256, DEB_SHA);
+    // The pipeline still produced real evidence from those same bytes.
+    const checks = env.tables.package_security_results.filter((r: any) => r.package_id === env.tables.packages[0].id);
+    assert.ok(checks.some((c: any) => c.check_type === 'integrity' && c.status === 'PASSED'));
+  } finally { globalThis.fetch = original; stubs.restore(); }
+});
+
+test('VERIFY: bytes that disagree with GitHub’s own digest are refused', async () => {
+  const stubs = installStubs(env);
+  const original = globalThis.fetch;
+  try {
+    await connect();
+    (globalThis.fetch as any) = (async (url: any, init?: any) => {
+      const u = String(url);
+      if (u.startsWith('https://api.github.com/repos/octo/app/releases/assets/')) {
+        return new Response(JSON.stringify({
+          id: 555001, name: 'clinical-rx_1.12.0_amd64.deb', size: DEB_FIXTURE.byteLength,
+          digest: `sha256:${'d'.repeat(64)}`, // deliberately wrong
+        }), { status: 200 });
+      }
+      return (original as any)(url, init);
+    });
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-digest-mismatch');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const out = await verifyGithubRelease(env, rel.id, { maxAssets: 1 });
+    assert.equal(out.ok, false);
+    const asset = env.tables.github_release_assets[0];
+    assert.equal(asset.state, 'mismatch', 'never trust metadata over the bytes');
+    assert.match(String(asset.error), /digest/i);
+  } finally { globalThis.fetch = original; stubs.restore(); }
+});
+
+test('VERIFY: an asset GitHub can digest but we cannot stream still gets an honest record', async () => {
+  const stubs = installStubs(env);
+  const original = globalThis.fetch;
+  try {
+    await connect();
+    const digest = 'e'.repeat(64);
+    (globalThis.fetch as any) = (async (url: any, init?: any) => {
+      const u = String(url);
+      if (u.startsWith('https://api.github.com/repos/octo/app/releases/assets/')) {
+        return new Response(JSON.stringify({ id: 555001, name: 'clinical-rx_1.12.0_amd64.deb', size: 999, digest: `sha256:${digest}` }), { status: 200 });
+      }
+      if (u.startsWith('https://github.com/octo/app/releases/download/')) {
+        return new Response('nope', { status: 503 }); // CDN unreachable
+      }
+      return (original as any)(url, init);
+    });
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-digest-only');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const out = await verifyGithubRelease(env, rel.id, { maxAssets: 1 });
+    assert.equal(out.status, 'pending_approval', JSON.stringify(out));
+    const asset = env.tables.github_release_assets[0];
+    assert.equal(asset.sha256, digest, 'the hash comes from GitHub’s digest');
+    assert.equal(asset.size_bytes, 999);
+    assert.match(String(asset.error), /could not be streamed/i, 'the limitation is recorded, not hidden');
+  } finally { globalThis.fetch = original; stubs.restore(); }
 });

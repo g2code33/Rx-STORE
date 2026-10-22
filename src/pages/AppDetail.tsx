@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Star, Download, ArrowLeft, Share2, ExternalLink, Check, ChevronRight, Shield, Clock, Monitor, Calendar, Tag, ThumbsUp, AlertTriangle, ShieldCheck, LifeBuoy, Flag} from 'lucide-react';
+import PromptDialog from '../components/common/PromptDialog';
 import DownloadModal from '../components/apps/DownloadModal';
 import AppLogo from '../components/apps/AppLogo';
 import { useApps } from '../context/AppContext';
@@ -88,6 +89,8 @@ function videoEmbedUrl(url: string): string {
 }
 
 export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
+  // Clipboard blocked → show it in-app (window.prompt throws in Electron).
+  const [copyFallback, setCopyFallback] = useState<string | null>(null);
   const { slug: routeSlug } = useParams<{ slug: string }>();
   const slug = previewSlug ?? routeSlug;
   const { getAppBySlug, installedApps, installApp, uninstallApp, isLoading } = useApps();
@@ -492,7 +495,7 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
     } catch (e: any) {
       if (e?.name === 'AbortError') return; // share sheet dismissed
       try { await navigator.clipboard.writeText(url); toast.success('App link copied ✓'); }
-      catch { window.prompt('Copy this app link:', url); }
+      catch { setCopyFallback(url); }
     }
   };
 
@@ -1085,10 +1088,20 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
           </span>
         </div>
       )}
+      <PromptDialog
+        open={!!copyFallback}
+        title="Copy this app link"
+        description="Your browser blocked the clipboard. Select the text below and copy it."
+        label="Link"
+        defaultValue={copyFallback || ''}
+        copyable
+        confirmLabel="Done"
+        onCancel={() => setCopyFallback(null)}
+        onConfirm={() => setCopyFallback(null)}
+      />
     </div>
   );
 }
-
 // ---------------------------------------------------------------------------
 // Discovery: related apps (factual signals only — category/tags/platforms/
 // popularity computed server-side by GET /apps/related/:slug).

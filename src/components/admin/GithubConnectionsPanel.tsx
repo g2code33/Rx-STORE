@@ -14,6 +14,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Github, RefreshCw, Loader2, ShieldOff, ShieldCheck, Unlink, Link2, AlertTriangle, Search, ExternalLink } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '../../services/api';
+import PromptDialog from '../common/PromptDialog';
 
 type Row = {
   appId: string; slug: string; name: string; status: string; isPaid: boolean; currentVersion: string;
@@ -117,18 +118,13 @@ export default function GithubConnectionsPanel() {
     finally { setBusy(null); }
   };
 
-  const act = async (row: Row, action: 'suspend' | 'reinstate' | 'disconnect') => {
-    let reason = '';
-    if (action !== 'reinstate') {
-      const input = window.prompt(
-        action === 'suspend'
-          ? `Suspend GitHub detection for ${row.name}? Queued releases are blocked and nothing new is published until reinstated.\n\nReason (required, 10+ chars):`
-          : `Disconnect ${row.connection?.repository} from ${row.name}? Published releases stay live; no new GitHub releases are detected.\n\nReason (required, 10+ chars):`,
-      );
-      if (input == null) return;
-      if (input.trim().length < 10) { toast.error('A reason of at least 10 characters is required.'); return; }
-      reason = input.trim();
-    }
+  /** In-app reason dialog — window.prompt throws in Electron. */
+  const [askReason, setAskReason] = useState<null | {
+    title: string; description?: React.ReactNode; confirmLabel: string;
+    onConfirm: (reason: string) => void;
+  }>(null);
+
+  const performAction = async (row: Row, action: 'suspend' | 'reinstate' | 'disconnect', reason: string) => {
     setBusy(row.appId);
     try {
       await api.githubAdmin.connectionAction(row.appId, action, reason);
@@ -140,6 +136,18 @@ export default function GithubConnectionsPanel() {
       load();
     } catch (e: any) { toast.error(e?.message || 'Action failed.'); }
     finally { setBusy(null); }
+  };
+
+  const act = async (row: Row, action: 'suspend' | 'reinstate' | 'disconnect') => {
+    if (action === 'reinstate') { void performAction(row, action, ''); return; }
+    setAskReason({
+      title: action === 'suspend' ? `Suspend ${row.name}?` : `Disconnect ${row.connection?.repository}?`,
+      description: action === 'suspend'
+        ? 'Queued releases are blocked and nothing new is published until the connection is reinstated. The action is audited.'
+        : <>Published releases stay live; no new GitHub releases are detected for <b className="text-white">{row.name}</b>. The action is audited.</>,
+      confirmLabel: action === 'suspend' ? 'Suspend connection' : 'Disconnect repository',
+      onConfirm: (reason) => { setAskReason(null); void performAction(row, action, reason); },
+    });
   };
 
   const totals = data?.totals || {};
@@ -301,6 +309,20 @@ export default function GithubConnectionsPanel() {
           })}
         </div>
       )}
+      <PromptDialog
+        open={!!askReason}
+        title={askReason?.title || ''}
+        description={askReason?.description}
+        label="Reason (required)"
+        placeholder="Explain the decision — this is recorded in the audit log"
+        minLength={10}
+        maxLength={1000}
+        multiline
+        tone="danger"
+        confirmLabel={askReason?.confirmLabel || 'Confirm'}
+        onCancel={() => setAskReason(null)}
+        onConfirm={(value) => askReason?.onConfirm(value)}
+      />
     </div>
   );
 }

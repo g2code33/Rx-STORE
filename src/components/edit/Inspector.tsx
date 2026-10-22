@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { X, Save, Loader2, Check, Trash2, ArrowUp, ArrowDown, Plus, UploadCloud, RotateCcw, Paintbrush, Monitor, Tablet, Smartphone, History, Link2, Send, Timer, Minus } from 'lucide-react';
+import PromptDialog from '../common/PromptDialog';
 import toast from 'react-hot-toast';
 import { useContent } from '../../context/ContentContext';
 import { useEditMode } from './EditMode';
@@ -32,6 +33,8 @@ const selCls = `${inputCls} cursor-pointer`;
 function Row({ children }: { children: React.ReactNode }) { return <div className="mb-3">{children}</div>; }
 
 export default function Inspector() {
+  // Clipboard blocked → show it in-app (window.prompt throws in Electron).
+  const [copyFallback, setCopyFallback] = useState<string | null>(null);
   const edit = useEditMode();
   const { getEffective, getEffectiveJSON, save, applyLocal, saving, savedAt, pending } = useContent();
   const [tab, setTab] = useState<Tab>('content');
@@ -75,7 +78,7 @@ export default function Inspector() {
       if (!share) throw new Error('Could not create link');
       const url = sponsorUrl(share.token);
       try { await navigator.clipboard.writeText(url); toast.success('Sponsor link copied ✓'); }
-      catch { window.prompt('Sponsor link (copy it):', url); }
+      catch { setCopyFallback(url); }
       refreshShares();
     } catch (e: any) { toast.error(e?.message || 'Sponsor link failed'); }
   };
@@ -601,7 +604,7 @@ export default function Inspector() {
                             <p className="text-[10px] text-rx-gray-medium truncate">/sponsor/{s.token.slice(0, 8)}…{s.created_at ? ` · since ${String(s.created_at).slice(0, 10)}` : ''}</p>
                           </div>
                           <button
-                            onClick={async () => { const url = sponsorUrl(s.token); try { await navigator.clipboard.writeText(url); toast.success('Copied ✓'); } catch { window.prompt('Sponsor link (copy it):', url); } }}
+                            onClick={async () => { const url = sponsorUrl(s.token); try { await navigator.clipboard.writeText(url); toast.success('Copied ✓'); } catch { setCopyFallback(url); } }}
                             className="px-2 py-1 rounded-lg bg-rx-yellow/10 text-rx-yellow text-[10px] font-bold hover:bg-rx-yellow/20 flex-shrink-0"
                           >Copy</button>
                           <button
@@ -817,10 +820,20 @@ export default function Inspector() {
           </div>
         )}
       </aside>
+      <PromptDialog
+        open={!!copyFallback}
+        title="Copy this link"
+        description="Your browser blocked the clipboard. Select the text below and copy it."
+        label="Link"
+        defaultValue={copyFallback || ''}
+        copyable
+        confirmLabel="Done"
+        onCancel={() => setCopyFallback(null)}
+        onConfirm={() => setCopyFallback(null)}
+      />
     </div>
   );
 }
-
 /** Version history for the active element — auto-recorded on every save. */
 function HistoryPanel({ keyName, onReverted, applyLocal }: { keyName: string; onReverted: (value: string) => void; applyLocal: (id: string, value: string) => void }) {
   const [revs, setRevs] = useState<any[] | null>(null);
