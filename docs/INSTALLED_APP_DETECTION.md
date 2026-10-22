@@ -116,8 +116,12 @@ segment-by-segment as numbers, so:
 
 Rules for the state:
 
-- installed version is **unknown / invalid** → treat as current → **Open**
-  (we cannot prove it is older, so we never show **Update**).
+- installed version is **unknown / invalid** → fall back to the version RX Store
+  itself installed on this device (`rx-native-packages`, phase `installed`).
+  That record is a fact we own, so `1.2.0` installed vs `1.4.36` published is a
+  real **Update**. If there is no record either, treat as current → **Open**
+  (we cannot prove it is older, so we never guess an update).
+- the OS-reported version always wins over the record when both exist.
 - store version **==** installed version → **Open**.
 - store version **<** installed version → **Open** (never auto-downgrade).
 - store version **>** installed version → **Update**.
@@ -195,3 +199,26 @@ detection; the browser is never asked to inspect the OS and never sees a false
   exist on disk; it never executes an arbitrary remote path verbatim.
 - Detection only reads metadata (registry, package database, file metadata). It
   never executes the target application as part of detection.
+
+---
+
+## 11. Why an installed app could stay stuck on "Open"
+
+Production case: an app was installed from a `.deb` whose real package name
+differed from the `linux_package_name` registered on the app record. Detection
+found the app (desktop entry / executable) but `dpkg-query` failed for the wrong
+name, so it reported `installed: true, version: undefined` and every older
+install showed **Open** while newer versions were published.
+
+Three independent fixes, in order of authority:
+
+1. **Electron/Linux (`electron/main.ts`)** — when the registered package name
+   yields no version, resolve the binary that was actually found
+   (`dpkg -S` / `rpm -qf`) and read **that** package's version
+   (source `package-owner`).
+2. **Store record** — `src/platform/detect.ts#effectiveInstalledVersion` falls
+   back to the version RX Store installed on this device, but only after the OS
+   confirmed the app is installed, and never over an OS-reported version.
+3. **UI** — the storefront card's **Update** is a real button (it used to render
+   as a non-clickable badge). On desktop it opens the app page, where the update
+   runs the same verified transaction as a fresh install.

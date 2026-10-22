@@ -168,10 +168,43 @@ export function normalizeInstalledApp(
   };
 }
 
+/**
+ * The version to compare against when the OS could not report one.
+ *
+ * A production case that made updates invisible: the OS confirms the app IS
+ * installed (dpkg/registry/desktop entry/package manager) but cannot produce a
+ * version — for example a .deb whose registered package name differs from the
+ * real one, or an install the OS database does not version. `detectionState`
+ * then (correctly) refuses to guess and returns INSTALLED_CURRENT, so the
+ * storefront showed 'Open' forever while newer versions were published.
+ *
+ * RX Store records the version it actually installed on this device
+ * (`rx-native-packages`). That is a FACT about this device — never a guess —
+ * so it is used ONLY as the version fallback, and ONLY when the OS has already
+ * confirmed the app is installed. It can never make an absent app look
+ * installed.
+ */
+export function effectiveInstalledVersion(
+  osVersion?: string | null,
+  recorded?: { version?: string | null; phase?: string | null } | null,
+): string | undefined {
+  const fromOs = String(osVersion || '').trim();
+  if (fromOs) return fromOs;
+  if (recorded && String(recorded.phase || '') === 'installed' && recorded.version) {
+    const v = String(recorded.version).trim();
+    if (v) return v;
+  }
+  return undefined;
+}
+
 /** Resolve the normalized UI state for a normalized detection result. */
-export function stateForDetection(app: InstalledApp, storeVersion?: string): DetectionState {
+export function stateForDetection(
+  app: InstalledApp,
+  storeVersion?: string,
+  recorded?: { version?: string | null; phase?: string | null } | null,
+): DetectionState {
   if (!app.installed) return 'NOT_INSTALLED';
-  return detectionState(storeVersion, true, app.version);
+  return detectionState(storeVersion, true, effectiveInstalledVersion(app.version, recorded));
 }
 
 // ---------------------------------------------------------------------------

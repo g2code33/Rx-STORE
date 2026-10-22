@@ -653,6 +653,50 @@ async function detectLinux(identity: any): Promise<DetectedApp> {
     executable = whichInPath(exec);
   }
 
+  /**
+   * The registered package name can be missing or WRONG (real production
+   * case: the app record said `pharmatrack` while the installed .deb is
+   * `pharmatrack-perfect`). dpkg-query then fails for the wrong name, the OS
+   * reports "installed" with NO version, and the storefront can never offer an
+   * update — it just says Open forever. Ask the package manager which package
+   * OWNS the binary we actually found and read THAT version.
+   */
+  const versionOfOwningPackage = async (bin: string): Promise<{ version: string; owner: string } | null> => {
+    if (!bin) return null;
+    const candidates = [bin];
+    try { candidates.push(require('node:fs').realpathSync(bin)); } catch { /* keep the raw path */ }
+    for (const target of [...new Set(candidates)]) {
+      // Debian/Ubuntu: `dpkg -S /usr/bin/foo` → `pkg: /usr/bin/foo`
+      try {
+        const { stdout } = await execFileAsync('dpkg', ['-S', target]);
+        const owner = String(stdout).split('\n').map((l) => l.split(':')[0].trim())
+          .find((n) => n && !n.startsWith('diversion'));
+        if (owner) {
+          const { stdout: v } = await execFileAsync('dpkg-query', ['-W', '-f=${Version}', owner]);
+          const version = String(v).trim();
+          if (version) return { version, owner };
+        }
+      } catch { /* not a dpkg-owned path */ }
+      // Fedora/RHEL/SUSE: `rpm -qf /usr/bin/foo` → `pkg-1.2.3-1.x86_64`
+      try {
+        const { stdout } = await execFileAsync('rpm', ['-qf', target]);
+        const owner = String(stdout).trim().split('\n')[0];
+        if (owner && !/not owned/i.test(owner)) {
+          const { stdout: v } = await execFileAsync('rpm', ['-q', '--qf', '%{VERSION}', owner]);
+          const version = String(v).trim();
+          if (version) return { version, owner };
+        }
+      } catch { /* not an rpm-owned path */ }
+    }
+    return null;
+  };
+
+  let owningPackage = '';
+  if (!packageVersion && executable) {
+    const owned = await versionOfOwningPackage(executable);
+    if (owned) { packageVersion = owned.version; owningPackage = owned.owner; }
+  }
+
   // .desktop fallback: match the configured linuxExecutable (or package name) to
   // a launchable desktop entry. We read the REAL launcher `Exec` (parsed safely,
   // never executed here) so `Open` runs the launcher, not an internal binary.
@@ -664,6 +708,16 @@ async function detectLinux(identity: any): Promise<DetectedApp> {
       return (exec && base === exec.toLowerCase()) || (pkg && (base === pkg.toLowerCase() || base.includes(pkg.toLowerCase())));
     }) || entries.find((e) => e.name && exec && e.name.toLowerCase().includes(exec.toLowerCase()));
     if (match && match.exec) desktopLauncher = match.exec;
+  }
+
+  // Still no version? Resolve the .desktop launcher's binary to its owning
+  // package — this covers apps installed without a registered package name.
+  if (!packageVersion && desktopLauncher) {
+    const launcherBin = whichInPath(execBaseCommand(desktopLauncher));
+    if (launcherBin) {
+      const owned = await versionOfOwningPackage(launcherBin);
+      if (owned) { packageVersion = owned.version; owningPackage = owned.owner; }
+    }
   }
 
   // AppImage detection: RX Store downloads AppImages into a known location.
@@ -686,10 +740,10 @@ async function detectLinux(identity: any): Promise<DetectedApp> {
     version: packageVersion || undefined,
     // Prefer the PATH-resolved executable; fall back to the .desktop Exec.
     executable: (executable || (desktopLauncher ? execBaseCommand(desktopLauncher) : '')) || undefined,
-    packageName: pkg || undefined,
+    packageName: (foundByPackage ? pkg : (owningPackage || pkg)) || undefined,
     appImagePath: appImagePath || undefined,
     platform: 'linux',
-    source: foundByPackage ? 'package' : executable ? 'executable' : desktopLauncher ? 'desktop' : 'none',
+    source: foundByPackage ? 'package' : owningPackage ? 'package-owner' : executable ? 'executable' : desktopLauncher ? 'desktop' : 'none',
   };
 }
 

@@ -15,11 +15,13 @@ import type { DetectedPlatform, DetectionState, InstalledApp } from './detect.ts
 import {
   normalizeInstalledApp,
   stateForDetection,
+  effectiveInstalledVersion,
 } from './detect.ts';
 import {
   androidIsInstalled,
   desktopDetect,
   desktopInvalidateDetect,
+  getNativePackage,
   isAndroidShell,
   isDesktopShell,
 } from './nativeInstaller.ts';
@@ -107,6 +109,20 @@ export async function detectInstalledApp(app: App): Promise<InstalledApp | null>
     result = normalizeInstalledApp(app.slug, reported, raw, app.version);
   }
 
+  // The OS confirmed the app is present but could not report a version (a
+  // mis-registered package name, a registry entry without DisplayVersion, …).
+  // The version RX Store installed on THIS device is a fact we own, so it
+  // drives the Update/Open decision instead of silently pinning the app to
+  // 'Open' forever.
+  if (result.installed && !result.version) {
+    const recorded = getNativePackage(app.slug);
+    const fallback = effectiveInstalledVersion(null, recorded);
+    if (fallback) {
+      result.version = fallback;
+      result.source = result.source ? `${result.source}+rx-record` : 'rx-record';
+    }
+  }
+
   cache.set(app.slug, { at: Date.now(), result });
   return result;
 }
@@ -138,7 +154,7 @@ export function useInstalledState(app: App): {
     const result = await detectInstalledApp(app);
     setDetection(result);
     if (!result) setState('DETECTION_UNAVAILABLE');
-    else setState(stateForDetection(result, app.version));
+    else setState(stateForDetection(result, app.version, getNativePackage(app.slug)));
   }, [app]);
 
   useEffect(() => {
@@ -148,7 +164,7 @@ export function useInstalledState(app: App): {
       const result = await detectInstalledApp(app);
       if (!alive) return;
       setDetection(result);
-      setState(result ? stateForDetection(result, app.version) : 'DETECTION_UNAVAILABLE');
+      setState(result ? stateForDetection(result, app.version, getNativePackage(app.slug)) : 'DETECTION_UNAVAILABLE');
     })();
     const onVisible = () => {
       if (document.visibilityState === 'visible') {

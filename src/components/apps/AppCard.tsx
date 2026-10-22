@@ -100,6 +100,22 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
     }
   };
 
+  /**
+   * The card's single action entry point (Get, and now Update). Desktop opens
+   * the app page where the real install/update transaction lives; Android and
+   * web go straight through one-tap or the platform picker.
+   */
+  const cardAction = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const token = localStorage.getItem('rx-store-token');
+    if (!token) { window.location.href = '/login'; return; }
+    if ((window as any).rxDesktop?.isDesktop) { window.location.href = `/app/${app.slug}`; return; }
+    const oneTap = resolveOneTapPlatform(detectDevice(), app.platforms);
+    if (oneTap) { void handleCardDownload(oneTap); return; }
+    setShowDl(true);
+  };
+
   if (variant === 'horizontal') {
     return (
       <Link
@@ -263,12 +279,26 @@ export default function AppCard({ app, variant = 'default' }: AppCardProps) {
         </div>
 
           {osInstalled || installBtn.state === 'OPEN' ? (
-            <span className={`text-xs font-medium px-2.5 py-1 rounded-lg ${isUpdate ? 'text-rx-yellow bg-rx-yellow/10' : 'text-green-400 bg-green-400/10'}`}>{isUpdate ? 'Update' : 'Open'}</span>
+            isUpdate ? (
+              /* A published newer version is installed-elsewhere-aware: this is
+                 an ACTION, not a badge. It used to render as a <span>, so the
+                 'Update' label could never be clicked. */
+              <button
+                onClick={(e) => cardAction(e)}
+                aria-label={`Update ${app.name}`}
+                title={installBtn.status || 'Update available'}
+                className="text-xs font-bold px-3 py-1.5 rounded-lg text-rx-yellow bg-rx-yellow/10 hover:bg-rx-yellow/20 transition-colors"
+              >
+                {starting ? 'Preparing…' : 'Update'}
+              </button>
+            ) : (
+              <span className="text-xs font-medium px-2.5 py-1 rounded-lg text-green-400 bg-green-400/10">Open</span>
+            )
           ) : installBtn.state === 'RETRY' || isBusy ? (
             <span className="text-xs font-medium px-2.5 py-1 rounded-lg text-rx-yellow bg-rx-yellow/10">{installBtn.label}</span>
           ) : (
             <button
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); const token=localStorage.getItem('rx-store-token'); if(!token){ window.location.href='/login'; return; } if((window as any).rxDesktop?.isDesktop){ window.location.href=`/app/${app.slug}`; return; } const oneTap=resolveOneTapPlatform(detectDevice(), app.platforms); if(oneTap){ void handleCardDownload(oneTap); return; } setShowDl(true); }}
+              onClick={(e) => cardAction(e)}
               aria-label={installBtn.status || installBtn.label}
               title={installBtn.status || installBtn.label}
               className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-all ${app.price === 'free' ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-rx-yellow text-rx-dark hover:bg-rx-yellow-light'}`}

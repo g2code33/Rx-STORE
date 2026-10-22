@@ -18,6 +18,7 @@ import {
   detectionAction,
   normalizeInstalledApp,
   stateForDetection,
+  effectiveInstalledVersion,
   currentDeviceInstallState,
   resolveDeviceView,
   otherDeviceInstallCount,
@@ -490,4 +491,40 @@ test('detectionState: a completed update with a Debian-revision version is CURRE
   assert.equal(detectionState('1.11.11', true, '1.11.10-2'), 'UPDATE_AVAILABLE');
   // A real SemVer prerelease of a NEWER version is not a downgrade target.
   assert.equal(detectionState('1.11.11', true, '1.11.12-beta.1'), 'INSTALLED_CURRENT');
+});
+
+// ---------------------------------------------------------------------------
+// UPDATE VISIBILITY — the OS says "installed" but cannot report a version
+//
+// Production bug: a .deb whose registered package name differed from the real
+// one made detection return installed=true, version=undefined. detectionState
+// then (correctly) refuses to guess and answers INSTALLED_CURRENT, so every
+// older install showed 'Open' forever while newer versions were published.
+// ---------------------------------------------------------------------------
+
+test('effectiveInstalledVersion: the OS wins, the RX Store record is the fallback', () => {
+  assert.equal(effectiveInstalledVersion('1.2.0'), '1.2.0');
+  assert.equal(effectiveInstalledVersion('', { version: '1.1.0', phase: 'installed' }), '1.1.0');
+  assert.equal(effectiveInstalledVersion(null, { version: '1.1.0', phase: 'installed' }), '1.1.0');
+  // A download that was never installed proves nothing about the installed app.
+  assert.equal(effectiveInstalledVersion(undefined, { version: '1.1.0', phase: 'downloaded' }), undefined);
+  assert.equal(effectiveInstalledVersion(undefined, null), undefined);
+  // The OS-reported version is never overridden by a stale store record.
+  assert.equal(effectiveInstalledVersion('1.4.36', { version: '1.0.0', phase: 'installed' }), '1.4.36');
+});
+
+test('stateForDetection: a recorded install version turns Open into Update', () => {
+  const detected = normalizeInstalledApp('pharmatrack', 'linux', { installed: true, source: 'desktop' });
+  // No version anywhere -> still Open (never guess an update).
+  assert.equal(stateForDetection(detected, '1.4.36'), 'INSTALLED_CURRENT');
+  // RX Store installed 1.2.0 on this device -> 1.4.36 is an update.
+  assert.equal(stateForDetection(detected, '1.4.36', { version: '1.2.0', phase: 'installed' }), 'UPDATE_AVAILABLE');
+  assert.equal(detectionAction(stateForDetection(detected, '1.4.36', { version: '1.2.0', phase: 'installed' })), 'Update');
+  // Already current -> Open.
+  assert.equal(stateForDetection(detected, '1.4.36', { version: '1.4.36', phase: 'installed' }), 'INSTALLED_CURRENT');
+  // A merely downloaded file does not make it an update.
+  assert.equal(stateForDetection(detected, '1.4.36', { version: '1.2.0', phase: 'downloaded' }), 'INSTALLED_CURRENT');
+  // Not installed -> Get, regardless of any record.
+  const absent = normalizeInstalledApp('pharmatrack', 'linux', { installed: false });
+  assert.equal(stateForDetection(absent, '1.4.36', { version: '1.2.0', phase: 'installed' }), 'NOT_INSTALLED');
 });
