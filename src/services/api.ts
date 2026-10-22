@@ -1016,10 +1016,19 @@ export const api = {
         method: 'POST', body: JSON.stringify({ reason }),
       });
     },
-    retry(releaseId: string) {
-      return request<{ success: boolean; status: string; message?: string }>(`/admin/github/releases/${encodeURIComponent(releaseId)}/retry`, {
-        method: 'POST', body: '{}',
-      });
+    /** Verify the NEXT asset only (bounded request). Returns how many remain. */
+    retry(releaseId: string, opts: { assetId?: string; maxAssets?: number } = {}) {
+      return request<{ success: boolean; status: string; message?: string; remaining: number; verifiedAssets: number; totalAssets: number }>(
+        `/admin/github/releases/${encodeURIComponent(releaseId)}/retry`,
+        { method: 'POST', body: JSON.stringify(opts) },
+      );
+    },
+    /** Manual aid: approve or reject ONE asset with an audited note. */
+    manualVerifyAsset(releaseId: string, assetId: string, decision: 'APPROVE' | 'REJECT', note: string) {
+      return request<{ success: true; remaining: number }>(
+        `/admin/github/releases/${encodeURIComponent(releaseId)}/assets/${encodeURIComponent(assetId)}/manual-verify`,
+        { method: 'POST', body: JSON.stringify({ decision, note }) },
+      );
     },
     sync() {
       return request<{ checked: number; detected: number; failures: number }>('/admin/github/sync', { method: 'POST', body: '{}' });

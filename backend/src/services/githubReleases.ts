@@ -684,7 +684,21 @@ export async function recoverStuckVerifications(env: any, releaseId?: string): P
   return Number(res?.meta?.changes || 0);
 }
 
-export async function verifyGithubRelease(env: any, releaseId: string): Promise<{ ok: boolean; status: string; message?: string }> {
+export async function verifyGithubRelease(
+  env: any, releaseId: string,
+  opts: {
+    /**
+     * How many ASSETS to verify in this call. Each asset means streaming real
+     * bytes several times (hash + security pipeline + scan), so verifying a
+     * whole release in one request exceeded the Worker limits and the request
+     * was killed — the browser showed exactly 'Failed to fetch'. The admin
+     * route passes 1 and the UI loops until nothing remains.
+     */
+    maxAssets?: number;
+    /** Verify exactly this asset (per-asset 'Verify now'). */
+    onlyAssetId?: string;
+  } = {},
+): Promise<{ ok: boolean; status: string; message?: string; remaining?: number; verifiedAssets?: number; totalAssets?: number }> {
   await ensureGithubTables(env);
   const rel: any = await env.DB.prepare(`SELECT * FROM github_releases WHERE id=?`).bind(releaseId).first().catch(() => null);
   if (!rel) return { ok: false, status: 'not_found', message: 'Release not found.' };
@@ -710,9 +724,20 @@ export async function verifyGithubRelease(env: any, releaseId: string): Promise<
     return { ok: false, status: 'blocked', message: 'Canonical release row missing.' };
   }
 
+  // Only assets still lacking verified bytes are work. A previously verified
+  // asset (hash + scan recorded) is never re-streamed unless its identity
+  // changed — the publish path re-checks it anyway.
+  const FINAL_ASSET_STATES = ['verified', 'failed', 'mismatch', 'missing'];
+  const allRows: any[] = assets.results || [];
+  const pendingAssets = allRows.filter((a: any) =>
+    opts.onlyAssetId ? a.id === opts.onlyAssetId : (!FINAL_ASSET_STATES.includes(String(a.state)) || !a.sha256));
+  const batch = pendingAssets.slice(0, Math.max(1, Math.min(Number(opts.maxAssets) || 1, 10)));
+  const remainingAfterBatch = Math.max(0, pendingAssets.length - batch.length);
+
   let failures = 0;
+  let verifiedInBatch = 0;
   const failureReasons: string[] = [];
-  for (const a of assets.results || []) {
+  for (const a of batch) {
     try {
       // 1. Identity via the GitHub API (server-side, installation token).
       const meta = await ghApi(env, `/repos/${conn.repository_full_name}/releases/assets/${a.github_asset_id}`, { installationId: conn.installation_id });
@@ -821,10 +846,29 @@ export async function verifyGithubRelease(env: any, releaseId: string): Promise<
         || Object.entries(results).some(([check, r]) => check !== 'malware' && r && ['FAILED', 'DETECTED'].includes(r.status));
       if (definitiveBad) {
         failures++; failureReasons.push(`${a.name}: security pipeline FAILED (${malware || 'checks failed'})`);
+      } else {
+        verifiedInBatch++;
       }
     } catch (e: any) {
       await env.DB.prepare(`UPDATE github_release_assets SET state='failed', error=? WHERE id=?`).bind(String(e?.message || e).slice(0, 300), a.id).run();
       failures++; failureReasons.push(`${a.name}: ${String(e?.message || e).slice(0, 120)}`);
+    }
+  }
+
+  // Earlier failures still count — evaluated BEFORE deciding the outcome (this
+  // ran after the failure check in the first cut, which let a release slip to
+  // 'pending_approval' while assets were broken). Only rows that really carry a
+  // failed state are considered, never a broader result set.
+  {
+    const stillBad: any = await env.DB.prepare(
+      `SELECT name, state, error FROM github_release_assets WHERE release_id=? AND state IN ('failed','mismatch','missing')`
+    ).bind(releaseId).all().catch(() => ({ results: [] }));
+    for (const bad of stillBad?.results || []) {
+      if (!['failed', 'mismatch', 'missing'].includes(String(bad.state))) continue; // defensive
+      if (!batch.some((b: any) => b.name === bad.name && b.state === bad.state)) {
+        failures++;
+        failureReasons.push(`${bad.name}: ${bad.error || bad.state}`);
+      }
     }
   }
 
@@ -843,6 +887,17 @@ export async function verifyGithubRelease(env: any, releaseId: string): Promise<
       });
     } catch { /* best-effort */ }
     return { ok: false, status: 'verification_failed', message: 'One or more assets failed verification.' };
+  }
+  if (remainingAfterBatch > 0 && failures === 0) {
+    // Honest progress: the release is NOT ready yet, and the badge stays
+    // 'verifying'. The admin UI calls back for the next asset.
+    return {
+      ok: true, status: 'verifying',
+      message: `${batch.length} asset(s) verified — ${remainingAfterBatch} remaining.`,
+      remaining: remainingAfterBatch,
+      verifiedAssets: verifiedInBatch,
+      totalAssets: allRows.length,
+    };
   }
   await env.DB.prepare(`UPDATE github_releases SET status='pending_approval', verified_at=datetime('now') WHERE id=?`).bind(releaseId).run();
   // SECURITY EVENT: verification finished and the release is ready to approve.
@@ -865,7 +920,7 @@ export async function verifyGithubRelease(env: any, releaseId: string): Promise<
       link: '/admin?section=github', meta: { releaseId, appId: rel.application_id, version: rel.version },
     });
   } catch { /* best-effort */ }
-  return { ok: true, status: 'pending_approval' };
+  return { ok: true, status: 'pending_approval', remaining: 0, verifiedAssets: verifiedInBatch, totalAssets: allRows.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -1160,6 +1215,139 @@ export async function deleteSupersededReleases(
     details: { deleted, scope: appId || 'all applications' },
   });
   return { ok: true, deleted };
+}
+
+/**
+ * MANUAL AID — an admin takes responsibility for ONE asset when automated
+ * verification cannot finish (huge file, scanner outage, GitHub flakiness).
+ *
+ * This is deliberately NOT "trust the badge":
+ *   - APPROVE requires the real identity (size + API metadata match) and the
+ *     recorded SHA-256; if the hash is missing we stream ONCE to compute it
+ *     (the single-asset budget that makes the incremental path work).
+ *   - The decision is written as a REAL per-check evidence row set with
+ *     provider='manual' plus an audited entry naming the admin and the reason.
+ *   - REJECT marks the asset failed so it can never be published.
+ * A DETECTED malware verdict can never be overridden (checked before writing).
+ */
+export async function manualVerifyAsset(
+  env: any,
+  actor: { userId: string; label: string },
+  releaseId: string,
+  assetRowId: string,
+  decision: 'APPROVE' | 'REJECT',
+  note: string,
+): Promise<{ ok: boolean; code?: string; message?: string; remaining?: number }> {
+  await ensureGithubTables(env);
+  const reason = String(note || '').trim();
+  if (reason.length < 10) return { ok: false, code: 'VALIDATION_ERROR', message: 'A note of at least 10 characters is required (it is audited).' };
+  const rel: any = await env.DB.prepare(`SELECT * FROM github_releases WHERE id=?`).bind(releaseId).first().catch(() => null);
+  if (!rel) return { ok: false, code: 'NOT_FOUND', message: 'Release not found.' };
+  if (['published', 'rejected', 'withdrawn'].includes(rel.status)) {
+    return { ok: false, code: 'CONFLICT', message: `Release is already ${rel.status}.` };
+  }
+  const asset: any = await env.DB.prepare(`SELECT * FROM github_release_assets WHERE id=? AND release_id=?`).bind(assetRowId, releaseId).first().catch(() => null);
+  if (!asset) return { ok: false, code: 'NOT_FOUND', message: 'Asset not found.' };
+  const conn: any = await env.DB.prepare(`SELECT * FROM github_repo_connections WHERE id=?`).bind(rel.connection_id).first().catch(() => null);
+  if (!conn || conn.status !== 'active') return { ok: false, code: 'CONFLICT', message: 'The repository connection is not active.' };
+
+  const canonical: any = await env.DB.prepare(`SELECT id FROM releases WHERE application_id=? AND version=?`).bind(rel.application_id, rel.version).first().catch(() => null);
+  const pkgRow: any = canonical ? await env.DB.prepare(
+    `SELECT * FROM packages WHERE release_id=? AND platform=? AND architecture=? AND provider='github'`
+  ).bind(canonical.id, asset.platform, asset.architecture).first().catch(() => null) : null;
+
+  if (decision === 'REJECT') {
+    await env.DB.prepare(`UPDATE github_release_assets SET state='failed', error=? WHERE id=?`)
+      .bind(`Rejected by ${actor.label}: ${reason.slice(0, 200)}`, assetRowId).run();
+    await audit(env, { action: 'manual_asset_reject', actorId: actor.userId, actorLabel: actor.label, appId: rel.application_id, releaseId, reason, details: { asset: asset.name } });
+    await refreshVerificationStatus(env, releaseId).catch(() => {});
+    return { ok: true };
+  }
+
+  // APPROVE — real identity first, never blind trust.
+  const meta = await ghApi(env, `/repos/${conn.repository_full_name}/releases/assets/${asset.github_asset_id}`, { installationId: conn.installation_id });
+  if (!meta.ok || !meta.json) return { ok: false, code: 'CONFLICT', message: 'GitHub no longer reports this asset.' };
+
+  let sha = String(asset.sha256 || '').toLowerCase();
+  let size = Number(asset.size_bytes || 0);
+  if (!/^[a-f0-9]{64}$/.test(sha) || !size) {
+    // One bounded stream: compute the authoritative hash for THIS asset only.
+    const ext = await loadExternalPackageBytes(asset.download_url, {
+      maxBytes: assetMaxBytes(env),
+      authHeaders: asset.is_private === 1 ? { Authorization: `Bearer ${await installationToken(env, String(conn.installation_id))}` } : undefined,
+    });
+    if (!ext) return { ok: false, code: 'SERVICE_UNAVAILABLE', message: 'The asset could not be streamed to compute its SHA-256. Try manual approval again shortly.' };
+    if (Number(meta.json.size) !== ext.size) {
+      return { ok: false, code: 'CONFLICT', message: `GitHub reports ${meta.json.size} bytes but the asset serves ${ext.size} — refusing to approve a changed file.` };
+    }
+    sha = ext.sha256; size = ext.size;
+  }
+  const existingScan: any = pkgRow ? await env.DB.prepare(
+    `SELECT status FROM package_security_results WHERE package_id=? AND check_type='malware' ORDER BY created_at DESC LIMIT 1`
+  ).bind(pkgRow.id).first().catch(() => null) : null;
+  // Either the recorded per-package verdict OR the asset row's own scanner
+  // status is enough to block — a detection is never overridable.
+  if (String(existingScan?.status || '') === 'DETECTED' || String(asset.scanner_status || '') === 'DETECTED') {
+    return { ok: false, code: 'FORBIDDEN', message: 'The malware scanner DETECTED this asset. A manual approval can never override a detection.' };
+  }
+
+  await env.DB.prepare(
+    `UPDATE github_release_assets SET state='verified', size_bytes=?, sha256=?, scanner_status=COALESCE(NULLIF(scanner_status,''),'MANUAL'), scanner_detail=?, error=NULL, verified_at=datetime('now') WHERE id=?`
+  ).bind(size, sha, `Manually approved by ${actor.label}: ${reason.slice(0, 200)}`, assetRowId).run();
+
+  if (pkgRow && canonical) {
+    await env.DB.prepare(`UPDATE packages SET sha256=?, file_size=? WHERE id=?`).bind(sha, size, pkgRow.id).run().catch(() => {});
+    // REAL evidence rows attributed to the human decision (audited, sha-bound).
+    for (const [check, status, result] of [
+      ['structure', 'PASSED', 'structure reviewed manually (format/identity checked by the admin)'],
+      ['integrity', 'PASSED', `SHA-256 ${sha} approved manually (computed from the actual bytes)`],
+      ['malware', 'NEEDS_REVIEW', 'malware scan not conclusive — approved by an explicit, audited admin decision'],
+    ] as const) {
+      await env.DB.prepare(
+        `INSERT INTO package_security_results (id, package_id, release_id, app_id, check_type, status, provider, result, details, started_at, completed_at)
+         VALUES (?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))`
+      ).bind(
+        `psr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`, pkgRow.id, canonical.id, rel.application_id,
+        check, status, 'manual', result, `${actor.label} — ${reason.slice(0, 300)}`,
+      ).run().catch(() => {});
+    }
+    // Byte-bound manual approval so publicationSecurityGate Path 3 accepts it.
+    await env.DB.prepare(
+      `INSERT INTO package_manual_reviews (id, package_id, release_id, sha256, platform, automated_integrity, automated_malware, automated_overall, reason, status, admin_user_id, admin_notes, reviewed_at)
+       VALUES (?,?,?,?,?, 'PASSED', ?, 'NEEDS_REVIEW', ?, 'APPROVED', ?, ?, datetime('now'))`
+    ).bind(
+      `mrev_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`, pkgRow.id, canonical.id, sha, asset.platform,
+      String(existingScan?.status || 'UNAVAILABLE'), `Manual approval: ${reason.slice(0, 400)}`, actor.userId, reason.slice(0, 500),
+    ).run().catch(() => {});
+  }
+
+  await audit(env, {
+    action: 'manual_asset_approve', actorId: actor.userId, actorLabel: actor.label,
+    appId: rel.application_id, releaseId, reason,
+    details: { asset: asset.name, platform: asset.platform, arch: asset.architecture, sha256: sha, size },
+  });
+  const remaining = await refreshVerificationStatus(env, releaseId).catch(() => 0);
+  return { ok: true, remaining };
+}
+
+/**
+ * Recompute a release's status from its assets: ready for approval only when
+ * EVERY asset is verified; otherwise stay 'verifying' with a count so the UI
+ * can keep working through them. Returns the remaining count.
+ */
+export async function refreshVerificationStatus(env: any, releaseId: string): Promise<number> {
+  const rows: any = await env.DB.prepare(
+    `SELECT state, sha256 FROM github_release_assets WHERE release_id=?`
+  ).bind(releaseId).all().catch(() => ({ results: [] }));
+  const list: any[] = rows?.results || [];
+  const remaining = list.filter((a: any) => a.state !== 'verified' || !a.sha256).length;
+  if (list.length === 0) return 0;
+  if (remaining === 0) {
+    await env.DB.prepare(`UPDATE github_releases SET status='pending_approval', verified_at=datetime('now'), block_reason=NULL WHERE id=? AND status NOT IN ('published','rejected','withdrawn')`).bind(releaseId).run().catch(() => {});
+  } else {
+    await env.DB.prepare(`UPDATE github_releases SET status='verifying' WHERE id=? AND status='detected'`).bind(releaseId).run().catch(() => {});
+  }
+  return remaining;
 }
 
 export async function rejectGithubRelease(env: any, actor: { userId: string; label: string }, releaseId: string, reason: string): Promise<{ ok: boolean; code?: string; message?: string }> {

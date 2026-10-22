@@ -111,14 +111,51 @@ export default function GithubReleasesPanel() {
     finally { setBusyId(null); }
   };
 
+  /**
+   * Work through the release ONE ASSET PER REQUEST. Each asset can be a 100 MB
+   * stream through the Worker; asking for everything at once is what produced
+   * 'Failed to fetch' (the request was killed). This loop keeps every call
+   * bounded and shows real progress.
+   */
   const doRetry = async (rel: any) => {
     setBusyId(rel.id);
+    let guard = 0;
     try {
-      const r = await api.githubAdmin.retry(rel.id);
-      if (r.status === 'pending_approval') toast.success('Verification passed — the release is ready for approval.');
-      else toast(`Verification status: ${r.status}${r.message ? ` — ${r.message}` : ''}`, { icon: 'ℹ️', duration: 7000 });
+      for (;;) {
+        const r = await api.githubAdmin.retry(rel.id, { maxAssets: 1 });
+        if (r.status === 'pending_approval') {
+          toast.success('Verification complete — ready for approval.');
+          break;
+        }
+        if (!r.success || r.status === 'verification_failed' || r.status === 'blocked') {
+          toast.error(r.message || 'Verification failed — see the asset rows.', { duration: 9000 });
+          break;
+        }
+        if ((r.remaining ?? 0) <= 0) break;
+        toast(`Verified ${r.verifiedAssets}/${r.totalAssets} assets…`, { icon: '⏳', duration: 2500 });
+        if (++guard > 12) { toast('Paused — press Retry again to continue.', { icon: '⏸️' }); break; }
+      }
       load();
-    } catch (e: any) { toast.error(e?.message || 'Retry failed.'); }
+    } catch (e: any) {
+      toast.error(e?.message || 'Retry failed — press again to continue.', { duration: 9000 });
+      load();
+    } finally { setBusyId(null); }
+  };
+
+  const doManualAsset = async (rel: any, asset: any, decision: 'APPROVE' | 'REJECT') => {
+    const note = window.prompt(
+      decision === 'APPROVE'
+        ? `Manually APPROVE "${asset.name}" for ${rel.app_name || ''} v${rel.version}?\n\nRX Store will compute and record the SHA-256 from the actual bytes, store a manual-approval record bound to that hash, and audit your decision. A scanner DETECTED verdict can never be overridden.\n\nReason (required, 10+ chars):`
+        : `REJECT "${asset.name}"? It will stay blocked and can never be published.\n\nReason (required, 10+ chars):`,
+    );
+    if (note == null) return;
+    if (note.trim().length < 10) { toast.error('A note of at least 10 characters is required.'); return; }
+    setBusyId(rel.id);
+    try {
+      const r = await api.githubAdmin.manualVerifyAsset(rel.id, asset.id, decision, note.trim());
+      toast.success(decision === 'APPROVE' ? `Asset approved — ${r.remaining} asset(s) left.` : 'Asset rejected.');
+      load();
+    } catch (e: any) { toast.error(e?.message || 'Manual action failed.', { duration: 9000 }); }
     finally { setBusyId(null); }
   };
 
@@ -291,6 +328,19 @@ export default function GithubReleasesPanel() {
                               {a.scanner_detail && <p className="text-white/50 text-[10px] mt-0.5 leading-tight">{a.scanner_detail}</p>}
                               {a.error && <p className="text-red-300 text-[10px] mt-0.5">{a.error}</p>}
                             </div>
+                            {(a.state !== 'verified' || !a.sha256) && (
+                              <div className="sm:col-span-2 lg:col-span-4 flex flex-wrap gap-2 pt-1">
+                                <button onClick={() => doManualAsset(rel, a, 'APPROVE')} disabled={busyId === rel.id}
+                                  className="text-[11px] px-2.5 py-1 rounded-lg text-green-300 bg-green-500/10 hover:bg-green-500/20 disabled:opacity-50">
+                                  Manual approve
+                                </button>
+                                <button onClick={() => doManualAsset(rel, a, 'REJECT')} disabled={busyId === rel.id}
+                                  className="text-[11px] px-2.5 py-1 rounded-lg text-red-300 bg-red-500/10 hover:bg-red-500/20 disabled:opacity-50">
+                                  Reject
+                                </button>
+                                <span className="text-[10px] text-rx-gray-medium self-center">automated verification could not finish? approve with a recorded reason</span>
+                              </div>
+                            )}
                           </div>
                         ))}
                         {(rel.assets || []).length === 0 && <p className="text-xs text-rx-gray-medium">No mapped assets — the release could not be mapped to any platform.</p>}

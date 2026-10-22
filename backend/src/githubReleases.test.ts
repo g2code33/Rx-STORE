@@ -131,6 +131,14 @@ function fakeEnv() {
             T('packages').push(pkgRow);
             return { meta: { changes: 1 } };
           }
+          if (s.includes('INSERT INTO package_security_results') && !s.includes('classification')) {
+            // manual-aid shape: (id, package_id, release_id, app_id, check_type, status, provider, result, details)
+            T('package_security_results').push({
+              id: a[0], package_id: a[1], release_id: a[2], app_id: a[3], check_type: a[4], status: a[5],
+              provider: a[6], result: a[7], details: a[8], created_at: new Date().toISOString(),
+            });
+            return { meta: { changes: 1 } };
+          }
           if (s.includes('INSERT INTO package_security_results')) {
             T('package_security_results').push({ id: a[0], package_id: a[1], release_id: a[2], app_id: a[3], developer_id: a[4], check_type: a[5], status: a[6], classification: a[7], provider: a[8], provider_version: a[9], result: a[10], details: a[11], fingerprint: a[12], error: a[13], started_at: a[14], completed_at: a[15], scanner_analysis_id: a[16], scanner_verdict: a[20], created_at: new Date().toISOString() });
             return { meta: { changes: 1 } };
@@ -188,6 +196,11 @@ function fakeEnv() {
             const r = T('github_release_assets').find((x) => x.id === a[1]);
             if (r) { r.architecture = a[0]; r.arch_assumed = 0; }
             return { meta: { changes: r ? 1 : 0 } };
+          }
+          if (s.includes('UPDATE packages SET sha256=?, file_size=? WHERE id=?')) {
+            const pkg = T('packages').find((x) => x.id === a[2]);
+            if (pkg) { pkg.sha256 = a[0]; pkg.file_size = a[1]; }
+            return { meta: { changes: pkg ? 1 : 0 } };
           }
           if (s.includes('UPDATE packages SET sha256=?, file_size=?')) {
             const pkgs = T('packages').filter((x) => x.release_id === a[2] && x.platform === a[3] && x.architecture === a[4] && x.provider === 'github');
@@ -309,6 +322,12 @@ function fakeEnv() {
           }
           if (s.includes("UPDATE github_releases SET status='published'")) {
             const r = T('github_releases').find((x) => x.id === a[3]); if (r) { r.status = 'published'; r.published_by = a[0]; r.prior_version = a[1]; r.decision_reason = a[2]; r.published_at = 'now'; }
+            return { meta: { changes: r ? 1 : 0 } };
+          }
+          if (s.includes('COALESCE(NULLIF(scanner_status')) {
+            // manual approval: (size_bytes, sha256, detail, id)
+            const r = T('github_release_assets').find((x) => x.id === a[3]);
+            if (r) Object.assign(r, { state: 'verified', size_bytes: a[0], sha256: a[1], scanner_status: r.scanner_status || 'MANUAL', scanner_detail: a[2], error: null, verified_at: 'now' });
             return { meta: { changes: r ? 1 : 0 } };
           }
           if (s.includes("UPDATE github_release_assets SET state='verified'")) {
@@ -448,6 +467,9 @@ function fakeEnv() {
             return T('packages').find((x) => x.release_id === a[0] && x.platform === a[1] && x.architecture === a[2] && x.provider === 'github') || null;
           }
           if (s.includes('SELECT id FROM releases WHERE application_id') && s.includes("status='published'")) return T('releases').find((r) => r.application_id === a[0] && r.version === a[1] && r.status === 'published') || null;
+          if (s.includes('FROM packages WHERE release_id=? AND platform=? AND architecture=?') && s.includes("provider='github'")) {
+            return T('packages').find((r) => r.release_id === a[0] && r.platform === a[1] && r.architecture === a[2] && r.provider === 'github') || null;
+          }
           if (s.includes('FROM packages WHERE id=?')) {
             const rows = T('packages').filter((x) => x.id === a[0]);
             return rows.length ? rows[rows.length - 1] : null;
@@ -465,6 +487,9 @@ function fakeEnv() {
           if (s.includes("SELECT id FROM releases WHERE application_id=? AND version=?") && s.includes("status <> 'published'")) {
             return T('releases').find((r) => r.application_id === a[0] && r.version === a[1] && r.status !== 'published') || null;
           }
+          if (s.includes('FROM github_release_assets WHERE id=? AND release_id=?')) {
+            return T('github_release_assets').find((r) => r.id === a[0] && r.release_id === a[1]) || null;
+          }
           if (s.includes('FROM github_release_assets WHERE release_id')) return null;
           if (s.includes('FROM applications WHERE id')) return T('applications').find((x) => x.id === a[0]) || null;
           if (s.includes('SELECT id FROM releases WHERE application_id') && s.includes("status='published'")) return T('releases').find((r) => r.application_id === a[0] && r.version === a[1] && r.status === 'published') || null;
@@ -476,6 +501,9 @@ function fakeEnv() {
           const a = this._binds;
           const T = (name: string) => tables[name];
           if (s.includes('FROM github_release_assets WHERE release_id')) return { results: T('github_release_assets').filter((r) => r.release_id === a[0]) };
+          if (s.includes("state IN ('failed','mismatch','missing')")) {
+            return { results: T('github_release_assets').filter((r) => r.release_id === a[0] && ['failed', 'mismatch', 'missing'].includes(r.state)) };
+          }
           if (s.includes('FROM github_release_assets WHERE release_id=? AND platform=? AND architecture=? AND id<>?')) {
             return { results: T('github_release_assets').filter((r) => r.release_id === a[0] && r.platform === a[1] && r.architecture === a[2] && r.id !== a[3]) };
           }
@@ -507,6 +535,9 @@ function fakeEnv() {
           }
           if (s.includes('SELECT id, version FROM github_releases') && s.includes('id<>?')) {
             return { results: T('github_releases').filter((r) => r.application_id === a[0] && r.id !== a[1] && ['detected', 'verifying', 'pending_approval', 'verification_failed', 'blocked'].includes(r.status)) };
+          }
+          if (s.includes('SELECT state, sha256 FROM github_release_assets')) {
+            return { results: T('github_release_assets').filter((r) => r.release_id === a[0]).map((r) => ({ state: r.state, sha256: r.sha256 })) };
           }
           if (s.includes("status='withdrawn' AND block_reason LIKE")) {
             const prefix = String(a[a.length - 1] || '').replace('%', '');
@@ -736,7 +767,17 @@ function installStubs(env: any, opts: StubOpts = {}) {
     // Asset bytes (the public download URL)
     if (u.startsWith('https://github.com/octo/app/releases/download/')) {
       if (opts.assetStatus && opts.assetStatus !== 200) return new Response('gone', { status: opts.assetStatus });
-      return new Response(bytes as unknown as BodyInit, { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
+      // Serve bytes that match the ASSET EXTENSION so a multi-platform release
+      // behaves like the real thing (an .apk is a ZIP, a .deb is an ar archive…).
+      const low = u.toLowerCase();
+      // Callers that pin an explicit asset kind keep their bytes; the
+      // per-extension behaviour applies to the default (multi-platform) stub.
+      const body = opts.asset ? bytes : low.endsWith('.apk') ? apkBytes()
+        : low.endsWith('.exe') || low.endsWith('.msi') ? peBytes(0x8664)
+        : low.endsWith('.appimage') ? (() => { const b = new Uint8Array(64); b.set([0x7f, 0x45, 0x4c, 0x46], 0); b[18] = 0x3e; return b; })()
+        : low.endsWith('.deb') ? DEB_FIXTURE
+        : bytes;
+      return new Response(body as unknown as BodyInit, { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
     }
     // GitHub user authorization (App OAuth) + user installations
     if (u === 'https://github.com/login/oauth/access_token') {
@@ -2700,5 +2741,139 @@ test('STUCK: a release verifying for >10 minutes becomes retryable, never a dead
     assert.match(src, /status='verifying' AND detected_at < datetime\('now','-10 minutes'\)/,
       'the recovery is bounded to genuinely stuck rows');
     assert.match(src, /Press Retry verification/, 'the reason tells the admin what to do');
+  } finally { stubs.restore(); }
+});
+
+// ---------------------------------------------------------------------------
+// INCREMENTAL VERIFICATION + MANUAL AIDS
+// Production: 'Retry verification' → 'Failed to fetch' (the Worker died trying
+// to stream every asset of the release in one request) and no way to finish.
+// ---------------------------------------------------------------------------
+
+test('INCREMENTAL: one asset per call, with honest remaining counts, until ready', async () => {
+  const stubs = installStubs(env);
+  const original = globalThis.fetch;
+  try {
+    await connect();
+    // A release with THREE assets.
+    const payload = ghReleasePayload();
+    payload.release.assets = [
+      { id: 1, name: 'clinical-rx_1.12.0_amd64.deb', size: DEB_FIXTURE.byteLength, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/a.deb' },
+      { id: 2, name: 'clinical-rx-1.12.0.apk', size: apkBytes().byteLength, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/b.apk' },
+      { id: 3, name: 'clinical-rx-1.12.0.exe', size: peBytes(0x8664).byteLength, browser_download_url: 'https://github.com/octo/app/releases/download/v1.12.0/c.exe' },
+    ];
+    (globalThis.fetch as any) = (async (url: any, init?: any) => {
+      const u = String(url);
+      if (u.startsWith('https://api.github.com/repos/octo/app/releases/assets/')) {
+        const id = u.split('/').pop();
+        const meta = id === '1'
+          ? { name: 'clinical-rx_1.12.0_amd64.deb', size: DEB_FIXTURE.byteLength }
+          : id === '2'
+            ? { name: 'clinical-rx-1.12.0.apk', size: apkBytes().byteLength }
+            : { name: 'clinical-rx-1.12.0.exe', size: peBytes(0x8664).byteLength };
+        return new Response(JSON.stringify({ id: Number(id), ...meta }), { status: 200 });
+      }
+      return (original as any)(url, init);
+    });
+    await signedDelivery(env, 'release', payload, 'd-incremental');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+
+    // Call 1: a single asset is verified, two remain, the release is NOT ready.
+    const first: any = await verifyGithubRelease(env, rel.id, { maxAssets: 1 });
+    assert.equal(first.status, 'verifying', JSON.stringify(first));
+    assert.equal(first.remaining, 2, 'two assets still pending');
+    assert.equal(first.verifiedAssets, 1);
+    assert.equal(rel.status, 'verifying');
+
+    // Call 2 and 3 finish the job.
+    const second: any = await verifyGithubRelease(env, rel.id, { maxAssets: 1 });
+    assert.equal(second.remaining, 1);
+    const third: any = await verifyGithubRelease(env, rel.id, { maxAssets: 1 });
+    assert.equal(third.status, 'pending_approval', JSON.stringify(third));
+    assert.equal(third.remaining, 0);
+    assert.equal(rel.status, 'pending_approval');
+  } finally { globalThis.fetch = original; stubs.restore(); }
+});
+
+test('INCREMENTAL: re-running never re-streams an already-verified asset', async () => {
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-idem');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const first: any = await verifyGithubRelease(env, rel.id, { maxAssets: 1 });
+    assert.equal(first.status, 'pending_approval');
+    const asset = env.tables.github_release_assets[0];
+    assert.equal(asset.state, 'verified');
+    // A second call finds nothing pending and keeps the release ready.
+    const again: any = await verifyGithubRelease(env, rel.id, { maxAssets: 1 });
+    assert.equal(again.status, 'pending_approval');
+    assert.equal(again.remaining, 0);
+  } finally { stubs.restore(); }
+});
+
+test('MANUAL APPROVE: computes the real hash, records audited evidence and unblocks publication', async () => {
+  const { manualVerifyAsset } = await import('./services/githubReleases.ts');
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-manual');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const asset = env.tables.github_release_assets[0];
+
+    // The note is mandatory.
+    const noNote = await manualVerifyAsset(env, ADMIN, rel.id, asset.id, 'APPROVE', 'short');
+    assert.equal(noNote.ok, false);
+    assert.equal((noNote as any).code, 'VALIDATION_ERROR');
+
+    const out: any = await manualVerifyAsset(env, ADMIN, rel.id, asset.id, 'APPROVE', 'Vendor checksum verified out of band; scanner was rate limited.');
+    assert.ok(out.ok, out.message);
+    assert.equal(asset.state, 'verified');
+    assert.equal(asset.sha256, DEB_SHA, 'the SHA-256 is computed from the actual bytes');
+    assert.equal(out.remaining, 0);
+    assert.equal(rel.status, 'pending_approval', 'the release becomes ready for approval');
+
+    // Evidence rows attributed to the admin decision, not to a fake pass.
+    const checks = env.tables.package_security_results.filter((c: any) => c.provider === 'manual');
+    assert.ok(checks.some((c: any) => c.check_type === 'integrity' && c.status === 'PASSED'));
+    assert.ok(checks.some((c: any) => c.check_type === 'malware' && c.status === 'NEEDS_REVIEW'));
+    assert.ok(env.tables.github_audit_log.some((e: any) => e.action === 'manual_asset_approve'));
+
+    // And the release can actually be published through the gate.
+    const pub = await publishGithubRelease(env, ADMIN, rel.id, {});
+    assert.ok(pub.ok, (pub as any).message);
+  } finally { stubs.restore(); }
+});
+
+test('MANUAL APPROVE: a DETECTED verdict can never be overridden', async () => {
+  const { manualVerifyAsset } = await import('./services/githubReleases.ts');
+  const stubs = installStubs(env, { vtVerdict: 'DETECTED' });
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-manual-det');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    await verifyGithubRelease(env, rel.id, { maxAssets: 1 }); // records the DETECTED verdict
+    const asset = env.tables.github_release_assets[0];
+    const out: any = await manualVerifyAsset(env, ADMIN, rel.id, asset.id, 'APPROVE', 'I trust the publisher, the scanner must be wrong.');
+    assert.equal(out.ok, false);
+    assert.equal(out.code, 'FORBIDDEN');
+    assert.match(String(out.message), /DETECTED/);
+  } finally { stubs.restore(); }
+});
+
+test('MANUAL REJECT: the asset stays blocked and is audited', async () => {
+  const { manualVerifyAsset } = await import('./services/githubReleases.ts');
+  const stubs = installStubs(env);
+  try {
+    await connect();
+    await signedDelivery(env, 'release', ghReleasePayload(), 'd-manual-rej');
+    const rel = env.tables.github_releases.find((r: any) => r.github_release_id === '5001');
+    const asset = env.tables.github_release_assets[0];
+    const out: any = await manualVerifyAsset(env, ADMIN, rel.id, asset.id, 'REJECT', 'Unexpected contents for this version — do not ship.');
+    assert.ok(out.ok, out.message);
+    assert.equal(asset.state, 'failed');
+    assert.ok(env.tables.github_audit_log.some((e: any) => e.action === 'manual_asset_reject'));
+    const pub = await publishGithubRelease(env, ADMIN, rel.id, {});
+    assert.equal(pub.ok, false, 'a rejected asset cannot be published');
   } finally { stubs.restore(); }
 });

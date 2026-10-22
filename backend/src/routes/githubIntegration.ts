@@ -24,7 +24,7 @@ import {
   rejectGithubRelease, withdrawGithubRelease, syncAllConnections,
   adminOverview, adminQueue, adminAudit, verifyPendingDetections, ensureGithubTables,
   adminConnectionsOverview, adminSetConnectionStatus, appIsFree,
-  deleteGithubRelease, deleteSupersededReleases,
+  deleteGithubRelease, deleteSupersededReleases, manualVerifyAsset, refreshVerificationStatus,
 } from '../services/githubReleases.ts';
 import { issueOneTimeToken, consumeOneTimeToken, restoreOneTimeToken } from '../services/oauth.ts';
 
@@ -607,9 +607,36 @@ export const githubAdminRoutes = {
     const admin = requireAdmin(request);
     if ('error' in admin) return { code: 'UNAUTHORIZED', message: admin.error };
     const id = new URL(request.url).pathname.split('/')[4] || '';
-    const out = await verifyGithubRelease(env, id);
+    let body: any = {};
+    try { body = await request.json(); } catch {}
+    // BOUNDED BY DESIGN: one asset per call (each asset can be a 100 MB stream
+    // through the Worker twice). The panel loops until nothing remains — that
+    // is what stops the request being killed ('Failed to fetch').
+    const out = await verifyGithubRelease(env, id, {
+      maxAssets: body?.maxAssets ? Number(body.maxAssets) : 1,
+      onlyAssetId: body?.assetId ? String(body.assetId) : undefined,
+    });
     if (!out.ok && out.status === 'not_found') return { code: 'NOT_FOUND', message: out.message };
-    return { success: out.ok, status: out.status, message: out.message };
+    return {
+      success: out.ok, status: out.status, message: out.message,
+      remaining: out.remaining ?? 0, verifiedAssets: out.verifiedAssets ?? 0, totalAssets: out.totalAssets ?? 0,
+    };
+  },
+
+  /** POST /admin/github/releases/:id/assets/:assetId/manual-verify {decision, note} */
+  async manualVerifyAsset(request: Request, env: any) {
+    const admin = requireAdmin(request);
+    if ('error' in admin) return { code: 'UNAUTHORIZED', message: admin.error };
+    const parts = new URL(request.url).pathname.split('/');
+    const releaseId = parts[4] || '';
+    const assetId = parts[6] || '';
+    let body: any = {};
+    try { body = await request.json(); } catch {}
+    const decision = String(body?.decision || '').toUpperCase();
+    if (decision !== 'APPROVE' && decision !== 'REJECT') return { code: 'VALIDATION_ERROR', message: 'decision must be APPROVE or REJECT.' };
+    const out = await manualVerifyAsset(env, admin, releaseId, assetId, decision as 'APPROVE' | 'REJECT', String(body?.note || ''));
+    if (!out.ok) return { code: out.code, message: out.message };
+    return { success: true, remaining: out.remaining ?? 0 };
   },
 
   /** POST /admin/github/sync — reconcile all active connections now. */
