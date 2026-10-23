@@ -63,6 +63,10 @@ export interface TransactionResult {
   paused?: boolean;
   /** Which download controls this platform actually supports. */
   controls?: { pause: boolean; resume: boolean; cancel: boolean };
+  /** The app this attempt belongs to (many surfaces share one store). */
+  appSlug?: string;
+  /** Display name, for the in-page panel. */
+  appName?: string;
   startedAt: number;
   updatedAt: number;
 }
@@ -82,6 +86,9 @@ function nextAttemptId(): string {
 export function createTransaction(opts?: {
   previousVersion?: string;
   targetVersion?: string;
+  /** App identity so a shared store can tell WHICH app an attempt belongs to. */
+  appSlug?: string;
+  appName?: string;
   platform?: string;
 }): TransactionResult {
   const now = Date.now();
@@ -92,6 +99,8 @@ export function createTransaction(opts?: {
     previousVersion: opts?.previousVersion,
     targetVersion: opts?.targetVersion,
     platform: opts?.platform,
+    appSlug: opts?.appSlug,
+    appName: opts?.appName,
     startedAt: now,
     updatedAt: now,
   };

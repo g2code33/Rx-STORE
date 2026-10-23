@@ -160,12 +160,17 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
    * after a failure/cancel so the user can retry — but never once the install
    * succeeded (the finished state is the Open/Update button).
    */
-  const showDownloadPanel = React.useMemo(() => {
-    if (installTx.state === 'IDLE' || installTx.state === 'INSTALLED') return false;
-    if (txBusy) return true;
-    return ['DOWNLOAD_FAILED', 'VERIFICATION_FAILED', 'INSTALL_FAILED', 'INSTALLATION_NOT_DETECTED', 'CANCELLED'].includes(installTx.state);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [installTx.state, txBusy]);
+  /**
+   * The download section is a PERMANENT part of the app page (that is where
+   * Get / Update / Open live). While a transfer runs, or after one failed, the
+   * card shows live progress and the controls; otherwise it states that nothing
+   * is in progress. Transactions started from any surface land here because the
+   * store is shared (src/native/installStore.ts).
+   */
+  const showDownloadPanel = !installTx.appSlug || installTx.appSlug === app?.slug;
+  /** A transaction for ANOTHER app must not drive this page's panel. */
+  const panelBusy = txBusy && showDownloadPanel;
+  const panelState = showDownloadPanel ? installTx.state : 'IDLE';
   React.useEffect(() => {
     const state = installTx.state;
     if (state === lastTxStateRef.current) return;
@@ -706,22 +711,22 @@ export default function AppDetail({ previewSlug }: { previewSlug?: string }) {
       {/* IN-PAGE DOWNLOAD PANEL — the download is a first-class part of the app
           page, not a toast. It sits directly under the Get/Update/Open buttons
           and carries the controls (pause / resume / cancel / retry). */}
-      {showDownloadPanel && (
-        <div className="section-container pt-2">
+      {(
+        <div className="section-container pt-2" id="downloads">
           <DownloadCard
             variant="panel"
-            state={installTx.state}
-            received={installTx.progress.received}
-            total={installTx.progress.total}
-            percent={installTx.progress.percent}
-            paused={!!installTx.paused}
+            state={panelState}
+            received={showDownloadPanel ? installTx.progress.received : 0}
+            total={showDownloadPanel ? installTx.progress.total : 0}
+            percent={showDownloadPanel ? installTx.progress.percent : 0}
+            paused={!!installTx.paused && showDownloadPanel}
             appName={app.name}
-            version={installTx.targetVersion || app.version}
-            fileName={lastFileNameRef.current || undefined}
+            version={showDownloadPanel ? (installTx.targetVersion || app.version) : app.version}
+            fileName={showDownloadPanel ? (lastFileNameRef.current || undefined) : undefined}
             platformLabel={lastPlatformRef.current ? formatSizeLabel(lastPlatformRef.current) : undefined}
             controls={downloadCtl}
-            busy={txBusy}
-            error={installTx.message}
+            busy={panelBusy}
+            error={showDownloadPanel ? installTx.message : undefined}
             onPause={() => { void pauseDownload(); }}
             onResume={() => { void resumeDownload(); }}
             onCancel={() => { void cancelDownload(); }}

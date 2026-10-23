@@ -174,11 +174,16 @@ test('the app page renders the download panel inline, with the controls', async 
     'per-transition download toasts must not come back (they stacked up)');
 });
 
-test('the panel hides when nothing is happening and after success', async () => {
+test('the download section is permanent and per-app', async () => {
   const { readFileSync } = await import('node:fs');
   const page = readFileSync(new URL('../pages/AppDetail.tsx', import.meta.url), 'utf8');
-  const rule = /const showDownloadPanel = React\.useMemo\(\(\) => \{([\s\S]*?)\}, \[/.exec(page)?.[1] || '';
-  assert.match(rule, /'IDLE'/, 'nothing to show while idle');
-  assert.match(rule, /'INSTALLED'/, 'a finished install is represented by the Open/Update button');
-  assert.match(rule, /DOWNLOAD_FAILED/, 'failures stay visible so the user can retry');
+  // Always rendered — no `{showDownloadPanel && (...)}` gate any more, because
+  // hiding it while idle is what made it look like the feature was missing.
+  assert.match(page, /id="downloads"/);
+  assert.doesNotMatch(page, /\{showDownloadPanel && \(/);
+  // …but driven only by THIS app's transaction.
+  assert.match(page, /const showDownloadPanel = !installTx\.appSlug \|\| installTx\.appSlug === app\?\.slug;/,
+    "another app's download must not drive this page's panel");
+  assert.match(page, /const panelBusy = txBusy && showDownloadPanel;/);
+  assert.match(page, /const panelState = showDownloadPanel \? installTx\.state : 'IDLE';/);
 });

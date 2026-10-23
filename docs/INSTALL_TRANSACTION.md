@@ -246,3 +246,26 @@ Rules:
 Progress maths (`transferRate`, `etaSeconds`, `formatBytes`, `formatDuration`)
 lives in `src/native/downloadProgress.ts` and is unit-tested, including the
 cases where an estimate would be a guess (no rate yet, unknown total, paused).
+
+## One transaction, many surfaces
+
+`src/native/installStore.ts` holds the single install/download transaction for
+the whole app. `useInstallTransaction()` subscribes to it instead of keeping a
+private `useState`.
+
+That matters because the transaction used to be **per component**: `AppDetail`
+had one instance and `useInstallButton` another, so a download started on one
+surface was invisible to the other — and the in-page download panel could stay
+empty while a transfer genuinely ran. Now every surface (app page, card, install
+button, download modal) renders the same live state.
+
+The transaction also carries `appSlug` / `appName`, so the app page only shows a
+panel that belongs to *its* app.
+
+## The app page always has the download section
+
+`#downloads` is a permanent part of the app page, directly under Get / Update /
+Open. While a transfer runs it shows the percentage, MB transferred, rate, ETA
+and the Pause / Resume / Cancel controls; after a failure it stays with the
+reason and a Retry button; when nothing is happening it says so instead of
+vanishing (hiding it is what made the feature look missing).

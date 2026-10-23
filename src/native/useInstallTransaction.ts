@@ -17,6 +17,10 @@ import { reportCurrentInstallation } from './accountSync.ts';
 import {
   downloadCapabilities, pauseDownload, resumeDownload, cancelDownload,
 } from './downloadControls.ts';
+import {
+  getTransaction, setTransaction as setStoreTransaction, subscribeToTransaction,
+  isTransactionRunning, isTransactionFailed,
+} from './installStore.ts';
 
 export interface InstallTransactionApi {
   tx: TransactionResult;
@@ -85,8 +89,19 @@ function getCoordinator(): InstallCoordinator {
   return coordinator;
 }
 
-export function useInstallTransaction(initial?: { previousVersion?: string; targetVersion?: string; platform?: string }): InstallTransactionApi {
-  const [tx, setTx] = useState<TransactionResult>(() => createTransaction(initial));
+export function useInstallTransaction(initial?: { previousVersion?: string; targetVersion?: string; platform?: string; appSlug?: string; appName?: string }): InstallTransactionApi {
+  // ONE transaction for the whole app: every surface (app page, card, install
+  // button, download modal) renders the same live state, so a download started
+  // anywhere is visible everywhere — this is what makes the in-page download
+  // panel appear. (It used to be per-component useState, so the page stayed
+  // blank while a transfer genuinely ran.)
+  const [tx, setTxState] = useState<TransactionResult>(() => getTransaction());
+  useEffect(() => subscribeToTransaction((next) => setTxState(next)), []);
+
+  const setTx = useCallback((next: TransactionResult | ((t: TransactionResult) => TransactionResult)) => {
+    const value = typeof next === 'function' ? (next as (t: TransactionResult) => TransactionResult)(getTransaction()) : next;
+    return setStoreTransaction(value);
+  }, []);
   const [recoveryMessage, setRecoveryMessage] = useState('');
   const [recovering, setRecovering] = useState(false);
   const running = useRef(false);
@@ -121,7 +136,7 @@ export function useInstallTransaction(initial?: { previousVersion?: string; targ
 
   const reset = useCallback(() => {
     setTx(createTransaction(initial));
-  }, [initial]);
+  }, [initial, setTx]);
 
   // Live download controls, bound to THIS attempt (never "whatever is newest").
   const pause = useCallback(async () => {
@@ -154,8 +169,8 @@ export function useInstallTransaction(initial?: { previousVersion?: string; targ
     resume,
     cancel,
     controls: downloadCapabilities(tx.attemptId),
-    busy: tx.state !== 'IDLE' && !['INSTALLED', 'DOWNLOAD_FAILED', 'VERIFICATION_FAILED', 'INSTALL_FAILED', 'INSTALLATION_NOT_DETECTED', 'CANCELLED'].includes(tx.state),
-    failed: isFailed(tx.state),
+    busy: isTransactionRunning(tx),
+    failed: isTransactionFailed(tx) || isFailed(tx.state),
     label: describeTransaction(tx.state),
     start,
     reset,

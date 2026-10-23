@@ -72,12 +72,31 @@ export default function DownloadCard(props: DownloadCardProps) {
   const downloading = state === 'DOWNLOAD_STARTED' || state === 'DOWNLOADING';
   const installing = ['DOWNLOAD_COMPLETED', 'VERIFYING', 'VERIFIED', 'INSTALLER_STARTED', 'INSTALLATION_PENDING', 'VERIFYING_INSTALLATION'].includes(state);
 
-  if (!busy && !failed) return null;
+  const panel = variant === 'panel';
+
+  if (!busy && !failed) {
+    // The PANEL is a permanent part of the app page (that is where Get/Update/
+    // Open live); it states what it will do instead of silently disappearing.
+    if (!panel) return null;
+    return (
+      <div className="card p-4 w-full" aria-label="Downloads">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-white/5 flex items-center justify-center flex-shrink-0">
+            <Download className="w-4 h-4 text-rx-gray-medium" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-white">Downloads &amp; updates</p>
+            <p className="text-[11px] text-rx-gray-medium">
+              Nothing in progress. Press Update (or Get) to start — progress, pause, resume and cancel appear here.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const pct = Math.max(0, Math.min(100, Math.round(percent)));
   const eta = etaSeconds(received, total, rate);
-
-  const panel = variant === 'panel';
 
   return (
     <div

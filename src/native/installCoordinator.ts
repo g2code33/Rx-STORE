@@ -212,7 +212,7 @@ export class InstallCoordinator {
     const { app, packageMeta, previousVersion, isUpdate } = input;
     const platform = getRuntimePlatform();
 
-    let tx = createTransaction({ previousVersion, targetVersion: packageMeta.version, platform });
+    let tx = createTransaction({ previousVersion, targetVersion: packageMeta.version, platform, appSlug: app.slug, appName: app.name });
     const emit = (next: TransactionResult) => {
       tx = next;
       // Structured transition log: attemptId + appId + platform + version + state.
